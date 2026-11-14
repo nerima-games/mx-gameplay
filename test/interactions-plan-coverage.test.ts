@@ -75,6 +75,7 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   drainItemUseResults,
+  drainGameplayEntityStageFaults,
   drainBlockPlacementResults,
   drainBlockUseResults,
   drainBowShotResults,
@@ -4665,7 +4666,7 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('maps schema-valid unregistered block IDs to air across farming actions', async () => {
+  it('records schema-valid unregistered block IDs across farming actions', async () => {
     const tillPosition = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
     const plantPosition = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
     const harvestPosition = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
@@ -4687,16 +4688,18 @@ describe('schema-valid interaction edge paths', () => {
 
     await harness.run()
 
-    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
-      { action: 'TillSoil', requestId: 'unknown-till-block', success: false, durabilityDamage: 0, outcome: { _tag: 'notTillable', found: 'air' } },
-      { action: 'PlantPotato', requestId: 'unknown-plant-block', success: false, consumedCount: 0, outcome: { _tag: 'wrongSoil', found: 'air' } },
-      {
-        action: 'HarvestPotato',
-        requestId: 'unknown-harvest-block',
-        success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
-      },
-    ])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toHaveLength(3)
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject(
+      [tillPosition, blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), plantPosition,
+        blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), harvestPosition]
+        .map((cell) => ({
+          _tag: 'EntityWorldDataFault',
+          source: 'ItemUse',
+          target: { _tag: 'Cell', cell },
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+        })),
+    )
     expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
   })

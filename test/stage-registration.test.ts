@@ -108,6 +108,7 @@ import {
   drainPlayerHeals,
   drainBowShotResults,
   drainFluidUpdates,
+  drainGameplayEntityStageFaults,
   drainMeleeAttackResults,
   drainMobDrops,
   drainMobExperience,
@@ -1264,6 +1265,39 @@ describe('stage behaviour', () => {
         parent: '0,64,0',
         falling: true,
       })
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('records an unregistered fluid neighbour and defers that flow without writing', () =>
+    Effect.gen(function* () {
+      const source = fixtureBlockPosition(0, 64, 0)
+      const malformedNeighbour = fixtureBlockPosition(1, 64, 0)
+      const unknownBlock = BlockId(65_535)
+      const { state, store, stages } = yield* builtStagesInWorld(world([
+        [source, WATER],
+        [malformedNeighbour, unknownBlock],
+      ]))
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt(source)).toBe(WATER)
+      expect(yield* store.blockAt(malformedNeighbour)).toBe(unknownBlock)
+      expect(yield* Ref.get(state.fluidFrontier)).toContainEqual({
+        key: '0,64,0',
+        kind: 'water',
+        level: 0,
+        source: true,
+        falling: false,
+        deferred: 1,
+      })
+      expect(yield* drainGameplayEntityStageFaults(state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'Fluid',
+        target: { _tag: 'Cell', cell: malformedNeighbour },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: malformedNeighbour, blockId: unknownBlock },
+      }))
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
@@ -5784,26 +5818,33 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
     }),
   )
 
-  it.effect('an unregistered neighbouring block reads as an unknown fire block rather than crashing', () =>
+  it.effect('an unregistered neighbouring block faults and leaves its fire unchanged for the tick', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(30, 64, 30)
+      const support = fixtureBlockPosition(30, 63, 30)
       const strangeNeighbour = fixtureBlockPosition(31, 64, 30)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
+          [support, STONE],
           [position, FIRE],
           [strangeNeighbour, UNREGISTERED_BLOCK_ID],
         ]),
         ['0,0', '1,1'],
       )
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
-      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 41))
+      const seeded = makeFireLifecycleState([position], 41)
+      yield* Ref.set(state.fireLifecycle, seeded)
 
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
-      // Nothing crashed reading the unregistered id, and the fire itself is
-      // still tracked.
       expect(yield* store.blockAt(strangeNeighbour)).toBe(UNREGISTERED_BLOCK_ID)
-      expect((yield* Ref.get(state.fireLifecycle)).fires.length).toBeGreaterThanOrEqual(0)
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(seeded.fires)
+      expect(yield* drainGameplayEntityStageFaults(state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'Fire',
+        target: { _tag: 'Cell', cell: strangeNeighbour },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: strangeNeighbour, blockId: UNREGISTERED_BLOCK_ID },
+      }))
     }),
   )
 
@@ -6063,6 +6104,31 @@ describe('End portal travel commits the player owner from either source dimensio
       expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
         expect.objectContaining({ _tag: 'Failed', operation: 'WorldCommit', subject: 'Player' }),
       )
+    }),
+  )
+})
+
+describe('portal faults on unregistered world cells', () => {
+  it.effect('keeps portal dwell and travel unchanged when the player cell cannot be resolved', () =>
+    Effect.gen(function* () {
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const unknownBlock = BlockId(65_535)
+      const harness = yield* builtStagesInWorld(world([[cell, unknownBlock]]), ['0,0'])
+      const dwell = { _tag: 'Standing', dwelledSecs: 3.9 } as const
+      yield* Ref.set(harness.state.portalDwell, dwell)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.portalDwell)).toStrictEqual(dwell)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.endPortalTravels)).toStrictEqual([])
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'Portal',
+        target: { _tag: 'Cell', cell },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+      }))
     }),
   )
 })

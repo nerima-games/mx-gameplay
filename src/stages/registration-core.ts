@@ -217,7 +217,7 @@ import {
   type BrewingBottleCollectionResult,
   type BrewingIngredient,
 } from '../domain/brewing.js'
-import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { CHUNK_HEIGHT, ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   chunkCoordsAround,
   openChunkWindow,
@@ -297,6 +297,7 @@ import {
   type EntityManagerApi,
   type MobMovementFailure,
 } from '@nerima-games/mc-sim'
+import { entityWorldBlockTypeAt } from '../domain/entities/entity-world-cell.js'
 import type { EntityWorldCellPosition, EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
 import type { MobStateRepairFailure } from '../domain/mob/mob-ecosystem.js'
 import type { Damage } from '../domain/death-cause.js'
@@ -948,36 +949,37 @@ const fluidProbeAt = (
   position: BlockPosition,
   kind: FluidCell['kind'],
   cells: ReadonlyMap<BlockPositionKey, FluidCell>,
-): Effect.Effect<FluidProbe> => {
+): Effect.Effect<Result.Result<FluidProbe, EntityWorldQueryFailure>> => {
   const key = blockPositionKeyOf(toKernelPosition(position))
   return Effect.gen(function* () {
     const reading = yield* store.getBlock(position)
     if (reading._tag === 'ChunkNotLoaded') {
-      return { key, state: 'unloaded' } satisfies FluidProbe
+      return Result.succeed({ key, state: 'unloaded' } satisfies FluidProbe)
     }
     if (reading._tag === 'OutOfWorld') {
-      return { key, state: 'out-of-world' } satisfies FluidProbe
+      return Result.succeed({ key, state: 'out-of-world' } satisfies FluidProbe)
     }
 
-    const block = yield* blockTypeOrDie(reading.block)
-    if (block === 'air') {
-      return { key, state: 'air' } satisfies FluidProbe
+    const block = entityWorldBlockTypeAt(position, reading.block)
+    if (Result.isFailure(block)) return Result.fail(block.failure)
+    if (block.success === 'air') {
+      return Result.succeed({ key, state: 'air' } satisfies FluidProbe)
     }
-    if (block === kind) {
-      return {
+    if (block.success === kind) {
+      return Result.succeed({
         key,
         state: 'same-fluid',
         source: cells.get(key)?.source ?? true,
-      } satisfies FluidProbe
+      } satisfies FluidProbe)
     }
-    if (block === (kind === 'water' ? 'lava' : 'water')) {
-      return {
+    if (block.success === (kind === 'water' ? 'lava' : 'water')) {
+      return Result.succeed({
         key,
         state: 'opposite-fluid',
         source: cells.get(key)?.source ?? true,
-      } satisfies FluidProbe
+      } satisfies FluidProbe)
     }
-    return { key, state: 'blocked' } satisfies FluidProbe
+    return Result.succeed({ key, state: 'blocked' } satisfies FluidProbe)
   })
 }
 
@@ -1022,6 +1024,7 @@ const commitBlockEdits: (
   })
 
 const runFluidPropagation = (
+  state: GameplayFrameState,
   store: ChunkStoreApi,
   runtime: Ref.Ref<FluidRuntimeState>,
   work: ReadonlyArray<FluidWorkItem>,
@@ -1063,7 +1066,17 @@ const runFluidPropagation = (
         ...(item.parent === undefined ? {} : { parent: item.parent }),
         falling: item.falling ?? false,
       }
-      const current = yield* fluidProbeAt(store, position, cell.kind, cells)
+      const retryCurrent = () => {
+        const deferred = item.deferred ?? 0
+        if (deferred < MAX_FLUID_DEFERRED_ATTEMPTS) enqueue(fluidWorkItemOf(cell, deferred + 1))
+      }
+      const currentResult = yield* fluidProbeAt(store, position, cell.kind, cells)
+      if (Result.isFailure(currentResult)) {
+        yield* recordGameplayEntityWorldDataFault(state, 'Fluid', currentResult.failure)
+        retryCurrent()
+        continue
+      }
+      const current = currentResult.success
       const belowPosition = yield* resultOrDie(
         adjacentBlockPosition(toKernelPosition(position), 'down'),
       )
@@ -1078,9 +1091,22 @@ const runFluidPropagation = (
 
       if (current.state === 'same-fluid') {
         cells.set(cell.key, cell)
-        belowProbe = yield* fluidProbeAt(store, belowPosition, cell.kind, cells)
-        horizontalProbes = yield* Effect.forEach(horizontalPositions, (candidate) =>
+        const belowResult = yield* fluidProbeAt(store, belowPosition, cell.kind, cells)
+        const horizontalResults = yield* Effect.forEach(horizontalPositions, (candidate) =>
           fluidProbeAt(store, candidate, cell.kind, cells),
+        )
+        const neighborFailures = [belowResult, ...horizontalResults]
+          .flatMap((result) => Result.isFailure(result) ? [result.failure] : [])
+        if (neighborFailures.length > 0) {
+          for (const failure of neighborFailures) {
+            yield* recordGameplayEntityWorldDataFault(state, 'Fluid', failure)
+          }
+          retryCurrent()
+          continue
+        }
+        if (Result.isSuccess(belowResult)) belowProbe = belowResult.success
+        horizontalProbes = horizontalResults.flatMap((result) =>
+          Result.isSuccess(result) ? [result.success] : [],
         )
       }
 
@@ -2111,10 +2137,24 @@ export type GameplayStageOperationFailure = Readonly<{
     | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: EntitiesStageFailureTag }>
 }>
 
+export type EntityWorldDataFaultSource =
+  | 'UndeadDaylight'
+  | 'MobMovement'
+  | 'EndermanTeleport'
+  | 'ProjectileLineOfSight'
+  | 'ProjectileStep'
+  | 'TntExplosion'
+  | 'MobSpawnSearch'
+  | 'FallingBlock'
+  | 'ItemUse'
+  | 'Portal'
+  | 'Fluid'
+  | 'Fire'
+
 export type EntityStageFault =
   | Readonly<{
       _tag: 'EntityWorldDataFault'
-      source: 'UndeadDaylight' | 'MobMovement' | 'EndermanTeleport' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion'
+      source: EntityWorldDataFaultSource
       target:
         | Readonly<{ _tag: 'Cell'; cell: EntityWorldCellPosition }>
         | Readonly<{ _tag: 'Entity'; entityId: EntityId }>
@@ -2212,6 +2252,27 @@ export const recordGameplayEntityStageFault = (
     pending: [...current.pending, fault],
     seen: new Set([...current.seen, key]),
   }
+})
+
+const entityWorldFaultTarget = (
+  failure: EntityWorldQueryFailure,
+  entityId?: EntityId,
+): Extract<EntityStageFault, { _tag: 'EntityWorldDataFault' }>['target'] => {
+  if ('cell' in failure) return { _tag: 'Cell', cell: failure.cell }
+  if (entityId !== undefined) return { _tag: 'Entity', entityId }
+  return { _tag: 'Position', position: failure.position }
+}
+
+export const recordGameplayEntityWorldDataFault = (
+  state: GameplayFrameState,
+  source: EntityWorldDataFaultSource,
+  failure: EntityWorldQueryFailure,
+  entityId?: EntityId,
+): Effect.Effect<void> => recordGameplayEntityStageFault(state, {
+  _tag: 'EntityWorldDataFault',
+  source,
+  target: entityWorldFaultTarget(failure, entityId),
+  failure,
 })
 
 /** Atomically drain entities-stage data faults; each target/reason is recorded once per frame state. */
@@ -2483,9 +2544,12 @@ const stepPortalTravel = (
 
     const reading = yield* store.getBlock(cell)
     const blockId = reading._tag === 'Block' ? reading.block : undefined
-    const block = blockId !== undefined
-      ? yield* resultOrDie(blockTypeOfId(blockId))
-      : undefined
+    const resolvedBlock = blockId === undefined ? undefined : entityWorldBlockTypeAt(cell, blockId)
+    if (resolvedBlock !== undefined && Result.isFailure(resolvedBlock)) {
+      yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedBlock.failure)
+      return
+    }
+    const block = resolvedBlock === undefined ? undefined : resolvedBlock.success
     const inPortal =
       block !== undefined &&
       (block === 'nether_portal' || (blockId !== undefined && isEndPortalBlock(blockId)))
@@ -2527,9 +2591,14 @@ const stepPortalTravel = (
     }
     const currentReading = yield* store.getBlock(currentCell)
     const currentBlockId = currentReading._tag === 'Block' ? currentReading.block : undefined
-    const currentBlock = currentBlockId === undefined
+    const resolvedCurrentBlock = currentBlockId === undefined
       ? undefined
-      : Result.getOrUndefined(blockTypeOfId(currentBlockId))
+      : entityWorldBlockTypeAt(currentCell, currentBlockId)
+    if (resolvedCurrentBlock !== undefined && Result.isFailure(resolvedCurrentBlock)) {
+      yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedCurrentBlock.failure)
+      return
+    }
+    const currentBlock = resolvedCurrentBlock === undefined ? undefined : resolvedCurrentBlock.success
     const stillInPortal = currentBlock === 'nether_portal' ||
       (currentBlockId !== undefined && isEndPortalBlock(currentBlockId))
     if (!stillInPortal) {
@@ -3752,13 +3821,26 @@ const stepFireTick = (
 
     const weather = (yield* Ref.get(state.weather)).weather
     const cells: FireCell[] = []
+    const faultyCellKeys = new Set<string>()
     for (const position of positions.values()) {
-      const reading = yield* store.getBlock(blockPosition(position.x, position.y, position.z))
-      const block = reading._tag === 'Block'
-        ? (yield* resultOrDie(blockTypeOfId(reading.block))) ?? '__unknown_fire_block__'
-        : reading._tag === 'ChunkNotLoaded'
-          ? FIRE_UNAVAILABLE_BLOCK
-          : 'air'
+      const cell = blockPosition(position.x, position.y, position.z)
+      const reading = yield* store.getBlock(cell)
+      let block: string
+      if (reading._tag === 'Block') {
+        const resolved = entityWorldBlockTypeAt(cell, reading.block)
+        if (Result.isFailure(resolved)) {
+          faultyCellKeys.add(firePositionKey(position))
+          yield* recordGameplayEntityWorldDataFault(state, 'Fire', resolved.failure)
+          continue
+        }
+        block = resolved.success
+      } else if (reading._tag === 'ChunkNotLoaded') {
+        block = FIRE_UNAVAILABLE_BLOCK
+      } else if (position.y >= CHUNK_HEIGHT) {
+        block = 'air'
+      } else {
+        block = FIRE_UNAVAILABLE_BLOCK
+      }
       let exposedToSky = false
       if (weather !== 'clear' &&
         (activeKeys.has(firePositionKey(position)) || contacts.some((contact) =>
@@ -3770,15 +3852,29 @@ const stepFireTick = (
     }
 
     const cellByPosition = new Map(cells.map((cell) => [firePositionKey(cell.position), cell]))
-    const hydratedContacts = contacts.map((contact) => {
-      const cell = cellByPosition.get(firePositionKey(contact.position))
-      return {
-        ...contact,
-        inWater: cell?.block === 'water',
-        exposedToSky: cell?.exposedToSky === true,
-      }
-    })
-    const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
+    const hydratedContacts = contacts
+      .filter((contact) => !faultyCellKeys.has(firePositionKey(contact.position)))
+      .map((contact) => {
+        const cell = cellByPosition.get(firePositionKey(contact.position))
+        return {
+          ...contact,
+          inWater: cell?.block === 'water',
+          exposedToSky: cell?.exposedToSky === true,
+        }
+      })
+    const faultyFireKeys = new Set(current.fires
+      .filter((fire) => FIRE_SNAPSHOT_OFFSETS.some(([dx, dy, dz]) => faultyCellKeys.has(firePositionKey({
+        x: fire.position.x + dx,
+        y: fire.position.y + dy,
+        z: fire.position.z + dz,
+      }))))
+      .map((fire) => firePositionKey(fire.position)))
+    const affectedFires = current.fires.filter((fire) => faultyFireKeys.has(firePositionKey(fire.position)))
+    const safeCurrent = {
+      ...current,
+      fires: current.fires.filter((fire) => !faultyFireKeys.has(firePositionKey(fire.position))),
+    }
+    const step = advanceFireLifecycle(safeCurrent, cells, weather, hydratedContacts, survival.difficulty)
     const validEntityHits = step.entityDamages.map(({ actorId, damage }) => ({
       id: Schema.decodeUnknownSync(EntityIdSchema)(actorId),
       damage,
@@ -3940,7 +4036,7 @@ const stepFireTick = (
 
     yield* Ref.set(state.fireLifecycle, {
       ...step.state,
-      fires: [...step.state.fires].sort((a, b) =>
+      fires: [...step.state.fires, ...affectedFires].sort((a, b) =>
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
       burningActors: step.state.burningActors ?? [],
     })

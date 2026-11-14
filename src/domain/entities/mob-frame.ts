@@ -2006,6 +2006,14 @@ const resolveEndermanTeleportProbeDestinations = (
         }
         break
       }
+      if (blockType.success === undefined) {
+        fault = {
+          _tag: 'EndermanTeleportWorldQueryFailure',
+          entityId: probe.entityId,
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: reading.block },
+        }
+        break
+      }
       cells.push({
         position,
         block: blockType.success,

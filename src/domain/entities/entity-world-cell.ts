@@ -1,5 +1,6 @@
 import {
   AIR_BLOCK_ID,
+  blockTypeOfId,
   capabilitiesOfBlockId,
   isKnownBlockId,
   resolvedBlockOfId,
@@ -7,6 +8,7 @@ import {
   type BlockCapabilities,
   type BlockId,
   type BlockProperties,
+  type BlockType,
   type BlockRegistryResolutionFailure,
   type Position,
   type ResolvedBlock,
@@ -89,6 +91,21 @@ export const entityWorldBlockDataAt = (
     block: resolvedBlockOfId(blockId),
     capabilities: capabilitiesOfBlockId(blockId),
   }))
+
+export const entityWorldBlockTypeAt = (
+  cell: EntityWorldCellPosition,
+  blockId: BlockId,
+): Result.Result<BlockType, EntityWorldRegistryFailure | EntityWorldUnregisteredBlockId> => {
+  const data = entityWorldBlockDataAt(cell, blockId)
+  if (Result.isFailure(data)) return Result.fail(data.failure)
+  const blockType = blockTypeOfId(blockId)
+  if (Result.isFailure(blockType)) {
+    return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell, failure: blockType.failure })
+  }
+  return blockType.success === undefined
+    ? Result.fail({ _tag: 'EntityWorldUnregisteredBlockId', cell, blockId })
+    : Result.succeed(blockType.success)
+}
 
 export const entityWorldAirBlockDataAt = (
   cell: EntityWorldCellPosition,

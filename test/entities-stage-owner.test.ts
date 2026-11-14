@@ -436,7 +436,9 @@ const makeHarness = (options: Readonly<{
   }
 })
 
-const makeMobBlastHarness = async () => {
+const makeMobBlastHarness = async (
+  extraBlocks: ReadonlyArray<readonly [ReturnType<typeof blockPosition>, BlockId]> = [],
+) => {
   const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
   const creeper = {
     ...creeperAt(0, 64),
@@ -451,7 +453,7 @@ const makeMobBlastHarness = async () => {
     entity: null,
     entities: [creeper, zombie],
     playerPose,
-    block: { position: centre, id: STONE },
+    blocks: [[centre, STONE], ...extraBlocks],
   }))
   await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
   return { harness, zombie, centre }
@@ -1259,6 +1261,29 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(outputs.experience).toStrictEqual([])
     expect(outputs.damages.length).toBeGreaterThan(0)
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBeUndefined()
+  })
+
+  it('records an unregistered mob-blast cell while continuing the explosion tick', async () => {
+    const unknownCell = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(0))
+    const unknownBlock = BlockId(65_535)
+    const { harness, centre } = await makeMobBlastHarness([[unknownCell, unknownBlock]])
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.02)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+    expect(harness.commits()).toBe(1)
+    expect(await Effect.runPromise(harness.store.blockAt(centre))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(unknownCell))).toBe(unknownBlock)
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(
+      expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'TntExplosion',
+        target: { _tag: 'Cell', cell: unknownCell },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: unknownCell, blockId: unknownBlock },
+      }),
+    )
   })
 
   it('reports unknown mob loot and XP after a successful mob blast commit', async () => {
@@ -2824,6 +2849,37 @@ describe('entities stage owner-backed MobSimulation', () => {
       blockPositionKeyOf(blockPosition(BlockAxis(0), BlockAxis(63), BlockAxis(0))),
       blockPositionKeyOf(source),
     ])
+  })
+
+  it('records an unregistered falling-block source and retries that column after a successful tick', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const source = blockPosition(BlockAxis(0), BlockAxis(65), BlockAxis(0))
+    const unknownBlock = BlockId(65_535)
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      blocks: [[source, unknownBlock]],
+    }))
+    await Effect.runPromise(Ref.update(harness.state.fallingBlocks, (queue) =>
+      disturb(queue, [blockPositionKeyOf(target)]),
+    ))
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+    expect(await Effect.runPromise(harness.store.blockAt(source))).toBe(unknownBlock)
+    expect([...((await Effect.runPromise(Ref.get(harness.state.fallingBlocks))).pending)]).toContain(
+      blockPositionKeyOf(target),
+    )
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(
+      expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'FallingBlock',
+        target: { _tag: 'Cell', cell: source },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: source, blockId: unknownBlock },
+      }),
+    )
   })
 
   it('keeps entity, block, revision, and output state unchanged when a combined blast commit fails', async () => {

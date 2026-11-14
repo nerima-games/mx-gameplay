@@ -62,6 +62,7 @@ import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
   makeGameplayFrameState,
+  drainGameplayEntityStageFaults,
 } from '../src/stages/registration'
 import {
   HOSTILE_SPAWN_INTERVAL_TICKS,
@@ -320,6 +321,34 @@ describe('the spawn ring', () => {
       expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
       expect((yield* store.calls).peeks).toBeGreaterThan(0)
     }),
+  )
+
+  it.effect('the registered entity stage drains unregistered spawn-surface faults and completes the tick', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(65_535)
+      const unknownWorld = world(Array.from({ length: 96 * 96 }, (_, index) => {
+        const x = index % 96 - 48
+        const z = Math.floor(index / 96) - 48
+        return [blockPosition(x, FLOOR_Y, z), unknownBlock] as const
+      }))
+      const { time, state, stages } = yield* makeStageHarness(
+        unknownWorld,
+        DISTRIBUTION_LIGHT,
+        DISTRIBUTION_PLAYER,
+      )
+      yield* time.setTimeOfDay(MIDNIGHT)
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS)
+      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* entities?.run(DeltaTimeSecs(0)) ?? Effect.void
+
+      const faults = yield* drainGameplayEntityStageFaults(state)
+      expect(faults.length).toBeGreaterThan(0)
+      expect(faults.every((fault) =>
+        fault._tag === 'EntityWorldDataFault' && fault.source === 'MobSpawnSearch' &&
+        fault.failure._tag === 'EntityWorldUnregisteredBlockId' && fault.failure.blockId === unknownBlock,
+      )).toBe(true)
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('measures the distance from the CELL, not from the radius that produced it', () =>
@@ -617,6 +646,7 @@ describe('what the search reads', () => {
 
       expect(found.attempts).toStrictEqual([])
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+      expect(found.worldFaults.every((fault) => fault._tag === 'EntityWorldCorruptBuffer')).toBe(true)
       expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
     }),
   )
@@ -699,21 +729,23 @@ describe('what the search reads', () => {
           ? undefined
           : Reflect.get(target, property, receiver),
       })
-      const malformedChunks: ReadonlyArray<(coord: ReadonlyChunk['coord']) => ReadonlyChunk> = [
-        (coord) => ({ coord, blocks: readableBlocks, biomes: [] }),
-        (coord) => ({
-          coord,
-          blocks: readableBlocks,
-          biomes: missingBiome,
-        }),
-        (coord) => ({
-          coord,
-          blocks: new Uint16Array(CHUNK_HEIGHT * 256 - 1),
-          biomes: readableBiomes,
-        }),
+      const malformedChunks: ReadonlyArray<Readonly<{
+        chunkForCoord: (coord: ReadonlyChunk['coord']) => ReadonlyChunk
+        hasBlockFault: boolean
+      }>> = [
+        { chunkForCoord: (coord) => ({ coord, blocks: readableBlocks, biomes: [] }), hasBlockFault: false },
+        { chunkForCoord: (coord) => ({ coord, blocks: readableBlocks, biomes: missingBiome }), hasBlockFault: false },
+        {
+          chunkForCoord: (coord) => ({
+            coord,
+            blocks: new Uint16Array(CHUNK_HEIGHT * 256 - 1),
+            biomes: readableBiomes,
+          }),
+          hasBlockFault: true,
+        },
       ]
 
-      for (const chunkForCoord of malformedChunks) {
+      for (const { chunkForCoord, hasBlockFault } of malformedChunks) {
         const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
         const api: ChunkStoreApi = {
           ...store.api,
@@ -723,7 +755,27 @@ describe('what the search reads', () => {
 
         expect(found.attempts).toStrictEqual([])
         expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+        expect(found.worldFaults.some((fault) => fault._tag === 'EntityWorldCorruptBuffer')).toBe(hasBlockFault)
       }
+    }),
+  )
+
+  it.effect('returns an unregistered block id as a typed world fault', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(65_535)
+      const unknownWorld = world(Array.from({ length: 96 * 96 }, (_, index) => {
+        const x = index % 96 - 48
+        const z = Math.floor(index / 96) - 48
+        return [blockPosition(x, FLOOR_Y, z), unknownBlock] as const
+      }))
+      const { found } = yield* searchIn(unknownWorld, RESIDENT_CHUNKS)
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.worldFaults.length).toBeGreaterThan(0)
+      expect(found.worldFaults.every((fault) =>
+        fault._tag === 'EntityWorldUnregisteredBlockId' && fault.blockId === unknownBlock,
+      )).toBe(true)
+      expect(found.seed).toBe(drawRolls(1, SPAWN_SEARCH_ROLLS).seed)
     }),
   )
 

@@ -70,9 +70,10 @@ import {
   AIR_BLOCK_ID,
   BlockAxis,
   BlockId,
+  BlockStateIndex,
+  BlockStateLength,
   PositionAxis,
   chunkCoordOfBlock,
-  capabilityOfBlockId,
   localCoordOfBlock,
   blockPosition,
   position,
@@ -96,6 +97,7 @@ import {
   type SpawnCandidate,
 } from '../mob/hostile-spawn.js'
 import { HOSTILE_KINDS, type MobSpawnAttempt } from './mob-frame.js'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from './entity-world-cell.js'
 
 /**
  * Angles around the player. The reference's sixteen
@@ -154,6 +156,7 @@ type MobSpawnSearch = {
    * about why a refusal carries a reason. The arena screen prints it.
    */
   readonly unreadable: number
+  readonly worldFaults: ReadonlyArray<EntityWorldQueryFailure>
   readonly seed: number
 }
 
@@ -174,7 +177,7 @@ export const searchSpawnCandidates = (
 ): Effect.Effect<MobSpawnSearch> =>
   Effect.gen(function* () {
     const batch = drawRolls(seed, SPAWN_SEARCH_ROLLS)
-    if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, seed: batch.seed }
+    if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, worldFaults: [], seed: batch.seed }
     const spawnKinds: ReadonlyArray<EntityKind> = mode === 'passive'
       ? dimension === 'overworld' ? PASSIVE_MOB_KINDS : []
       : HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension))
@@ -187,6 +190,7 @@ export const searchSpawnCandidates = (
     const rotation = rollAt(batch, 0)
 
     const attempts: Array<MobSpawnAttempt> = []
+    const worldFaults: Array<EntityWorldQueryFailure> = []
     let unreadable = 0
     const chunks = new Map<string, ReadonlyChunk | undefined>()
 
@@ -226,11 +230,18 @@ export const searchSpawnCandidates = (
         }
         const local = localCoordOfBlock(probeAt)
         const biomeIndex = local.lz * 16 + local.lx
-        if (
-          chunk.biomes.length !== 256 || chunk.biomes[biomeIndex] === undefined ||
-          chunk.blocks.length !== CHUNK_HEIGHT * 256
-        ) {
+        if (chunk.biomes.length !== 256 || chunk.biomes[biomeIndex] === undefined) {
           unreadable += 1
+          continue
+        }
+        if (chunk.blocks.length !== CHUNK_HEIGHT * 256) {
+          unreadable += 1
+          worldFaults.push({
+            _tag: 'EntityWorldCorruptBuffer',
+            cell: { x: probeAt.x, y: BlockAxis(0), z: probeAt.z },
+            index: BlockStateIndex(chunk.blocks.length),
+            length: BlockStateLength(chunk.blocks.length),
+          })
           continue
         }
         const biome = biomeAt(chunk, local.lx, local.lz)
@@ -247,17 +258,38 @@ export const searchSpawnCandidates = (
 
         for (let groundY = CHUNK_HEIGHT - 3; groundY >= 0; groundY -= 1) {
           const positionY = PositionAxis(groundY + 1)
-          const groundValue = chunk.blocks[blockIndex(local.lx, groundY, local.lz)]
-          const footValue = chunk.blocks[blockIndex(local.lx, groundY + 1, local.lz)]
-          const headValue = chunk.blocks[blockIndex(local.lx, groundY + 2, local.lz)]
-          if (groundValue === undefined || footValue === undefined || headValue === undefined) {
+        const groundIndex = blockIndex(local.lx, groundY, local.lz)
+        const footIndex = blockIndex(local.lx, groundY + 1, local.lz)
+        const headIndex = blockIndex(local.lx, groundY + 2, local.lz)
+        const groundValue = chunk.blocks[groundIndex]
+        const footValue = chunk.blocks[footIndex]
+        const headValue = chunk.blocks[headIndex]
+        if (groundValue === undefined || footValue === undefined || headValue === undefined) {
+          const corruptCell = groundValue === undefined
+            ? { y: groundY, index: groundIndex }
+            : footValue === undefined
+              ? { y: groundY + 1, index: footIndex }
+              : { y: groundY + 2, index: headIndex }
+          worldFaults.push({
+            _tag: 'EntityWorldCorruptBuffer',
+            cell: { x: probeAt.x, y: BlockAxis(corruptCell.y), z: probeAt.z },
+            index: BlockStateIndex(corruptCell.index),
+            length: BlockStateLength(chunk.blocks.length),
+          })
             columnUnreadable = true
             break
           }
           const groundBlock = BlockId(groundValue)
           const footBlock = BlockId(footValue)
           const headBlock = BlockId(headValue)
-          if (Result.getOrUndefined(capabilityOfBlockId(groundBlock, 'validSpawnSurface')) !== true) continue
+          const groundCell = { x: probeAt.x, y: BlockAxis(groundY), z: probeAt.z }
+          const groundData = entityWorldBlockDataAt(groundCell, groundBlock)
+          if (Result.isFailure(groundData)) {
+            worldFaults.push(groundData.failure)
+            columnUnreadable = true
+            break
+          }
+          if (!groundData.success.capabilities.validSpawnSurface) continue
           if (footBlock !== AIR_BLOCK_ID || headBlock !== AIR_BLOCK_ID) continue
 
           const footAt = blockPosition(probeAt.x, BlockAxis(groundY + 1), probeAt.z)
@@ -293,6 +325,7 @@ export const searchSpawnCandidates = (
     return {
       attempts: attempts.length === 0 ? EMPTY_ATTEMPTS : attempts,
       unreadable,
+      worldFaults,
       seed: batch.seed,
     }
   })

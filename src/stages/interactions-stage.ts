@@ -23,6 +23,7 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
+  recordGameplayEntityWorldDataFault,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollAt,
@@ -38,6 +39,7 @@ import {
 import { AttackRangeDistance, EntityHealthPoints, EntityId, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
+import type { BlockType } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
 import {
   DamageAmount,
@@ -99,8 +101,8 @@ import {
   WorldWriteBatchSchema,
   FoodNutrition,
   blockIdOf,
-  blockTypeOfId,
 } from '@nerima-games/mc-kernel'
+import type { BlockReading } from '@nerima-games/mc-worldgen'
 import {
   PlayerStorageSnapshotSchema,
   TntServiceSnapshotSchema,
@@ -182,6 +184,18 @@ import {
 } from '../domain/entities/mob-frame.js'
 import type { Damage } from '../domain/death-cause.js'
 import { solidityFromStore } from '../domain/in-memory-world.js'
+import { entityWorldBlockTypeAt } from '../domain/entities/entity-world-cell.js'
+import type { EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
+
+const itemUseBlockTypeAt = (
+  position: BlockPosition,
+  reading: BlockReading | undefined,
+): Result.Result<BlockType | undefined, EntityWorldQueryFailure> => {
+  if (reading === undefined) return Result.fail({ _tag: 'EntityWorldWindowUnavailable', cell: position })
+  return reading._tag === 'Block'
+    ? entityWorldBlockTypeAt(position, reading.block)
+    : Result.succeed(undefined)
+}
 
 const cropAt = (
   snapshot: CropSnapshot,
@@ -2052,6 +2066,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         )
         const requeueItemUsesFrom = (start: number) =>
           Ref.update(state.pendingItemUses, (pending) => [...itemUses.slice(start), ...pending])
+        const requeueItemUse = (request: ItemUseRequest) =>
+          Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
         const bowShots = yield* Ref.getAndSet<ReadonlyArray<BowShotRequest>>(
           state.pendingBowShots,
           [],
@@ -2452,11 +2468,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 const reading = observed.success.blocks[0]?.reading
-                const blockType = reading?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(reading.block))
-                  : undefined
+                const blockType = itemUseBlockTypeAt(position, reading)
+                if (Result.isFailure(blockType)) {
+                  yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', blockType.failure)
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
                 const outcome = yield* applyBoneMeal(
-                  () => Effect.succeed(blockType),
+                  () => Effect.succeed(blockType.success),
                   position,
                 )
                 if (outcome._tag !== 'applied') {
@@ -2497,7 +2516,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseRequests
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
-                if (crop === undefined || crop.crop !== blockType) {
+                if (crop === undefined || crop.crop !== blockType.success) {
                   itemUseResults.push({
                     action: request.action,
                     requestId: request.requestId,
@@ -2507,7 +2526,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     outcome: {
                       _tag: 'cropOwnerMismatch',
                       at: position,
-                      block: blockType,
+                      block: blockType.success,
                       registeredCrop: crop?.crop,
                     },
                   })
@@ -2583,12 +2602,19 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const groundRead = observed.success.blocks[0]?.reading
                 const aboveRead = observed.success.blocks[1]?.reading
-                const groundBlock = groundRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(groundRead.block)) ?? 'air'
-                  : 'air'
-                const aboveBlock = aboveRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(aboveRead.block)) ?? 'air'
-                  : 'air'
+                const groundBlockResult = itemUseBlockTypeAt(ground, groundRead)
+                const aboveBlockResult = itemUseBlockTypeAt(above, aboveRead)
+                for (const blockResult of [groundBlockResult, aboveBlockResult]) {
+                  if (Result.isFailure(blockResult)) {
+                    yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', blockResult.failure)
+                  }
+                }
+                if (Result.isFailure(groundBlockResult) || Result.isFailure(aboveBlockResult)) {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
+                const groundBlock = groundBlockResult.success === undefined ? 'air' : groundBlockResult.success
+                const aboveBlock = aboveBlockResult.success === undefined ? 'air' : aboveBlockResult.success
                 const candidate = candidateForPlayerStorageItemUse(
                   commit.playerStorageOwnerId,
                   observed.success.state,
@@ -2712,12 +2738,19 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const soilRead = observed.success.blocks[0]?.reading
                 const aboveRead = observed.success.blocks[1]?.reading
-                const soilBlock = soilRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(soilRead.block)) ?? 'air'
-                  : 'air'
-                const aboveBlock = aboveRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(aboveRead.block)) ?? 'air'
-                  : 'air'
+                const soilBlockResult = itemUseBlockTypeAt(soil, soilRead)
+                const aboveBlockResult = itemUseBlockTypeAt(above, aboveRead)
+                for (const blockResult of [soilBlockResult, aboveBlockResult]) {
+                  if (Result.isFailure(blockResult)) {
+                    yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', blockResult.failure)
+                  }
+                }
+                if (Result.isFailure(soilBlockResult) || Result.isFailure(aboveBlockResult)) {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
+                const soilBlock = soilBlockResult.success === undefined ? 'air' : soilBlockResult.success
+                const aboveBlock = aboveBlockResult.success === undefined ? 'air' : aboveBlockResult.success
                 const candidate = candidateForPlayerStorageItemUse(
                   commit.playerStorageOwnerId,
                   observed.success.state,
@@ -2845,9 +2878,13 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 const reading = observed.success.blocks[0]?.reading
-                const cropType = reading?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(reading.block)) ?? 'air'
-                  : 'air'
+                const cropTypeResult = itemUseBlockTypeAt(position, reading)
+                if (Result.isFailure(cropTypeResult)) {
+                  yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', cropTypeResult.failure)
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
+                const cropType = cropTypeResult.success === undefined ? 'air' : cropTypeResult.success
                 if (crop === undefined || crop.crop !== cropType) {
                   const outcome = crop === undefined && !isCropType(cropType)
                     ? cropDrops(cropType, false, request.roll)
