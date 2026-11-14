@@ -261,8 +261,8 @@ import { FrameServicesLayer } from './support/frame-services'
 
 const drawRolls = (...args: Parameters<typeof drawRollsResult>) => Result.getOrThrow(drawRollsResult(...args))
 const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
-const explosionDamageAmount = (...args: Parameters<typeof explosionDamageAmountResult>) =>
-  Result.getOrThrow(explosionDamageAmountResult(...args))
+const explosionDamageAmount = (power: number, distanceToCentre: number) =>
+  Result.getOrThrow(explosionDamageAmountResult(power, distanceToCentre))
 
 // ---------------------------------------------------------------------------
 // The column under test. Chunk (0, 0), which is the only resident one unless a

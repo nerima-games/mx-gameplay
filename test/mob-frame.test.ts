@@ -77,7 +77,10 @@ import {
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
 import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import {
+  CREEPER_EXPLOSION_POWER,
+  explosionDamageAmount as explosionDamageAmountResult,
+} from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { isPrimedTnt } from '../src/domain/mob/primed-tnt'
 import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
@@ -93,6 +96,14 @@ const rollCasualtyDrops = (...args: Parameters<typeof rollCasualtyDropsResult>) 
 
 const rollCasualtyExperience = (...args: Parameters<typeof rollCasualtyExperienceResult>) =>
   Result.getOrThrow(rollCasualtyExperienceResult(...args))
+
+const explosionDamageAmount = (
+  ...args: [power: number, distanceToCentre: number] | [power: number, distanceToCentre: number, exposure: number]
+) => Result.getOrThrow(
+  args.length === 2
+    ? explosionDamageAmountResult(args[0], args[1])
+    : explosionDamageAmountResult(args[0], args[1], args[2]),
+)
 
 const blockTypeControl = vi.hoisted(() => ({ mode: 'native' as 'native' | 'failure' | 'missing' }))
 

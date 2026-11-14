@@ -7,7 +7,11 @@ import {
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
   WorldCommitCoordinator,
+  type EntitySerialExhausted,
   type InventoryServiceApi,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
   type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
 import {
@@ -23,9 +27,10 @@ import {
   blockIndex,
   type ChunkBiomeType,
   type ChunkStoreApi,
+  type ChunkStoreError,
 } from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Schema } from 'effect'
-import { makeInMemoryWorld } from '../../src/domain/in-memory-world.js'
+import { makeInMemoryWorld, type WorldInputFailure } from '../../src/domain/in-memory-world.js'
 import {
   GAMEPLAY_BREWING_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
@@ -68,7 +73,15 @@ export const injectRawBlockId = (
 export const makeTransactionalChunkStoreDouble = (
   initial: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string>,
-): Effect.Effect<ChunkStoreDouble> =>
+): Effect.Effect<
+  ChunkStoreDouble,
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+  | ChunkStoreError
+> =>
   Effect.gen(function* () {
     const world = yield* makeInMemoryWorld({
       world: { blocks: initial, loaded: new Set(loaded) },

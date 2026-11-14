@@ -455,7 +455,7 @@ describe('C2 melee preparation', () => {
     expect(meleeTarget([zombie], { ...request, hitDistance: -1 })).toStrictEqual(invalid)
     expect(meleeTarget([zombie], { ...request, hitDistance: Number.NaN })).toStrictEqual(invalid)
     expect(meleeTarget([zombie], { ...request, hitDistance: Number.POSITIVE_INFINITY })).toStrictEqual(invalid)
-    expect(meleeTarget([zombie], { ...request, hitDistance: undefined } as MeleeAttackRequest)).toStrictEqual(invalid)
+    expect(meleeTarget([zombie], { ...request, hitDistance: undefined } as unknown as MeleeAttackRequest)).toStrictEqual(invalid)
     expect(meleeTarget([], request)).toStrictEqual(Result.succeed(undefined))
     expect(prepareMeleeAttack(intent, { ...input, blockDistance: undefined } as never)).toStrictEqual(invalid)
   })

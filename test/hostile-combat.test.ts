@@ -30,10 +30,21 @@ import {
   type HostileLocomotion,
 } from '../src/domain/mob/hostile-combat'
 
-const pursueHorizontally = (...args: Parameters<typeof pursueHorizontallyResult>) =>
-  Result.getOrThrow(pursueHorizontallyResult(...args))
-const resolvePlayerBlastDamage = (...args: Parameters<typeof resolvePlayerBlastDamageResult>) =>
-  Result.getOrThrow(resolvePlayerBlastDamageResult(...args))
+const pursueHorizontally = (
+  from: Parameters<typeof pursueHorizontallyResult>[0],
+  target: Parameters<typeof pursueHorizontallyResult>[1],
+  dt: Parameters<typeof pursueHorizontallyResult>[2],
+  locomotion: Parameters<typeof pursueHorizontallyResult>[3],
+) => Result.getOrThrow(pursueHorizontallyResult(from, target, dt, locomotion))
+const resolvePlayerBlastDamage = (
+  blasts: Parameters<typeof resolvePlayerBlastDamageResult>[0],
+  target: Parameters<typeof resolvePlayerBlastDamageResult>[1],
+  ...difficultyInput: [] | [NonNullable<Parameters<typeof resolvePlayerBlastDamageResult>[2]>]
+) => Result.getOrThrow(
+  difficultyInput.length === 0
+    ? resolvePlayerBlastDamageResult(blasts, target)
+    : resolvePlayerBlastDamageResult(blasts, target, difficultyInput[0]),
+)
 
 const SHIELD_FIXTURE = {
   source: 'https://minecraft.wiki/w/Shield',

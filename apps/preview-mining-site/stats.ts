@@ -39,10 +39,8 @@ import {
   DEATH_MESSAGES,
   deathMessage,
   fullHealth,
-  isDead,
   MAX_HEALTH_POINTS,
   type DeathCause,
-  type Vitals,
 } from '../../src/domain/death-cause'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import {
@@ -95,7 +93,7 @@ import {
   type WorldSpec,
 } from './world'
 import { blockLoot, type BlockLootFailure } from '../../src/domain/interactions/block-loot'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
+import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
   INITIAL_WEATHER,
@@ -617,6 +615,14 @@ const lavaRetentionOverlap = Effect.sync((): Check => {
     { key: opaqueTestKey('l2'), kind: 'lava' },
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+  if (Result.isFailure(split)) {
+    return {
+      id: 'F2-budget',
+      title: 'carryOver is the only next-tick owner of inactive lava',
+      finding: true,
+      lines: [`  splitBudget rejected its fixture: ${JSON.stringify(split.failure)}`],
+    } satisfies Check
+  }
   const carried = carryOver(frontier, split)
   const splitKeys = Object.keys(split)
   const onlyWork = splitKeys.length === 1 && splitKeys[0] === 'work'
@@ -658,6 +664,14 @@ const carryOverKeyCollision = Effect.sync((): Check => {
     { key: opaqueTestKey('11,64,10'), kind: 'water' },
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+  if (Result.isFailure(split)) {
+    return {
+      id: 'F3-budget',
+      title: 'carryOver preserves an unevaluated cell when two kinds share a position',
+      finding: true,
+      lines: [`  splitBudget rejected its fixture: ${JSON.stringify(split.failure)}`],
+    } satisfies Check
+  }
   const carried = carryOver(frontier, split)
 
   const evaluated = split.work
@@ -736,7 +750,7 @@ const fluidFrontierRace = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 /**
- * Non-finite damage is ignored before it reaches the vital-state arithmetic.
+ * Non-finite damage is rejected before it reaches vital-state arithmetic.
  *
  * `Damage.amount` remains a bare `number` at the public boundary, so the rule
  * explicitly rejects non-finite input. That preserves total API behaviour
@@ -746,35 +760,35 @@ const fluidFrontierRace = Effect.gen(function* () {
  * make an otherwise healthy player immortal.
  */
 const nonFiniteDamage = Effect.sync((): Check => {
-  const struck = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
-  const again = applyDamage(struck, { amount: 1000, cause: 'void' })
-  const andAgain = applyDamage(again, { amount: 1000, cause: 'explosion' })
-
-  const infinite = applyDamage(fullHealth, { amount: Number.POSITIVE_INFINITY, cause: 'fall' })
-  const negativeInfinite = applyDamage(fullHealth, { amount: Number.NEGATIVE_INFINITY, cause: 'fall' })
-
-  const show = (vitals: Vitals): string =>
-    `health=${Number.isFinite(vitals.healthPoints) ? String(vitals.healthPoints) : String(vitals.healthPoints)} ` +
-    `isDead=${String(isDead(vitals))} message=${String(deathMessage(vitals))}`
-
-  const immortal = !Number.isFinite(struck.healthPoints) && !isDead(andAgain)
+  const invalidAmounts = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]
+  const rejected = invalidAmounts.map((amount) => applyDamage(fullHealth, { amount, cause: 'lava' }))
+  const killed = applyDamage(fullHealth, { amount: 1000, cause: 'void' })
+  const message = Result.isSuccess(killed) ? deathMessage(killed.success) : undefined
+  const invalidAccepted = rejected.filter(Result.isSuccess).length
+  const validFailure = Result.isFailure(killed) || (message !== undefined && Result.isFailure(message))
+  const missingExpectedFailure = rejected.filter((result) =>
+    Result.isFailure(result) &&
+    result.failure._tag === 'InvalidDamageApplicationInput' &&
+    result.failure.field === 'damage.amount',
+  ).length
+  const expectedFailures = invalidAmounts.length
+  const killedNormally = Result.isSuccess(killed) && killed.success.healthPoints === 0 &&
+    message !== undefined && Result.isSuccess(message) && message.success === DEATH_MESSAGES.void
+  const finding = invalidAccepted > 0 || missingExpectedFailure !== expectedFailures || validFailure || !killedNormally
 
   return {
-    id: immortal ? 'F5' : 'ok',
-    title: 'non-finite damage is ignored before it can corrupt player vitals',
-    finding: immortal,
+    id: finding ? 'F5' : 'ok',
+    title: 'non-finite damage is rejected with typed input failures',
+    finding,
     lines: [
-      `  applyDamage(full, {amount: NaN, cause: 'lava'})      ${show(struck)}`,
-      `  then {amount: 1000, cause: 'void'}                   ${show(again)}`,
-      `  then {amount: 1000, cause: 'explosion'}              ${show(andAgain)}`,
-      `  applyDamage(full, {amount: Infinity})                ${show(infinite)}`,
-      `  applyDamage(full, {amount: -Infinity})               ${show(negativeInfinite)}`,
+      ...invalidAmounts.map((amount, index) => {
+        const result = rejected[index]
+        return `  applyDamage(full, amount=${String(amount)}): ${result === undefined ? 'missing result' : Result.isFailure(result) ? JSON.stringify(result.failure) : `accepted health=${String(result.success.healthPoints)}`}`
+      }),
+      `  finite lethal damage: ${Result.isFailure(killed) ? JSON.stringify(killed.failure) : `health=${String(killed.success.healthPoints)}`}`,
+      `  death message: ${message === undefined ? 'not available after failed damage' : Result.isFailure(message) ? JSON.stringify(message.failure) : String(message.success)}`,
       '',
-      '  `applyDamage` rejects non-finite values before health arithmetic, so a later finite',
-      '  damage amount remains able to kill and produce its normal death message.',
-      '',
-      '  All three non-finite values are ignored; finite negative, zero, and positive values',
-      '  retain their existing semantics.',
+      '  A malformed amount remains distinct from valid damage and cannot poison stored vitals.',
     ],
   } satisfies Check
 })
@@ -784,19 +798,25 @@ const causesDistinct = Effect.sync((): Check => {
   const causes = Object.keys(DEATH_MESSAGES) as ReadonlyArray<DeathCause>
   const resolved = causes.map((cause) => {
     const dead = applyDamage(fullHealth, { amount: 999, cause })
-    return { cause, message: deathMessage(dead) }
+    if (Result.isFailure(dead)) return { cause, failure: dead.failure, message: undefined }
+    const message = deathMessage(dead.success)
+    return Result.isFailure(message)
+      ? { cause, failure: message.failure, message: undefined }
+      : { cause, failure: undefined, message: message.success }
   })
   const generic = resolved.filter((entry) => entry.cause !== 'generic' && entry.message === DEATH_MESSAGES.generic)
-  const distinct = new Set(resolved.map((entry) => entry.message)).size
+  const failures = resolved.filter((entry) => entry.failure !== undefined)
+  const distinct = new Set(resolved.flatMap((entry) => entry.message === undefined ? [] : [entry.message])).size
 
   return {
-    id: generic.length === 0 ? 'ok' : 'F-cause',
+    id: failures.length > 0 ? 'F-cause-input' : generic.length === 0 ? 'ok' : 'F-cause',
     title: 'every cause survives applyDamage and reaches its own sentence (DN-GP-3)',
-    finding: generic.length > 0,
+    finding: failures.length > 0 || generic.length > 0,
     lines: [
       `  causes                       ${String(causes.length)}`,
       `  distinct death messages      ${String(distinct)}`,
       `  collapsed to "You died."     ${String(generic.length)}`,
+      ...failures.map((entry) => `  ${entry.cause} typed failure: ${JSON.stringify(entry.failure)}`),
     ],
   } satisfies Check
 })
@@ -819,17 +839,25 @@ const dayNightPeriodicity = Effect.sync((): Check => {
   const samples = [0.0, 0.1, 0.25, 0.3, 0.5, 0.7, 0.75, 0.9, 0.99]
   const rows: Array<string> = [`  ${pad('t', 8)}${pad('t (phase)', 12)}${pad('t+1', 12)}${pad('t-1', 12)}agrees`]
   let disagreements = 0
+  let ruleFailures = 0
+  const show = <A, E>(result: Result.Result<A, E>): string =>
+    Result.isFailure(result) ? `failure ${JSON.stringify(result.failure)}` : String(result.success)
 
   for (const t of samples) {
     const here = dayPhase(t)
     const tomorrow = dayPhase(t + 1)
     const yesterday = dayPhase(t - 1)
-    const agrees = here === tomorrow && here === yesterday
+    if (Result.isFailure(here) || Result.isFailure(tomorrow) || Result.isFailure(yesterday)) {
+      ruleFailures += 1
+      rows.push(`  ${pad(t.toFixed(2), 8)}${pad(show(here), 12)}${pad(show(tomorrow), 12)}${pad(show(yesterday), 12)}failure`)
+      continue
+    }
+    const agrees = here.success === tomorrow.success && here.success === yesterday.success
     if (!agrees) {
       disagreements += 1
     }
     rows.push(
-      `  ${pad(t.toFixed(2), 8)}${pad(here, 12)}${pad(tomorrow, 12)}${pad(yesterday, 12)}${String(agrees)}`,
+      `  ${pad(t.toFixed(2), 8)}${pad(here.success, 12)}${pad(tomorrow.success, 12)}${pad(yesterday.success, 12)}${String(agrees)}`,
     )
   }
 
@@ -838,29 +866,43 @@ const dayNightPeriodicity = Effect.sync((): Check => {
   for (let step = 0; step < 1000; step += 1) {
     for (const dayOffset of [-2, -1, 0, 1, 2]) {
       const t = step / 1000 + dayOffset
-      if (isNight(t) !== (dayPhase(t) === 'night')) {
+      const night = isNight(t)
+      const phase = dayPhase(t)
+      const hostiles = hostileSpawnsAllowed(t)
+      if (Result.isFailure(night) || Result.isFailure(phase) || Result.isFailure(hostiles)) {
+        ruleFailures += 1
+        continue
+      }
+      if (night.success !== (phase.success === 'night')) {
         inconsistent += 1
       }
-      if (hostileSpawnsAllowed(t) !== isNight(t)) {
+      if (hostiles.success !== night.success) {
         inconsistent += 1
       }
     }
   }
 
+  const midday = dayPhase(1.5)
+  const dusk = dayPhase(-0.25)
+  if (Result.isFailure(midday)) ruleFailures += 1
+  if (Result.isFailure(dusk)) ruleFailures += 1
+  const finding = disagreements > 0 || inconsistent > 0 || ruleFailures > 0
+
   return {
-    id: disagreements > 0 ? 'F6' : 'ok',
+    id: ruleFailures > 0 ? 'F6-input' : finding ? 'F6' : 'ok',
     title: 'dayPhase / isNight / hostileSpawnsAllowed are periodic in the day',
-    finding: disagreements > 0,
+    finding,
     lines: [
       ...rows,
       '',
       `  disagreements over ${String(samples.length)} samples: ${String(disagreements)}`,
       `  across whole-day offsets, isNight and dayPhase agree at all 5000 sample points ` +
         `(${String(inconsistent)} disagreements)`,
+      `  typed rule failures: ${String(ruleFailures)}`,
       '',
       '  out-of-range finite values resolve to their matching phase:',
-      `    dayPhase(1.5)  = ${dayPhase(1.5)}    (1.5 mod 1 = 0.5, which is noon)`,
-      `    dayPhase(-0.25)= ${dayPhase(-0.25)}    (-0.25 mod 1 = 0.75, which is dusk)`,
+      `    dayPhase(1.5)  = ${show(midday)}    (1.5 mod 1 = 0.5, which is noon)`,
+      `    dayPhase(-0.25)= ${show(dusk)}    (-0.25 mod 1 = 0.75, which is dusk)`,
       `    (-0.3) % 1 in JS = ${String((-0.3) % 1)} — the sign survives the modulo`,
       '',
       '  mx-sim owns the persistent clock. mx-gameplay only canonicalises the finite value',
@@ -953,7 +995,8 @@ const creeperEndToEnd = Effect.sync((): Check => {
   }
 
   const message = deathMessage(state.vitals)
-  const collapsed = message === DEATH_MESSAGES.generic
+  const messageValue = Result.isFailure(message) ? undefined : message.success
+  const collapsed = messageValue === DEATH_MESSAGES.generic
   const lootAfterSelfDestruct = state.loot.length
 
   // ...and the other death: killed by the player before the fuse ends.
@@ -962,18 +1005,24 @@ const creeperEndToEnd = Effect.sync((): Check => {
   killed.lootingLevel = 2
   slayCreeper(killed)
 
+  const typedFailure = Result.isFailure(message) ||
+    state.note.includes('rejected:') ||
+    killed.note.includes('rejected:')
+  const finding = typedFailure || collapsed || lootAfterSelfDestruct > 0
+
   return {
-    id: collapsed || lootAfterSelfDestruct > 0 ? 'F-creeper' : 'ok',
+    id: typedFailure ? 'F-creeper-input' : collapsed || lootAfterSelfDestruct > 0 ? 'F-creeper' : 'ok',
     title: 'spawn -> fuse -> blast -> death cause -> drop, every number measured',
-    finding: collapsed || lootAfterSelfDestruct > 0,
+    finding,
     lines: [
       `  spawn verdict                 ${String(state.verdict?._tag)}`,
+      `  spawn note                    ${state.note}`,
       `  distance when it went off     ${state.creeper?.distanceBlocks.toFixed(2) ?? '-'} blocks`,
       `  steps of ${String(ARENA_STEP_SECS)}s               ${String(steps)}`,
       `  fuse trace                    ${trace.join(' ')}`,
       `  health                        ${String(MAX_HEALTH_POINTS)} -> ${String(state.vitals.healthPoints)}`,
       `  lastDeathCause                ${String(state.vitals.lastDeathCause)}`,
-      `  deathMessage()                ${String(message)}`,
+      `  deathMessage()                ${Result.isFailure(message) ? JSON.stringify(message.failure) : String(message.success)}`,
       `  collapsed to "You died."      ${String(collapsed)}   <- DN-GP-3`,
       '',
       `  loot after SELF-DESTRUCT      ${lootAfterSelfDestruct} item(s), xp ${String(state.xp)}`,
@@ -1003,6 +1052,7 @@ const spawnGate = Effect.sync((): Check => {
   ]
   let daylightAccepted = 0
   let canopyAccepted = 0
+  const invalidInputs: Array<string> = []
 
   for (const [block, name] of grounds) {
     const cells: Array<string> = []
@@ -1020,7 +1070,12 @@ const spawnGate = Effect.sync((): Check => {
       if (verdict._tag === 'Spawn' && (block === 10 || block === 13)) {
         canopyAccepted += 1
       }
-      cells.push(pad(verdict._tag === 'Spawn' ? 'yes' : verdict.reason.slice(0, 5), 6))
+      if (verdict._tag === 'InvalidDayNightInput' || verdict._tag === 'InvalidSpawnCandidate') {
+        invalidInputs.push(JSON.stringify(verdict))
+        cells.push(pad('input!', 6))
+      } else {
+        cells.push(pad(verdict._tag === 'Spawn' ? 'yes' : verdict.reason.slice(0, 5), 6))
+      }
     }
     lines.push(`  ${pad(name, 18)}${cells.join('')}`)
   }
@@ -1038,18 +1093,22 @@ const spawnGate = Effect.sync((): Check => {
     })
     if (verdict._tag === 'Spawn') {
       daylightAccepted += 1
+    } else if (verdict._tag === 'InvalidDayNightInput' || verdict._tag === 'InvalidSpawnCandidate') {
+      invalidInputs.push(JSON.stringify(verdict))
     }
   }
 
   lines.push('')
   lines.push(`  noon (0.50), stone, every light level: accepted ${String(daylightAccepted)} of ${String(lights.length)}`)
+  lines.push(`  typed candidate failures: ${String(invalidInputs.length)}`)
+  lines.push(...invalidInputs.map((failure) => `    ${failure}`))
   lines.push('  leaves and glass are SOLID FOR COLLISION and are still not ground — kernel`s audit')
   lines.push('  §4.9 keeps `validSpawnSurface` separate from solidity for exactly this row.')
 
   return {
-    id: daylightAccepted === 0 && canopyAccepted === 0 ? 'ok' : 'F-spawn',
+    id: invalidInputs.length > 0 ? 'F-spawn-input' : daylightAccepted === 0 && canopyAccepted === 0 ? 'ok' : 'F-spawn',
     title: 'the spawn gate refuses daylight, brightness and the canopy',
-    finding: daylightAccepted > 0 || canopyAccepted > 0,
+    finding: invalidInputs.length > 0 || daylightAccepted > 0 || canopyAccepted > 0,
     lines,
   } satisfies Check
 })
@@ -1238,6 +1297,7 @@ const weatherWalk = Effect.sync(() => {
   let state = INITIAL_WEATHER
   let seed = DEFAULT_ROLL_SEED
   const stretches: Array<string> = []
+  const failures: Array<string> = []
   let elapsed = 0
 
   // Twelve stretches, jumping straight to each expiry. Long enough to visit
@@ -1246,11 +1306,30 @@ const weatherWalk = Effect.sync(() => {
     elapsed += state.remainingSecs
     stretches.push(`${state.weather}(${state.remainingSecs.toFixed(0)}s)`)
     const batch = drawRolls(seed, WEATHER_TRANSITION_ROLLS)
-    seed = batch.seed
-    state = advanceWeather({ weather: state.weather, remainingSecs: 0 }, 0, {
-      transition: batch.rolls[0] ?? 0,
-      duration: batch.rolls[1] ?? 0,
+    if (Result.isFailure(batch)) {
+      failures.push(`drawRolls: ${JSON.stringify(batch.failure)}`)
+      break
+    }
+    const transition = rollAt(batch.success, 0)
+    const duration = rollAt(batch.success, 1)
+    if (Result.isFailure(transition)) {
+      failures.push(`rollAt transition: ${JSON.stringify(transition.failure)}`)
+      break
+    }
+    if (Result.isFailure(duration)) {
+      failures.push(`rollAt duration: ${JSON.stringify(duration.failure)}`)
+      break
+    }
+    const next = advanceWeather({ weather: state.weather, remainingSecs: 0 }, 0, {
+      transition: transition.success,
+      duration: duration.success,
     })
+    if (Result.isFailure(next)) {
+      failures.push(`advanceWeather: ${JSON.stringify(next.failure)}`)
+      break
+    }
+    seed = batch.success.seed
+    state = next.success
   }
 
   lines.push(`  ${stretches.slice(0, 6).join(' -> ')}`)
@@ -1274,12 +1353,13 @@ const weatherWalk = Effect.sync(() => {
   const repeated = stretches.filter(
     (entry, index) => index > 0 && entry.split('(')[0] === stretches[index - 1]?.split('(')[0],
   ).length
+  const finding = failures.length > 0 || repeated > 0
 
   return {
-    id: repeated === 0 ? 'ok' : 'F-weather',
+    id: failures.length > 0 ? 'F-weather-input' : repeated === 0 ? 'ok' : 'F-weather',
     title: 'weather walks its own transition graph from a seed, and replays identically',
-    finding: repeated > 0,
-    lines,
+    finding,
+    lines: [...lines, ...failures.map((failure) => `  typed transition failure: ${failure}`)],
   } satisfies Check
 })
 

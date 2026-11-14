@@ -36,6 +36,7 @@ import {
   makeReplicatedSurvivalHungerRuntime,
   starvationHealthFloor,
   type SurvivalDifficulty,
+  type SurvivalActivityInputFailure,
 } from '../src/domain/survival-hunger'
 import {
   ExperienceOrbVitalsOwnerSnapshotSchema,
@@ -550,7 +551,7 @@ describe('survival hunger', () => {
         owners: [vitalsOwnerRegistration(REPLICATED_VITALS_OWNER, { vitals: SPAWN_PLAYER_VITALS })],
       })
       let concurrentCommitPending = true
-      let beforeNextCommit: Effect.Effect<void> = Effect.void
+      let beforeNextCommit: Effect.Effect<void, SurvivalActivityInputFailure> = Effect.void
       const racingCoordinator: WorldCommitCoordinatorApi = {
         ...coordinator,
         commit: (...args) => Effect.gen(function* () {

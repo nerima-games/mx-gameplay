@@ -7,7 +7,11 @@ import {
   PlayerStorageSnapshotSchema,
   WorldCommitCoordinatorErrorSchema,
   WorldRevisionConflict,
+  type EntitySerialExhausted,
   type InventoryServiceApi,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
   type PlayerStorage,
   type ReplicatedOwnerId,
   type Slot,
@@ -28,7 +32,7 @@ import {
   type BlockPositionKey,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
-import type { ChunkStoreRegistryApi } from '@nerima-games/mc-worldgen'
+import type { ChunkStoreError, ChunkStoreRegistryApi } from '@nerima-games/mc-worldgen'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
@@ -46,6 +50,7 @@ import {
   chunkKey,
   chunkOf,
   type InMemoryWorld,
+  type WorldInputFailure,
 } from '../src/domain/in-memory-world'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { makeChunkStoreDouble, world as sparseWorld } from './support/chunk-store-double'
@@ -94,7 +99,16 @@ const makeBucketHarness = (
   block: BlockId | undefined,
   loaded: boolean,
   slots: ReadonlyArray<Slot>,
-): Effect.Effect<BucketHarness, WorldCommitCoordinatorError> =>
+): Effect.Effect<
+  BucketHarness,
+  | WorldCommitCoordinatorError
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+  | ChunkStoreError
+> =>
   Effect.gen(function* () {
     const initialBlocks =
       block === undefined ? new Map<string, BlockId>() : new Map([[cellKey(POSITION), block]])

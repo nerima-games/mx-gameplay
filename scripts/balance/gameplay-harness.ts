@@ -24,6 +24,7 @@ import {
   blockIndex,
   generatedChunkSource,
   surfaceHeightAt,
+  type ChunkStoreError,
   type ChunkSource,
 } from '@nerima-games/mc-worldgen'
 import {
@@ -34,6 +35,10 @@ import {
   type PlayerServiceInputError,
   type WorldCommitCoordinatorError,
   type PlayerPose,
+  type EntitySerialExhausted,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
 } from '@nerima-games/mc-sim'
 import {
   HeadlessHarness,
@@ -49,6 +54,7 @@ import {
   makeGeneratedWorld as makeGameplayGeneratedWorld,
   makeInMemoryWorld,
   type InMemoryWorld,
+  type WorldInputFailure,
   type WorldContents,
 } from '../../src/domain/in-memory-world.js'
 import {
@@ -66,6 +72,7 @@ import {
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   gameplayOwnerRegistrations,
+  type GameplayOwnerRegistrationFailure,
 } from '../../src/stages/gameplay-owner-registrations.js'
 import {
   gameplayStages,
@@ -127,11 +134,23 @@ export type BalanceRecordedDamage = Readonly<{
   attacker?: BalanceAttackerProvenance
 }>
 
+type WorldBuildFailure =
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+
+type InMemoryWorldBuildFailure = WorldBuildFailure | ChunkStoreError
+
 export const makeBalanceGameplayRuntime = (
   contents: WorldContents,
   spawnPose?: PlayerPose,
   rollSeed = 1,
-): Effect.Effect<BalanceGameplayRuntime> => Effect.gen(function* () {
+): Effect.Effect<
+  BalanceGameplayRuntime,
+  InMemoryWorldBuildFailure | GameplayOwnerRegistrationFailure
+> => Effect.gen(function* () {
   const world = yield* makeInMemoryWorld<MobBehaviour>({
     world: contents,
     ...(spawnPose === undefined ? {} : { spawnPose }),
@@ -144,7 +163,10 @@ export const makeGeneratedBalanceGameplayRuntime = (
   spawn: Readonly<{ x: number; z: number }>,
   rollSeed: number = seed,
   options: Readonly<{ flatHostileSpawnSurface?: boolean }> = {},
-): Effect.Effect<BalanceGameplayRuntime> => Effect.gen(function* () {
+): Effect.Effect<
+  BalanceGameplayRuntime,
+  WorldBuildFailure | GameplayOwnerRegistrationFailure
+> => Effect.gen(function* () {
   const chunkSource = options.flatHostileSpawnSurface === true
     ? yield* makeFlatHostileSpawnChunkSource(seed, spawn)
     : undefined
@@ -191,14 +213,20 @@ const makeFlatHostileSpawnChunkSource = (
 const makeRuntimeFromWorld = (
   world: InMemoryWorld<MobBehaviour>,
   rollSeed: number,
-): Effect.Effect<BalanceGameplayRuntime> => Effect.gen(function* () {
+): Effect.Effect<BalanceGameplayRuntime, GameplayOwnerRegistrationFailure> => Effect.gen(function* () {
   const playerPose = yield* world.player.pose
   const dimension = yield* world.player.dimension
   const playerStorage = yield* world.inventory.storageSnapshot
   const entities = yield* world.entities.snapshot
+  const owners = yield* Effect.fromResult(gameplayOwnerRegistrations({
+    playerPose,
+    dimension,
+    playerStorage,
+    entities,
+  }))
   const coordinator = yield* Effect.orDie(makeWorldCommitCoordinator({
     world: WORLD_ID,
-    owners: gameplayOwnerRegistrations({ playerPose, dimension, playerStorage, entities }),
+    owners,
     chunkStores: { forDimension: () => world.chunkStore },
   }))
   const commit: GameplayStageCommitServices = {

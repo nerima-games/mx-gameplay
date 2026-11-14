@@ -48,7 +48,10 @@ const positionKey = Brand.nominal<BlockPositionKey>()
 const splitWithBudget = (
   frontier: ReadonlyArray<FluidWorkItem>,
   options: { readonly budget: number; readonly lavaTickActive: boolean },
-) => Result.getOrThrow(splitBudget(frontier, options))
+) => Result.getOrThrow(splitBudget(frontier, {
+  budget: options.budget,
+  lavaTickActive: options.lavaTickActive,
+}))
 
 const applyDamage = (
   ...args: Parameters<typeof applyDamageResult>
