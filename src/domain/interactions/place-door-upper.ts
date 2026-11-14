@@ -1,6 +1,6 @@
 /**
- * ONE RULE, ONE FILE (DN-GP-9): a door is two cells tall, so the cell above the
- * one being placed into must be empty and becomes the door's upper half.
+ * ONE RULE, ONE FILE (DN-GP-9): a door is two cells tall, so placement requires
+ * an empty cell above the cell being placed into.
  *
  * The fourth of the four per-block placement rules `./place-block`'s header
  * defers by name, and the ONLY one of the four that anything can reach today:
@@ -9,19 +9,14 @@
  * header records why the other three are written anyway.
  *
  * ---------------------------------------------------------------------------
- * THIS IS THE ONE THAT WRITES A SECOND BLOCK, AND THAT IS WHY IT IS DIFFERENT
+ * THIS IS THE ONE THAT CHECKS A SECOND CELL, AND THAT IS WHY IT IS DIFFERENT
  * ---------------------------------------------------------------------------
  *
- * Its three siblings answer a question and refuse. This one refuses AND, when it
- * does not, hands back a cell that `./place-block` must also write — which is
- * the reference's shape too: `applyDoorPlacementRule` is the only member of
- * `PLACEMENT_RULES` that returns a longer `placedBlocks` array
- * (`block-service-place-plan.ts`'s `buildDoorPlacedBlocks`).
- *
- * The cell is RETURNED rather than written here, and that is the same discipline
- * `./explosion-crater` states about the falling-block queue: a rule that reached
- * past its caller to write would be a second writer of the store within one
- * placement, and the caller could no longer report what it did in one answer.
+ * This rule checks that the upper cell is empty and preserves the specific
+ * `NoRoomAbove` refusal. A clear upper cell does not authorize an ID-only write
+ * for a stateful door: the chunk-store port cannot persist its half, facing, or
+ * hinge. The placement caller therefore reports typed state-write failure without
+ * writing either cell.
  *
  * ---------------------------------------------------------------------------
  * AIR, AND NOT REPLACEABLE — THE SAME CALL `./ignite-fire` MAKES
@@ -36,10 +31,10 @@
  * WHAT THIS RULE DOES NOT DO
  * ---------------------------------------------------------------------------
  *
- * OPEN OR CLOSE. `door_open` is a separate row in kernel's registry and toggling
- * between the two is an item-free interaction — a right-click on a block, not on
- * a cell with an item in hand. It is another rule and it would be another file;
- * nothing routes a bare right-click to the rules yet, so it would have no caller.
+ * OPEN OR CLOSE. `door_open` is a separate row in kernel's registry. Toggling
+ * between the two is handled by the `ToggleDoor` rule in
+ * `./block-state-rules`; `../stages/interactions-stage` routes targeted block
+ * use there. This placement rule only checks headroom.
  *
  * HINGE SIDE, OR WHICH WAY IT FACES. Both are block STATE, and kernel's registry
  * carries one row per door rather than per orientation. That is a kernel
@@ -74,16 +69,15 @@ export const isDoorBlock = (block: BlockId): boolean => Result.getOrUndefined(bl
 /**
  * What the cell above says about a door placement.
  *
- * THREE ARMS AND NOT A BOOLEAN, because the affirmative answer carries something
- * — the cell to write — and a `boolean` would make the caller recompute it. The
- * `NotADoor` arm is what every other block gets and is why this can be asked
- * unconditionally.
+ * THREE ARMS AND NOT A BOOLEAN preserve whether this was not a door, had no
+ * available upper cell, or had clear headroom. The `NotADoor` arm is what every
+ * other block gets and is why this can be asked unconditionally.
  */
 export type DoorUpperCell =
   /** Not a door. Nothing was read and nothing more is required. */
   | { readonly _tag: 'NotADoor' }
-  /** A door, and the cell above is free. Write it too. */
-  | { readonly _tag: 'Clear'; readonly cell: BlockPosition }
+  /** A door, and the cell above is free. */
+  | { readonly _tag: 'Clear' }
   /** A door with something in the way above, or with no world above. */
   | { readonly _tag: 'NoRoomAbove' }
 
@@ -95,10 +89,9 @@ export type DoorUpperCell =
  * `ChunkNotLoaded` and `OutOfWorld` both answer `NoRoomAbove` rather than being
  * reported apart, and that is a deliberate flattening rather than an oversight:
  * this rule's caller already distinguishes those two for the cell it is placing
- * INTO, and a door at the build limit and a door at the edge of the loaded area
- * are refused for the same reason — there is no cell up there that this rule may
- * write. The reference reaches the same answer through `y + 1 >= CHUNK_HEIGHT`
- * and cannot express the other case at all.
+ * into, and a door at the build limit or the edge of the loaded area has no clear
+ * upper cell. The reference reaches the same answer through
+ * `y + 1 >= CHUNK_HEIGHT` and cannot express the other case at all.
  */
 export const doorUpperCell = (
   store: ChunkStoreApi,
@@ -120,7 +113,7 @@ export const doorUpperCell = (
       return { _tag: 'NoRoomAbove' }
     }
 
-    return { _tag: 'Clear', cell }
+    return { _tag: 'Clear' }
   })
 
 /** What the cell above says about breaking a door's lower half. */

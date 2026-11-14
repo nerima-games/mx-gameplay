@@ -649,29 +649,21 @@ describe('placeBlock — the four per-block rules, reached through a real held i
     }),
   )
 
-  // The `Clear` arm of `./place-door-upper.ts`, and the only branch of
-  // `placeBlock`'s own `switch` that writes a SECOND cell: the module header's
-  // `alsoPlaced` contract, exercised end to end.
-  it.effect('a door places both halves and reports the second cell in alsoPlaced', () =>
+  it.effect('a door requires a state write and never falls back to block ids', () =>
     Effect.gen(function* () {
       const upperCell: BlockPosition = blockPosition(target.x, target.y + 1, target.z)
       const store = yield* storeWith([[below, STONE]])
 
       const outcome = yield* placeBlock(store.api, { position: target, heldItem: 'door' })
 
-      expect(outcome).toStrictEqual({
-        _tag: 'Placed',
-        block: blockIdOrThrow('door'),
-        consumed: 'door',
-        chunk: chunkCoord(0, 0),
-        alsoPlaced: [upperCell],
-      } satisfies PlaceOutcome)
-      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('door'))
-      expect(yield* store.blockAt(upperCell)).toBe(blockIdOrThrow('door'))
+      expect(outcome).toStrictEqual({ _tag: 'StateWriteUnsupported', blockType: 'door' })
+      expect((yield* store.calls).writes).toBe(0)
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* store.blockAt(upperCell)).toBeUndefined()
     }),
   )
 
-  it.effect('does not report the upper half as written by this placement when another write wins', () =>
+  it.effect('does not call the id-only writer for a stateful door placement', () =>
     Effect.gen(function* () {
       const upperCell = blockPosition(target.x, target.y + 1, target.z)
       const store = yield* storeWith([[below, STONE]])
@@ -687,15 +679,10 @@ describe('placeBlock — the four per-block rules, reached through a real held i
 
       const outcome = yield* placeBlock(raced, { position: target, heldItem: 'door' })
 
-      expect(outcome).toStrictEqual({
-        _tag: 'Placed',
-        block: blockIdOrThrow('door'),
-        consumed: 'door',
-        chunk: chunkCoord(0, 0),
-        alsoPlaced: [],
-      } satisfies PlaceOutcome)
-      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('door'))
-      expect(yield* store.blockAt(upperCell)).toBe(blockIdOrThrow('door'))
+      expect(outcome).toStrictEqual({ _tag: 'StateWriteUnsupported', blockType: 'door' })
+      expect((yield* store.calls).writes).toBe(0)
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* store.blockAt(upperCell)).toBeUndefined()
     }),
   )
 })
@@ -740,7 +727,7 @@ describe('planPlaceBlock per-block verdicts', () => {
     }),
   )
 
-  it.effect('refuses a door without room above and plans both cells when clear', () =>
+  it.effect('refuses a door without room above and plans its lower cell for the state rule', () =>
     Effect.gen(function* () {
       const upper = blockPosition(target.x, target.y + 1, target.z)
       const occupied = yield* storeWith([
@@ -748,18 +735,13 @@ describe('planPlaceBlock per-block verdicts', () => {
         [upper, STONE],
       ])
       const clear = yield* storeWith([[below, STONE]])
-      const door = blockIdOrThrow('door')
-
       const refused = yield* planPlaceBlock(occupied.api, { position: target, heldItem: 'door' })
       const planned = yield* planPlaceBlock(clear.api, { position: target, heldItem: 'door' })
 
       expect(refused.outcome).toStrictEqual({ _tag: 'NoRoomAbove' })
       expect(refused.edits).toStrictEqual([])
-      expect(planned.outcome).toMatchObject({ _tag: 'Placed', block: door, consumed: 'door', alsoPlaced: [upper] })
-      expect(planned.edits).toStrictEqual([
-        { position: target, block: door },
-        { position: upper, block: door },
-      ])
+      expect(planned.outcome._tag).toBe('Placed')
+      expect(planned.edits).toMatchObject([{ position: target }])
     }),
   )
 })

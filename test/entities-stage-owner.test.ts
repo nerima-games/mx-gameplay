@@ -325,6 +325,7 @@ const makeHarness = (options: Readonly<{
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
       ...(options.provideTntService === false ? {} : { tntService }),
     },
+    blockStateWorld: undefined,
   }
   return {
     context,

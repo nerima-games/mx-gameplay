@@ -410,8 +410,9 @@ describe('balance simulation runner', () => {
       event: { _tag: 'HostileContact', source: first.zombieId },
     })
     expect(first.result.stageDamages).toHaveLength(1)
-    expect(first.stageIds).toHaveLength(8)
+    expect(first.stageIds).toHaveLength(9)
     expect(first.stageIds).toContain('gameplay:interactions')
+    expect(first.stageIds).toContain('gameplay:block-state-rules')
     expect(first.stageIds).toContain('gameplay:entities')
   })
 

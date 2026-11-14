@@ -38,6 +38,7 @@ describe('public API surface', () => {
         // `frameStages`. Expressible only since the vertical-slice spike; see
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
+        'GameplayBlockStateWorld',
         'makeProjectileRuntime',
         'GAMEPLAY_PLAYER_STORAGE_OWNER_ID',
         'GAMEPLAY_DROPPED_ITEMS_OWNER_ID',
@@ -72,6 +73,8 @@ describe('public API surface', () => {
         'spawnDroppedItems',
         'requestBucketUse',
         'requestFurnaceAdvance',
+        'requestBlockStateRule',
+        'drainBlockStateRuleResults',
         'requestFishingCast',
         'requestFishingAdvance',
         'requestFishingCancel',
@@ -85,6 +88,7 @@ describe('public API surface', () => {
       for (const name of contract) {
         expect(Object.keys(gameplay)).toContain(name)
       }
+      expect(gameplay.GAMEPLAY_STAGE_IDS.blockStateRules).toBe('gameplay:block-state-rules')
     }),
   )
 
@@ -307,6 +311,17 @@ describe('public API surface', () => {
         'BUCKET_ITEM_TYPES',
         'isBucketItem',
         'useBucket',
+        // block state — pure transitions against a state-aware world port
+        'applyBlockStateRule',
+        'blockStateWorldPortForChunkStore',
+        'cropGrowthProbability',
+        'cropAgeAfterRandomTick',
+        'cropAgeAfterBoneMeal',
+        'doorOpenAfterToggle',
+        'doorPlacementState',
+        'stairPlacementState',
+        'saplingStageAfterGrowthAttempt',
+        'saplingStageAfterBoneMeal',
         // death — the cause travels to the message
         'DEATH_MESSAGES',
         'describeDeath',

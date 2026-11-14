@@ -34,6 +34,7 @@ import { StageId } from '@nerima-games/mc-kernel'
 export const GAMEPLAY_STAGE_IDS: {
   readonly vehicles: StageId
   readonly interactions: StageId
+  readonly blockStateRules: StageId
   readonly fire: StageId
   readonly survivalHunger: StageId
   readonly entities: StageId
@@ -50,6 +51,8 @@ export const GAMEPLAY_STAGE_IDS: {
    * sees and it should see one thing per responsibility.
    */
   interactions: StageId('gameplay:interactions'),
+  /** Stateful door, stair, crop, sapling and bone meal rules. */
+  blockStateRules: StageId('gameplay:block-state-rules'),
   /** Deterministic block fire, burning actors, and extinguishing. */
   fire: StageId('gameplay:fire'),
   /** Survival hunger, regeneration, and starvation after activity resolution. */

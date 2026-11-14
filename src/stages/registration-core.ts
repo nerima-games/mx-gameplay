@@ -97,6 +97,7 @@ import {
   PositionAxis,
   position as kernelPosition,
   type BlockPosition,
+  type BlockFace,
   type BlockPositionKey,
   type BlockAddress,
   type BlockType,
@@ -169,6 +170,7 @@ import {
   withInventory,
   type DamageAtResult,
   type PlayerStorage,
+  type PlayerPose,
   type ReplicatedOwnerCandidate,
   type ReplicatedOwnerId,
   type ReplicatedWorldDelta,
@@ -331,6 +333,7 @@ import {
 } from '@nerima-games/mc-worldgen'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
+import type { GameplayBlockStateWorldApi } from './gameplay-block-state-world.js'
 import {
   END_ARRIVAL_ORIGIN,
   OVERWORLD_RETURN_POSITION,
@@ -347,6 +350,12 @@ import {
   type BlockLootContext,
 } from '../domain/interactions/block-loot.js'
 import type { PlaceOutcome } from '../domain/interactions/place-block.js'
+import type {
+  BlockStateRuleRequest,
+  BlockStateRuleResult,
+  BlockStateRuleOutcome,
+  HorizontalBlockStateFacing,
+} from '../domain/interactions/block-state-rules.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
 import {
@@ -1182,6 +1191,7 @@ export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
+  readonly pendingBlockStateRules: Ref.Ref<ReadonlyArray<PendingBlockStateRuleRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
@@ -1197,6 +1207,7 @@ export type GameplayFrameState = {
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
+  readonly blockStateRuleResults: Ref.Ref<ReadonlyArray<BlockStateRuleResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
   readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
@@ -1330,7 +1341,14 @@ const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRunt
 export type PlacementRequest = {
   readonly positionKey: BlockPositionKey
   readonly heldItem: PlaceableItemType
+  readonly targeting?: Readonly<{
+    facing: HorizontalBlockStateFacing
+    hitFace: BlockFace
+    hitY: number
+  }>
 }
+
+export type PendingBlockStateRuleRequest = BlockStateRuleRequest & Readonly<{ dimension: Dimension }>
 
 export type BlockPlacementRequestId = string
 
@@ -1347,6 +1365,9 @@ export type BlockPlacementCommandOutcome =
   | { readonly _tag: 'InventoryUnavailable' }
   | { readonly _tag: 'RequestIdConflict' }
   | { readonly _tag: 'PlayerDead' }
+  | { readonly _tag: 'StateRuleUnavailable' }
+  | { readonly _tag: 'StateRuleTargetingUnavailable' }
+  | { readonly _tag: 'StateRuleFailed'; readonly outcome: BlockStateRuleOutcome }
   | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError | Schema.SchemaError }
   | {
       readonly _tag: 'Unsupported'
@@ -1402,6 +1423,11 @@ export type BlockUseResult =
       readonly requestId: BlockUseRequestId
       readonly success: false
       readonly outcome: 'PlayerDead'
+    }
+  | {
+      readonly requestId: BlockUseRequestId
+      readonly success: false
+      readonly outcome: 'PlayerStateUnavailable'
     }
 
 /**
@@ -2050,6 +2076,7 @@ export type GameplayUnsupportedAction =
   | 'EatFood'
   | 'BowShot'
   | 'EnderPearl'
+  | 'PlaceBlock'
   | 'IgniteTnt'
   | 'MeleeAttack'
 
@@ -2060,6 +2087,9 @@ export type GameplayUnsupportedReason =
   | 'EntityRosterOwnerUnavailable'
   | 'UnknownMobKind'
   | 'UnsupportedDropItemIds'
+  | 'StateRuleUnavailable'
+  | 'StateRuleTargetingUnavailable'
+  | 'StateRuleFailed'
 
 type UnsupportedDropItemId = string & Brand.Brand<'UnsupportedDropItemId'>
 
@@ -2070,6 +2100,7 @@ export type GameplayUnsupportedOperation = Readonly<{
   reason: GameplayUnsupportedReason
   mobKind?: EntityKind
   itemIds?: ReadonlyArray<UnsupportedDropItemId>
+  stateRuleOutcome?: BlockStateRuleOutcome
 }>
 
 export type GameplayFrameStateOptions = Readonly<{
@@ -2128,6 +2159,7 @@ const makeGameplayFrameStateWithOptions = (
   const breakRequestMutex = yield* Semaphore.make(1)
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>([])
   const pendingBlockUses = yield* Ref.make<ReadonlyArray<BlockUseRequest>>([])
+  const pendingBlockStateRules = yield* Ref.make<ReadonlyArray<PendingBlockStateRuleRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
@@ -2143,6 +2175,7 @@ const makeGameplayFrameStateWithOptions = (
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
+  const blockStateRuleResults = yield* Ref.make<ReadonlyArray<BlockStateRuleResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
   const meleeAttackResults = yield* Ref.make<ReadonlyArray<GameplayMeleeAttackResult>>([])
@@ -2224,6 +2257,7 @@ const makeGameplayFrameStateWithOptions = (
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
+    pendingBlockStateRules,
     pendingItemUses,
     pendingBowShots,
     pendingMeleeAttacks,
@@ -2239,6 +2273,7 @@ const makeGameplayFrameStateWithOptions = (
     consumedItems,
     usedItems,
     blockUseResults,
+    blockStateRuleResults,
     itemUseResults,
     bowShotResults,
     meleeAttackResults,
@@ -2675,6 +2710,18 @@ export const requestBlockUse = (
 export const drainBlockUseResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<BlockUseResult>> => Ref.getAndSet(state.blockUseResults, [])
+
+export const requestBlockStateRule = (
+  state: GameplayFrameState,
+  dimension: Dimension,
+  request: BlockStateRuleRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingBlockStateRules, (pending) => [...pending, { ...request, dimension }])
+
+export const drainBlockStateRuleResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BlockStateRuleResult>> =>
+  Ref.getAndSet(state.blockStateRuleResults, [])
 
 /** Enqueue one igniting-item use without exposing the internal position encoding. */
 export const requestItemUse = (
@@ -3953,6 +4000,36 @@ export const recordMobRuleIssues = (
   }
 })
 
+const BLOCK_FACE_BY_TARGET_OFFSET: Readonly<Record<string, BlockFace>> = {
+  '1,0,0': 'east',
+  '-1,0,0': 'west',
+  '0,1,0': 'up',
+  '0,-1,0': 'down',
+  '0,0,1': 'south',
+  '0,0,-1': 'north',
+}
+
+const targetingForPlacement = (
+  pose: PlayerPose,
+  target: BlockTarget,
+): NonNullable<PlacementRequest['targeting']> => {
+  // Both callers pass a target from targetBlockFromPlayerPose, whose ray hits are
+  // cardinal and lie inside the hit block.
+  const direction = Result.getOrThrow(forwardVector(pose))
+  const dx = target.adjacentPosition.x - target.position.x
+  const dy = target.adjacentPosition.y - target.position.y
+  const dz = target.adjacentPosition.z - target.position.z
+  const hitFace = Option.getOrThrow(Option.fromNullishOr(BLOCK_FACE_BY_TARGET_OFFSET[`${dx},${dy},${dz}`]))
+  const hitY = pose.feetPosition.y + EYE_LEVEL_OFFSET + direction.y * target.distance - target.position.y
+
+  const sinYaw = Math.sin(pose.yawRadians)
+  const cosYaw = Math.cos(pose.yawRadians)
+  const facing: HorizontalBlockStateFacing = Math.abs(sinYaw) > Math.abs(cosYaw)
+    ? sinYaw > 0 ? 'west' : 'east'
+    : cosYaw > 0 ? 'north' : 'south'
+  return { facing, hitFace, hitY }
+}
+
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (
   state: GameplayFrameState,
@@ -3971,9 +4048,11 @@ export const requestTargetedBlockPlacement = (
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
     if (Option.isSome(target)) {
+      const targeting = targetingForPlacement(pose, target.value)
       yield* requestBlockPlacement(state, {
         positionKey: blockPositionKeyOf(blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z)),
         heldItem,
+        targeting,
       })
     }
     return target
@@ -4013,18 +4092,26 @@ export const requestTargetedBlockUse = (
       case 'ToggleLever':
         yield* requestBlockUse(state, requestId, targetPosition)
         break
-      case 'NotLever':
+      case 'ToggleDoor':
+        yield* requestBlockStateRule(state, pose.feetPosition.dimension, {
+          requestId,
+          position: targetPosition,
+          operation: { _tag: 'ToggleDoor' },
+        })
+        break
+      case 'NotLever': {
+        const targeting = targetingForPlacement(pose, target.value)
         yield* requestBlockPlacement(state, {
           positionKey: blockPositionKeyOf(blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z)),
           heldItem,
+          targeting,
         })
         break
+      }
       case 'ChunkNotLoaded':
       case 'OutOfWorld':
         break
-      // exhaustiveness arm over BlockUseOutcome, a closed four-tag union
-      // (use-block.ts's own exhaustiveness arm pins the same fact); all four
-      // tags are handled above, so no input can reach this arm.
+      // exhaustiveness arm over BlockUseOutcome, a closed five-tag union.
       /* v8 ignore start */
       default: {
         const exhaustive: never = outcome
@@ -4296,6 +4383,7 @@ export interface GameplayStageContext {
   readonly vehicleEnvironment: VehicleFrameEnvironment | undefined
   readonly options: GameplayStageOptions
   readonly commit: GameplayStageCommitServices | undefined
+  readonly blockStateWorld: GameplayBlockStateWorldApi | undefined
 }
 // Internal dependencies for the stage adapters. The public facade re-exports only the package API.
 export {
@@ -4402,6 +4490,8 @@ export {
   useVillagerOffer,
   weatherExpires,
   type BlockPositionKey,
+  type BlockStateRuleRequest,
+  type BlockStateRuleResult,
   type BlockLootContext,
   type BowHit,
   type ChunkStoreApi,

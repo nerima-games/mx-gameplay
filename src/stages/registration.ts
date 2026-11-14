@@ -66,6 +66,8 @@ export {
   drainBlockPlacementResults,
   requestBlockUse,
   drainBlockUseResults,
+  drainBlockStateRuleResults,
+  requestBlockStateRule,
   requestItemUse,
   requestBucketUse,
   requestFishingCast,
@@ -132,15 +134,14 @@ export {
   requestTargetedItemUse,
   requestTargetedSoilTill,
   requestTargetedPotatoPlanting,
+  type BlockStateRuleRequest,
+  type BlockStateRuleResult,
   type GameplayStageOptions,
 } from './registration-core.js'
 
 import {
   ChunkStore,
   TimeService,
-  entityManagerTag,
-  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-  makeGameplayFrameStateForOwner,
 } from './registration-core.js'
 import type {
   ChunkStoreApi,
@@ -160,36 +161,21 @@ import type {
 import {
   DomainEventBus,
   WorldCommitCoordinator,
-  makeBrewingService,
-  makeFishingService,
-  makeProjectileService,
-  makeTntService,
-  PROJECTILE_REPLICATED_OWNER_ID,
-  TNT_REPLICATED_OWNER_ID,
 } from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
+import { makeGameplayComposition } from './gameplay-composition.js'
+import { GameplayBlockStateWorld } from './gameplay-block-state-world.js'
+import type { GameplayBlockStateWorldApi } from './gameplay-block-state-world.js'
 import { makeVehiclesStage } from './vehicles-stage.js'
 import { makeInteractionsStage } from './interactions-stage.js'
-import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
 import { makeFireStage } from './fire-stage.js'
 import { makeSurvivalHungerStage } from './survival-hunger-stage.js'
 import { makeEntitiesStage } from './entities-stage.js'
 import { makeEnderDragonStage } from './ender-dragon-stage.js'
 import { makeFluidsStage } from './fluids-stage.js'
 import { makeTimeWeatherStage } from './time-weather-stage.js'
-import {
-  GAMEPLAY_PLAYER_OWNER_ID,
-  GAMEPLAY_CROPS_OWNER_ID,
-  GAMEPLAY_BREWING_OWNER_ID,
-  GAMEPLAY_ENTITIES_OWNER_ID,
-  GAMEPLAY_FISHING_OWNER_ID,
-  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
-  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
-  GAMEPLAY_VITALS_OWNER_ID,
-  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
-  GAMEPLAY_TNT_SOURCES_OWNER_ID,
-} from './gameplay-owner-registrations.js'
+import { makeBlockStateRulesStage } from './block-state-rules-stage.js'
 
 export const gameplayStages = (
   state: GameplayFrameState,
@@ -202,6 +188,7 @@ export const gameplayStages = (
   vehicleEnvironment?: VehicleFrameEnvironment,
   options: GameplayStageOptions = {},
   commit?: GameplayStageCommitServices,
+  blockStateWorld?: GameplayBlockStateWorldApi,
 ): ReadonlyArray<StageRegistration> => {
   const context: GameplayStageContext = {
     state,
@@ -212,10 +199,12 @@ export const gameplayStages = (
     vehicleEnvironment,
     options,
     commit,
+    blockStateWorld,
   }
   return [
     makeVehiclesStage(context),
     makeInteractionsStage(context),
+    makeBlockStateRulesStage(state, blockStateWorld),
     makeFireStage(context),
     makeSurvivalHungerStage(context),
     makeEntitiesStage(context),
@@ -225,84 +214,12 @@ export const gameplayStages = (
   ]
 }
 
-/**
- * Build the module's state and its stages together.
- *
- * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The
- * registration services are the reason that field is an Effect: this is the
- * one moment at which a module may acquire services in order to BUILD stages,
- * rather than in order to run them.
- *
- * ---------------------------------------------------------------------------
- * `MobBehaviour` IS NAMED HERE, AND THAT IS THE POINT OF FAILURE TO KNOW ABOUT
- * ---------------------------------------------------------------------------
- *
- * `entityManagerTag<MobBehaviour>()` and `EntityManagerLayer<MobBehaviour>()`
- * must agree, and NO COMPILER CAN CHECK THAT THEY DO: mc-sim's Layer has result
- * type `Layer.Layer<EntityManager>` with the behaviour parameter appearing
- * nowhere in it, because the context identity is unparameterised while the
- * service value type is not (`docs/public-api.md` §7-1 of that repository). A
- * host that instantiates the roster at some other `S` gets a Layer that
- * satisfies this requirement and a `behaviour` field that is not what the line
- * below says it is.
- *
- * The mitigation is that exactly one repository names the type and the host
- * imports that name: `MobBehaviour` and `repairMobBehaviour` are both exported
- * from `index.ts` for this reason. The host's two lines are
- *
- *     const world = Layer.merge(
- *       simModule.layers,
- *       EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
- *     )
- *
- * and taking `gameplayModule.frameStages` from inside that same `Effect.provide`.
- * See `docs/public-api.md` for why `simModule` should not grow a type parameter
- * to try to do this for the host.
- */
-
+/** Build the production stage list from the state returned by its composition builder. */
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
-> = Effect.gen(function* () {
-  const store = yield* ChunkStore
-  const roster = yield* entityManagerTag<MobBehaviour>()
-  const time = yield* TimeService
-  const coordinator = yield* WorldCommitCoordinator
-  const eventBus = yield* DomainEventBus
-  const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
-  const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID)
-  const projectileService = yield* makeProjectileService()
-  const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID)
-  const state = yield* makeGameplayFrameStateForOwner({
-    coordinator,
-    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
-  })
-
-  const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
-    coordinator,
-    playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
-    playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-    cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
-    droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
-    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
-    experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
-    villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
-    brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
-    fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
-    entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
-    projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
-    tntOwnerId: TNT_REPLICATED_OWNER_ID,
-    tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
-    brewingService,
-    fishingService,
-    projectileService,
-    tntService,
-    eventBus,
-  })
-  const brewingAdvance = yield* makeBrewingAdvanceStage(brewingService, coordinator)
-  return [...stages, brewingAdvance.stage]
-})
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
+> = Effect.map(makeGameplayComposition(gameplayStages), (composition) => composition.stages)
 
 /**
  * mx-gameplay as a `GameModule` (plan.md §4.1).
@@ -311,8 +228,9 @@ export const makeGameplayStages: Effect.Effect<
  * This used not to be expressible, and the reason is worth keeping
  * ---------------------------------------------------------------------------
  *
- * `makeGameplayStages` above carried a comment saying it was "NOT yet a
- * `GameModule`" because a `GameModule` carried a `Layer.Layer<ROut, E, RIn>`
+ * The original `makeGameplayStages` implementation carried a comment saying it
+ * was "NOT yet a `GameModule`" because a `GameModule` carried a
+ * `Layer.Layer<ROut, E, RIn>`
  * and the service set could not be named until mc-sim's public API existed.
  *
  * That diagnosis was half right. The Layer was never the obstacle — mx-gameplay
@@ -327,21 +245,18 @@ export const makeGameplayStages: Effect.Effect<
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RRegister` is now `ChunkStore | EntityManager | TimeService |
- * WorldCommitCoordinator | DomainEventBus` and
- * `RIn`
- * is still `never`, which is the distinction that parameter was added for: this
- * repository needs mc-worldgen's store in order to REGISTER stages that write
- * blocks, mc-sim's roster in order to register the stage that iterates mobs,
- * a commit coordinator for atomic owner and block writes, and an event bus for
- * post-commit plan events. Player pose and inventory are read from gameplay
- * owner snapshots. It
- * needs nothing to build a Layer.
+ * `RRegister` names `ChunkStore | EntityManager | TimeService |
+ * WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld`.
+ * `RIn` remains `never` because `layers` is empty. These services are
+ * required to build the stage list: the store and roster support gameplay
+ * stages, the coordinator commits owner state, the event bus publishes plan
+ * events, and `GameplayBlockStateWorld` supplies state reads and C7 writes.
+ * Player pose and inventory still come from gameplay owner snapshots.
  *
- * The registration contract has five services. `RIn` remains `never`, so
- * mx-gameplay still BUILDS nothing another repository has to supply. A host
- * must provide a coordinator registered with the published gameplay and
- * simulation owners before it can build the stages.
+ * A host provides six services when it builds the stages. The state adapter
+ * must bind its `BlockStateWorldPort` to the C7 `WorldWritePort` and commit
+ * optional owner changes with state edits. The host must also register the
+ * published gameplay and simulation owners with its coordinator.
  *
  * A host supplies mc-sim's entity and time layers. The host's line is
  *
@@ -355,7 +270,7 @@ export const gameplayModule: GameModule<
   never,
   never,
   never,
-  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,

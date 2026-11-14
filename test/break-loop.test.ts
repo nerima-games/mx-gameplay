@@ -639,9 +639,14 @@ describe('the break loop', () => {
       )
 
       expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])
-      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([
-        { positionKey: '0,1,1', heldItem: 'redstone_dust' },
-      ])
+      const placements = yield* Ref.get(state.pendingPlacements)
+      expect(placements).toHaveLength(1)
+      expect(placements[0]).toMatchObject({
+        positionKey: '0,1,1',
+        heldItem: 'redstone_dust',
+        targeting: { facing: 'north', hitFace: 'south' },
+      })
+      expect(placements[0]?.targeting?.hitY).toBeCloseTo(0.62)
     }),
   )
 
@@ -687,9 +692,14 @@ describe('the break loop', () => {
 
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual({ x: 0, y: 1, z: 1 })
-      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([
-        { positionKey: '0,1,1', heldItem: 'sand' },
-      ])
+      const placements = yield* Ref.get(state.pendingPlacements)
+      expect(placements).toHaveLength(1)
+      expect(placements[0]).toMatchObject({
+        positionKey: '0,1,1',
+        heldItem: 'sand',
+        targeting: { facing: 'north', hitFace: 'south' },
+      })
+      expect(placements[0]?.targeting?.hitY).toBeCloseTo(0.62)
     }),
   )
 

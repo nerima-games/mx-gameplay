@@ -5,7 +5,6 @@ import {
   blockIdOf,
 } from '@nerima-games/mc-kernel'
 import {
-  BONE_MEAL_GROWTH_SECS,
   CropSnapshotSchema,
   DomainEventBus,
   POTATO_MATURITY_SECS,
@@ -95,7 +94,7 @@ const makeScenario = () =>
   })
 
 describe('farming through registered gameplay stages', () => {
-  it.effect('tills, plants, grows with bone meal, and harvests the crop through frames', () =>
+  it.effect('tills and plants, reports unsupported bone meal state, then harvests timed growth through frames', () =>
     Effect.gen(function* () {
       const { store, state, commit, stages } = yield* makeScenario()
 
@@ -116,10 +115,16 @@ describe('farming through registered gameplay stages', () => {
       yield* requestBoneMeal(state, 'bone-meal-potato', crop)
       yield* runFrame(stages, DeltaTimeSecs(0))
       expect(yield* drainItemUseResults(state)).toMatchObject([
-        { action: 'ApplyBoneMeal', requestId: 'bone-meal-potato', success: true, consumedCount: 1 },
+        {
+          action: 'ApplyBoneMeal',
+          requestId: 'bone-meal-potato',
+          success: false,
+          consumedCount: 0,
+          outcome: { _tag: 'stateUnsupported', block: 'potato_crop', operation: 'readState' },
+        },
       ])
       const afterBoneMeal = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
-      expect(afterBoneMeal.state.crops[0]?.growthSecs).toBe(BONE_MEAL_GROWTH_SECS)
+      expect(afterBoneMeal.state.crops[0]?.growthSecs).toBe(0)
 
       yield* runFrame(stages, DeltaTimeSecs(POTATO_MATURITY_SECS))
       const mature = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
@@ -144,6 +149,7 @@ describe('farming through registered gameplay stages', () => {
         GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
         PlayerStorageSnapshotSchema,
       )
+      expect(storageOwner.state.inventory.slots[2]?.item).toBe('bone_meal')
       const harvestedPotatoes = storageOwner.state.inventory.slots.reduce(
         (count, slot) => count + (slot?.item === 'potato' ? slot.count : 0),
         0,

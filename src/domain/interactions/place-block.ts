@@ -102,7 +102,7 @@
  *     ./place-mushroom-light     light <= 12                     1 light read
  *     ./place-sugar-cane-water   water beside the support        0 or 4 reads
  *     ./place-cactus-sides       four sides air                  4 reads
- *     ./place-door-upper         the cell above, and it fills it 1 read + 1 write
+ *     ./place-door-upper         the cell above, then state-write refusal 1 read
  *
  * The deferral's reason survives the deferral ending. There is still no
  * `PlacementRule` array here and there is still no block name in this file: each
@@ -129,12 +129,14 @@ import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
   blockIdOf,
+  blockTypeOfId,
   blockOfPlaceableItem,
   canBlockStaySupported,
   capabilityOfBlockId,
   chunkCoordOfBlock,
   isSupportSensitiveBlockId,
   type PlaceableItemType,
+  type BlockType,
   type Position,
 } from '@nerima-games/mc-kernel'
 import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides.js'
@@ -156,6 +158,18 @@ import { sugarCaneWaterObjection, type SugarCaneWaterRefusal } from './place-sug
  */
 export const PLAYER_HALF_WIDTH = 0.3
 export const PLAYER_HALF_HEIGHT = 0.9
+
+const STATEFUL_PLACEABLE_BLOCKS: ReadonlySet<BlockType> = new Set([
+  'door',
+  'door_open',
+  'oak_stairs',
+  'purpur_stairs',
+])
+
+const statefulBlockType = (block: BlockId): BlockType | undefined => {
+  const type = Result.getOrUndefined(blockTypeOfId(block))
+  return type !== undefined && STATEFUL_PLACEABLE_BLOCKS.has(type) ? type : undefined
+}
 
 /** Half a unit cube. Written down because it appears three times below and means one thing. */
 const BLOCK_HALF = 0.5
@@ -262,18 +276,13 @@ export type PlaceOutcome =
       readonly consumed: PlaceableItemType
       readonly chunk: ChunkCoord
       /**
-       * Cells beyond `request.position` that this placement also filled.
+       * Cells beyond `request.position` that this placement also wrote.
        *
-       * EMPTY FOR EVERY BLOCK BUT A DOOR, which is the only one of the four
-       * per-block rules that writes a second cell (`./place-door-upper`). It is
-       * an array rather than an optional member so that a caller iterating it
-       * needs no test, and it holds the cells whose write actually came back
-       * `Written` — the same discipline `./explosion-crater` uses for the cells
-       * it reports.
+       * The array contains only additional cells whose writes came back
+       * `Written`, so callers can iterate it without a tag check.
        *
-       * IT IS NOT A SECOND ITEM. `consumed` stays one, because one door in the
-       * hand becomes one door in the world; the second cell is the other half of
-       * the same object rather than a second placement.
+       * Additional cells do not consume additional items; `consumed` describes
+       * the held item for this placement.
        */
       readonly alsoPlaced: ReadonlyArray<BlockPosition>
     }
@@ -303,6 +312,8 @@ export type PlaceOutcome =
   | CactusSidesRefusal
   /** A door with something in the way above it. `./place-door-upper`. */
   | { readonly _tag: 'NoRoomAbove' }
+  /** The stateful block needs a state-aware write port. */
+  | { readonly _tag: 'StateWriteUnsupported'; readonly blockType: BlockType }
 
 /**
  * Decide, given what the store said is in the target cell and what is under it.
@@ -407,7 +418,6 @@ export const placeBlock = (
     if (verdict._tag !== 'Allowed') {
       return verdict
     }
-
     // THE FOUR PER-BLOCK RULES, in the reference's own order
     // (`PLACEMENT_RULES`, `block-service-place-plan.ts:207-213`): support —
     // which `placementVerdict` has just done — then mushroom, sugar cane,
@@ -433,42 +443,25 @@ export const placeBlock = (
       return sidesBlocked
     }
 
-    // The door rule is the one that answers with WORK rather than only with a
-    // refusal, so its verdict is held across the write below. See
-    // `./place-door-upper` on why the cell is returned rather than written there.
+    // Check headroom first so a blocked door keeps its specific refusal. A clear
+    // upper cell does not authorize an ID-only write for a stateful block.
     const upper: DoorUpperCell = yield* doorUpperCell(store, verdict.block, request.position)
     if (upper._tag === 'NoRoomAbove') {
       return { _tag: 'NoRoomAbove' }
     }
 
+    const needsState = statefulBlockType(verdict.block)
+    if (needsState !== undefined) return { _tag: 'StateWriteUnsupported', blockType: needsState }
+
     const outcome = yield* store.setBlock(request.position, verdict.block)
 
     if (outcome._tag === 'Written') {
-      // The door's upper half. It is written AFTER the lower one and only
-      // when the lower one landed, so a refused placement cannot leave half a
-      // door standing in the world.
-      //
-      // A NON-`Written` ANSWER HERE IS REPORTED BY OMISSION rather than by
-      // undoing the lower cell. The cell was read as air one instruction ago,
-      // so reaching this needs the store to have changed underneath — the
-      // window this file's header is about — and the two available answers are
-      // a compensating write that can itself fail, or a door with no top. The
-      // second is visible, breakable and recorded in `alsoPlaced`; the first
-      // is a second failure mode with nowhere to report itself.
-      const alsoPlaced: Array<BlockPosition> = []
-      if (upper._tag === 'Clear') {
-        const upperOutcome = yield* store.setBlock(upper.cell, verdict.block)
-        if (upperOutcome._tag === 'Written') {
-          alsoPlaced.push(upper.cell)
-        }
-      }
-
       return {
         _tag: 'Placed',
         block: verdict.block,
         consumed: request.heldItem,
         chunk: outcome.chunk,
-        alsoPlaced,
+        alsoPlaced: [],
       }
     }
 
@@ -518,18 +511,14 @@ export const planPlaceBlock = (
     const upper = yield* doorUpperCell(store, verdict.block, request.position)
     if (upper._tag === 'NoRoomAbove') return { outcome: upper, edits: [] }
 
-    const alsoPlaced = upper._tag === 'Clear' ? [upper.cell] : []
     return {
       outcome: {
         _tag: 'Placed',
         block: verdict.block,
         consumed: request.heldItem,
         chunk: chunkCoordOfBlock(request.position),
-        alsoPlaced,
+        alsoPlaced: [],
       },
-      edits: [
-        { position: request.position, block: verdict.block },
-        ...(upper._tag === 'Clear' ? [{ position: upper.cell, block: verdict.block }] : []),
-      ],
+      edits: [{ position: request.position, block: verdict.block }],
     }
   })

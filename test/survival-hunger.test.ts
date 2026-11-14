@@ -613,6 +613,7 @@ describe('survival hunger', () => {
         vehicleEnvironment: undefined,
         options: {},
         commit: undefined,
+        blockStateWorld: undefined,
       }
       const hungerStage = makeSurvivalHungerStage(context)
 
