@@ -512,8 +512,7 @@ const rollCasualtyExperience = (
   seed: number,
 ): Result.Result<CasualtyExperienceRoll, FrameRollFailure> => Result.gen(function* () {
   if (casualties.length === 0) {
-    const empty = yield* drawRolls(seed, 0)
-    return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed: empty.seed }
+    return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed }
   }
 
   let current = seed
