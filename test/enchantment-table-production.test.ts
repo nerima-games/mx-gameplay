@@ -1,5 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
 import {
+  AIR_BLOCK_ID,
+  BlockAxis,
+  blockIdOf,
+  blockPosition,
   DeltaTimeSecs,
   enchantmentsComponent,
   itemComponents,
@@ -23,7 +27,8 @@ import {
   type DomainEventBusApi,
   type Slot,
 } from '@nerima-games/mc-sim'
-import { Effect, Exit, Layer, Ref, Result, Schema, Stream } from 'effect'
+import { ChunkStore } from '@nerima-games/mc-worldgen'
+import { Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
 import * as FastCheck from 'fast-check'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
 import { publishGeneratedEnchantmentOffers } from '../src/stages/interactions-stage.js'
@@ -47,7 +52,7 @@ import {
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
-import { emptyWorldStoreLayer } from './support/chunk-store-double.js'
+import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
 import { gameplayCommitServicesLayer } from './support/transactional-stage-doubles.js'
 import { runFrame } from './support/frame-runner.js'
@@ -57,10 +62,28 @@ const eventBus: DomainEventBusApi = {
   events: Stream.empty,
 }
 
+const ENCHANTMENT_TABLE_POSITION = { x: 0, y: 64, z: 0 } as const
+const TABLE_BLOCK_POSITION = blockPosition(
+  BlockAxis(ENCHANTMENT_TABLE_POSITION.x),
+  BlockAxis(ENCHANTMENT_TABLE_POSITION.y),
+  BlockAxis(ENCHANTMENT_TABLE_POSITION.z),
+)
+const ENCHANTING_TABLE = Option.getOrThrow(blockIdOf('enchanting_table'))
+
+// Suspended because the double's Ref captures the map it is first given: an
+// eagerly built double would carry one test's block writes into the next build.
+const tableWorldStoreLayer = Layer.effect(
+  ChunkStore,
+  Effect.suspend(() => Effect.map(
+    makeChunkStoreDouble(world([[TABLE_BLOCK_POSITION, ENCHANTING_TABLE]]), ['0,0']),
+    (double) => double.api,
+  )),
+)
+
 const productionWorld = Layer.provideMerge(
   gameplayCommitServicesLayer,
   Layer.mergeAll(
-    emptyWorldStoreLayer,
+    tableWorldStoreLayer,
     emptyRosterLayer,
     Layer.effect(TimeService, makeTimeService()),
     emptyInventoryLayer,
@@ -73,7 +96,6 @@ const stack = (item: ItemType, count: number) =>
 
 const ENCHANTMENT_TABLE_SEED = 1
 const MULTI_ENCHANTMENT_SLOT = 2
-const ENCHANTMENT_TABLE_POSITION = { x: 0, y: 64, z: 0 } as const
 // Fixed mc-sim Java table vector for a diamond sword, seed 1, and no shelves.
 // Kept independent of the production generator so the stage adapter is checked
 // against a stable result rather than its own expected-value calculation.
@@ -638,6 +660,116 @@ describe('production enchanting table orchestration', () => {
       expect(yield* Ref.get(state.operationFailures)).toContainEqual(expect.objectContaining({
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
       }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('rejects offers without advancing the roll seed when no enchanting table is at the position', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const store = yield* ChunkStore
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      yield* seedTableInputs()
+      // Other stages draw from the roll seed, so only interactions runs here.
+      const stages = (yield* makeGameplayStagesWithState(state))
+        .filter(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* store.setBlock(TABLE_BLOCK_POSITION, AIR_BLOCK_ID)
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'no-table', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'no-table', reason: 'table-missing',
+      }])
+      expect(yield* Ref.get(state.rollSeed)).toBe(ENCHANTMENT_TABLE_SEED)
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+
+      yield* requestEnchantmentTableApply(state, { requestId: 'no-table', tableSlot: MULTI_ENCHANTMENT_SLOT })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'no-table', reason: 'session-not-found',
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('rejects offers when a different block occupies the table position', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const store = yield* ChunkStore
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      yield* seedTableInputs()
+      // Other stages draw from the roll seed, so only interactions runs here.
+      const stages = (yield* makeGameplayStagesWithState(state))
+        .filter(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* store.setBlock(TABLE_BLOCK_POSITION, STONE)
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'stone-table', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'stone-table', reason: 'table-missing',
+      }])
+      expect(yield* Ref.get(state.rollSeed)).toBe(ENCHANTMENT_TABLE_SEED)
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('closes the session without applying when the table is removed before apply', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const store = yield* ChunkStore
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      yield* seedTableInputs()
+      const stages = yield* makeGameplayStagesWithState(state)
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'table-removed', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'OffersGeneratedWithoutBookshelfCount',
+        requestId: 'table-removed',
+        offers: PINNED_DIAMOND_SWORD_OFFERS,
+      }])
+
+      yield* store.setBlock(TABLE_BLOCK_POSITION, AIR_BLOCK_ID)
+      const [storageBeforeApply, vitalsBeforeApply] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      yield* requestEnchantmentTableApply(state, { requestId: 'table-removed', tableSlot: MULTI_ENCHANTMENT_SLOT })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'table-removed', reason: 'table-missing',
+      }])
+      const [storageAfterApply, vitalsAfterApply] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      expect(storageAfterApply.state).toEqual(storageBeforeApply.state)
+      expect(vitalsAfterApply.state).toEqual(vitalsBeforeApply.state)
+
+      // Restoring the table shows the session itself was closed, not merely blocked.
+      yield* store.setBlock(TABLE_BLOCK_POSITION, ENCHANTING_TABLE)
+      yield* requestEnchantmentTableApply(state, { requestId: 'table-removed', tableSlot: MULTI_ENCHANTMENT_SLOT })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'table-removed', reason: 'session-not-found',
+      }])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 

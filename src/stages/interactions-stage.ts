@@ -2286,6 +2286,9 @@ const advanceBlockMiningAttempt = (
 type GameplayEnchantmentTableRequestId = string
 type GameplayEnchantmentTableOffer = Schema.Schema.Type<typeof SimEnchantmentTableOfferSchema>
 const PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT = Schema.decodeUnknownSync(EnchantmentTableShelfCountSchema)(0)
+// mc-sim's offer generation never inspects the world, so the stage owns the
+// check that the requested position still holds an enchanting table.
+const ENCHANTING_TABLE_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('enchanting_table'))
 type GameplayEnchantmentTableOffers = readonly [
   GameplayEnchantmentTableOffer | undefined,
   GameplayEnchantmentTableOffer | undefined,
@@ -2350,11 +2353,12 @@ type EnchantmentTableRejectionReason =
   | 'invalid-storage'
   | 'item-stack-failure'
   | 'transaction-failed'
+  | 'table-missing'
 const EnchantmentTableRejectionReasonSchema: Schema.Codec<EnchantmentTableRejectionReason, string> = Schema.Literals([
   'service-unavailable', 'player-dead', 'no-item', 'already-enchanted', 'invalid-seed',
   'offer-generation-failed', 'duplicate-session', 'session-not-found', 'item-changed',
   'invalid-offer', 'empty-item-slot', 'invalid-item', 'not-enchantable', 'insufficient-level',
-  'insufficient-lapis', 'invalid-storage', 'item-stack-failure', 'transaction-failed',
+  'insufficient-lapis', 'invalid-storage', 'item-stack-failure', 'transaction-failed', 'table-missing',
 ])
 export type GameplayEnchantmentTableResult =
   | Readonly<{
@@ -2511,9 +2515,17 @@ export const publishGeneratedEnchantmentOffers = (
   })
 })
 
+const isEnchantingTableAt = (
+  store: GameplayStageContext['store'],
+  position: BlockPosition,
+): Effect.Effect<boolean> =>
+  Effect.map(store.getBlock(position), (reading) =>
+    reading._tag === 'Block' && reading.block === ENCHANTING_TABLE_BLOCK_ID)
+
 const applyEnchantmentTableRequest = (
   state: GameplayFrameState,
   mailbox: EnchantmentTableMailbox,
+  store: GameplayStageContext['store'],
   commit: GameplayStageContext['commit'],
   service: EnchantmentTableServiceApi | undefined,
   request: GameplayEnchantmentTableApplyRequest,
@@ -2530,6 +2542,12 @@ const applyEnchantmentTableRequest = (
     const session = mailbox.sessions.get(request.requestId)
     if (session === undefined) {
       mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'session-not-found' })
+      return
+    }
+    // Vanilla closes the table screen when the table is removed.
+    if (!(yield* isEnchantingTableAt(store, session.tablePosition))) {
+      mailbox.sessions.delete(request.requestId)
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'table-missing' })
       return
     }
     const storage = yield* Effect.result(commit.coordinator.snapshot(
@@ -2589,6 +2607,7 @@ const applyEnchantmentTableRequest = (
 const generateEnchantmentTableOffersRequest = (
   state: GameplayFrameState,
   mailbox: EnchantmentTableMailbox,
+  store: GameplayStageContext['store'],
   commit: GameplayStageContext['commit'],
   service: EnchantmentTableServiceApi | undefined,
   request: GameplayEnchantmentTableOffersRequest,
@@ -2600,6 +2619,10 @@ const generateEnchantmentTableOffersRequest = (
     }
     if (mailbox.sessions.has(request.requestId)) {
       mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'duplicate-session' })
+      return
+    }
+    if (!(yield* isEnchantingTableAt(store, request.tablePosition))) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'table-missing' })
       return
     }
     const storage = yield* Effect.result(commit.coordinator.snapshot(
@@ -2642,6 +2665,7 @@ const generateEnchantmentTableOffersRequest = (
 const processEnchantmentTableRequests = (
   state: GameplayFrameState,
   mailbox: EnchantmentTableMailbox,
+  store: GameplayStageContext['store'],
   commit: GameplayStageContext['commit'],
   service: EnchantmentTableServiceApi | undefined,
   playerDead: boolean,
@@ -2658,9 +2682,9 @@ const processEnchantmentTableRequests = (
         continue
       }
       if (queued._tag === 'GenerateOffers') {
-        yield* generateEnchantmentTableOffersRequest(state, mailbox, commit, service, queued.request)
+        yield* generateEnchantmentTableOffersRequest(state, mailbox, store, commit, service, queued.request)
       } else {
-        yield* applyEnchantmentTableRequest(state, mailbox, commit, service, queued.request)
+        yield* applyEnchantmentTableRequest(state, mailbox, store, commit, service, queued.request)
       }
     }
   })
@@ -2695,6 +2719,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         yield* processEnchantmentTableRequests(
           state,
           enchantmentTableMailbox,
+          store,
           commit,
           enchantmentTableService,
           playerDead,
