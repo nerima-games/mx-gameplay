@@ -112,6 +112,7 @@ describe('persisted gameplay input boundaries', () => {
       ['clear', null, 'rolls'],
       ['clear', { duration: 0 }, 'transition'],
       ['clear', { transition: 0 }, 'duration'],
+      ['clear', { transition: Number.NaN, duration: 0 }, 'transition'],
       ['clear', { transition: 0, duration: Number.NaN }, 'duration'],
     ] as const) {
       expect(resolveNextWeatherState(current as Weather, rolls as WeatherRolls)).toStrictEqual(Result.fail({
