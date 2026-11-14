@@ -66,8 +66,8 @@ import {
   type BalanceTimeServiceReading,
 } from './gameplay-harness.js'
 
-const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
-const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
+const dayPhase = (fraction: number) => Result.getOrThrow(dayPhaseResult(fraction))
+const hostileSpawnsAllowed = (fraction: number) => Result.getOrThrow(hostileSpawnsAllowedResult(fraction))
 
 export type BalanceEffectRunner = typeof Effect.runPromise
 

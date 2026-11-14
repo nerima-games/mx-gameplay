@@ -94,8 +94,8 @@ describe('registration-core typed world faults', () => {
           const resolved = yield* Effect.flip(resolveTargetedPrimaryAttack(harness.store.api, targeting, options))
           const requested = yield* Effect.flip(requestTargetedPrimaryAttack(harness.state, harness.store.api, targeting, options))
 
-          expect(resolved._tag).toBe('SchemaError')
-          expect(requested._tag).toBe('SchemaError')
+          expect(resolved).toMatchObject({ _tag: 'SchemaError' })
+          expect(requested).toMatchObject({ _tag: 'SchemaError' })
           expect(yield* Ref.get(harness.state.pendingBreaks)).toStrictEqual([])
           expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toStrictEqual([])
           expect(yield* harness.commit.coordinator.revision).toBe(0)
