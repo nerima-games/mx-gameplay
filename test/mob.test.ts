@@ -39,8 +39,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { AIR_BLOCK_ID, BlockId } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
-import { capabilityOfBlockId, DeltaTimeSecs, ENTITY_TYPES, ITEM_TYPES } from '@nerima-games/mc-kernel'
+import {
+  capabilityOfBlockId,
+  DeltaTimeSecs,
+  ENTITY_TYPES,
+  ITEM_TYPES,
+} from '@nerima-games/mc-kernel'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
@@ -104,6 +110,7 @@ import {
 } from '../src/domain/mob/mob-drop'
 
 const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
+const enchantmentLevel = (value: number) => Result.getOrThrow(EnchantmentLevel.result(value))
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
@@ -697,12 +704,14 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
 })
 
 describe('mob drop tables', () => {
-  const SLAIN = { _tag: 'Slain', lootingLevel: 0 } as const
+  const SLAIN = { _tag: 'Slain', lootingLevel: enchantmentLevel(0) } as const
   const SELF_DESTRUCT = { _tag: 'SelfDestruct' } as const
 
   it.effect('rolls creeper gunpowder from the vanilla 0–2 range', () =>
     Effect.sync(() => {
-      expect(CREEPER_DROPS).toStrictEqual([{ item: 'gunpowder', count: 0, maxCount: 2 }])
+      expect(CREEPER_DROPS).toStrictEqual([{
+        item: 'gunpowder', count: 0, maxCount: 2, lootingCountIncrease: true,
+      }])
       expect(ITEM_TYPES).toContain('gunpowder')
 
       expect(rollMobDrops(CREEPER_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
@@ -723,8 +732,12 @@ describe('mob drop tables', () => {
 
   it.effect('zombie and enderman use Minecraft count ranges', () =>
     Effect.sync(() => {
-      expect(ZOMBIE_DROPS).toStrictEqual([{ item: 'rotten_flesh', count: 0, maxCount: 2 }])
-      expect(ENDERMAN_DROPS).toStrictEqual([{ item: 'ender_pearl', count: 0, maxCount: 1 }])
+      expect(ZOMBIE_DROPS).toStrictEqual([{
+        item: 'rotten_flesh', count: 0, maxCount: 2, lootingCountIncrease: true,
+      }])
+      expect(ENDERMAN_DROPS).toStrictEqual([{
+        item: 'ender_pearl', count: 0, maxCount: 1, lootingCountIncrease: true,
+      }])
       expect(ITEM_TYPES).toContain('rotten_flesh')
       expect(ITEM_TYPES).toContain('ender_pearl')
 
@@ -811,15 +824,35 @@ describe('mob drop tables', () => {
     }),
   )
 
-  it.effect('accepts Looting context without applying the enchantment', () =>
+  it.effect('Looting increases drops within the vanilla count range', () =>
     Effect.sync(() => {
       const rolls = () => ({ chance: 0, count: 0.75 })
-      expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 0 }, rolls)).toStrictEqual([
+      expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: enchantmentLevel(0) }, rolls)).toStrictEqual([
         { item: 'gunpowder', count: 2 },
       ])
-      expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 3 }, rolls)).toStrictEqual([
-        { item: 'gunpowder', count: 2 },
+      expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: enchantmentLevel(3) }, rolls)).toStrictEqual([
+        { item: 'gunpowder', count: 3 },
       ])
+    }),
+  )
+
+  it.effect('Looting adds its rolled bonus to a fixed count and treats a non-finite level as zero', () =>
+    Effect.sync(() => {
+      const fixedCount: MobDropRule = {
+        item: 'bone',
+        count: 1,
+        lootingCountIncrease: true,
+      }
+      const lootingThree = { ...SLAIN, lootingLevel: enchantmentLevel(3) }
+      const malformedLevel = {
+        _tag: 'Slain',
+        lootingLevel: Number.NaN,
+      } as unknown as typeof SLAIN
+
+      expect(rollMobDrop(fixedCount, lootingThree, { chance: 0, count: 0.999 }))
+        .toStrictEqual({ item: 'bone', count: 4 })
+      expect(rollMobDrop(fixedCount, malformedLevel, { chance: 0, count: 0.999 }))
+        .toStrictEqual({ item: 'bone', count: 1 })
     }),
   )
 
@@ -877,8 +910,8 @@ describe('mob drop tables', () => {
   it.effect('ghasts roll tear and gunpowder ranges', () =>
     Effect.sync(() => {
       expect(GHAST_DROPS).toStrictEqual([
-        { item: 'ghast_tear', count: 0, maxCount: 1 },
-        { item: 'gunpowder', count: 0, maxCount: 2 },
+        { item: 'ghast_tear', count: 0, maxCount: 1, lootingCountIncrease: true },
+        { item: 'gunpowder', count: 0, maxCount: 2, lootingCountIncrease: true },
       ])
       expect(GHAST_XP_REWARD).toBe(5)
       expect(rollMobDrops(GHAST_DROPS, SLAIN, (index) => ({ chance: 0, count: index === 0 ? 0.9 : 0.99 }))).toStrictEqual([
@@ -920,8 +953,9 @@ describe('mob drop tables', () => {
     Effect.sync(() => {
       const guardian = EntityKind('guardian')
       const elderGuardian = EntityKind('elder_guardian')
-      const nonPlayerKill = { _tag: 'Slain', lootingLevel: 0 } as const
+      const nonPlayerKill = { _tag: 'Slain', lootingLevel: enchantmentLevel(0) } as const
       const playerKill = { ...nonPlayerKill, playerKill: true } as const
+      const lootingThreePlayerKill = { _tag: 'Slain', lootingLevel: enchantmentLevel(3), playerKill: true } as const
       const wikiCodRows = [
         { kind: guardian, chance: 0.4, countOnSuccess: 1 },
         { kind: elderGuardian, chance: 0.5, countOnSuccess: 1 },
@@ -965,6 +999,16 @@ describe('mob drop tables', () => {
         .toStrictEqual([{ item: 'cod', count: 1 }, { item: 'salmon', count: 1 }])
       expect(Result.getOrThrow(rollDropsOfKind(guardian, playerKill, [0, 0.999, 0.025, 0.61, 0])))
         .toStrictEqual([{ item: 'cod', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(
+        guardian,
+        lootingThreePlayerKill,
+        [0.999, 0, 0.054999, 0, 0],
+      ))).toStrictEqual([{ item: 'cod', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(
+        guardian,
+        lootingThreePlayerKill,
+        [0.999, 0, 0.055, 0, 0],
+      ))).toStrictEqual([])
 
       for (const [choiceRoll, expectedItem] of [
         [0, 'cod'],
@@ -1049,6 +1093,21 @@ describe('mob drop tables', () => {
         }],
       } as const
       expect(rollMobTable(zeroCountPool, SLAIN, makeMobDropRollSequence([0, 0]))).toStrictEqual([])
+
+      const chanceWithoutLootingBonus = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          chance: 0.5,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 1 }],
+        }],
+      } as const
+      expect(rollMobTable(
+        chanceWithoutLootingBonus,
+        { ...SLAIN, lootingLevel: enchantmentLevel(3) },
+        makeMobDropRollSequence([0.49, 0, 0, 0]),
+      )).toStrictEqual([{ item: 'rotten_flesh', count: 1 }])
     }),
   )
 

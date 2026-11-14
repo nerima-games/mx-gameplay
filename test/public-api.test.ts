@@ -46,6 +46,7 @@ describe('public API surface', () => {
         'GAMEPLAY_ENTITIES_OWNER_ID',
         'GAMEPLAY_FISHING_OWNER_ID',
         'GAMEPLAY_BREWING_OWNER_ID',
+        'GAMEPLAY_STATUS_EFFECTS_OWNER_ID',
         'GAMEPLAY_OWNER_REGISTRATIONS',
         'GameplayEntityRosterSchema',
         'makeGameplayFrameState',
@@ -66,6 +67,8 @@ describe('public API surface', () => {
         'requestShieldBlocking',
         'drainMeleeAttackResults',
         'requestTargetedPrimaryAttack',
+        'requestBlockMining',
+        'getMiningProgressFraction',
         'drainMobDrops',
         'drainMobExperience',
         'spawnDroppedItem',
@@ -76,6 +79,12 @@ describe('public API surface', () => {
         'requestFishingAdvance',
         'requestFishingCancel',
         'requestFishingReel',
+        'GameplayEnchantmentTableOffersRequestSchema',
+        'GameplayEnchantmentTableApplyRequestSchema',
+        'GameplayEnchantmentTableResultSchema',
+        'requestEnchantmentTableOffers',
+        'requestEnchantmentTableApply',
+        'drainEnchantmentTableResults',
         'GAMEPLAY_STAGE_IDS',
         'BREWING_ADVANCE_STAGE_ID',
         'UPSTREAM_STAGE_IDS',
@@ -91,6 +100,14 @@ describe('public API surface', () => {
   it.effect('re-exports host-facing targeted right-click routing', () =>
     Effect.sync(() => {
       expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
+    }),
+  )
+
+  it.effect('keeps fishing enchantment sample transforms out of the package barrel', () =>
+    Effect.sync(() => {
+      expect(Object.keys(gameplay)).not.toContain('fishingWaitTicksWithLure')
+      expect(Object.keys(gameplay)).not.toContain('fishingLootSampleWithLuckOfTheSea')
+      expect(Object.keys(gameplay)).not.toContain('FISHING_MAX_ENCHANTMENT_LEVEL')
     }),
   )
 

@@ -27,6 +27,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Result, Schema } from 'effect'
 import type { MobBehaviour } from '../entities/mob-frame.js'
+import type { AttackDamageBonus } from '../status-effect.js'
 import {
   DamageImmunityStateSchema,
   resolveDamageWithInvulnerability,
@@ -293,6 +294,7 @@ export const prepareMeleeAttack = (
     entities: ReadonlyArray<Entity<MobBehaviour>>
     heldItem: ItemType | null
     critical: boolean
+    damageBonus?: AttackDamageBonus
     ticksSinceLastAttack: MeleeCooldownTicks
     targetDamageState: DamageImmunityState | null
     blockDistance?: AttackRangeDistance
@@ -329,13 +331,20 @@ export const prepareMeleeAttack = (
     ) return Result.fail('invalid-authoritative-state')
   }
   if (typeof input.critical !== 'boolean') return Result.fail('invalid-authoritative-state')
+  if (input.damageBonus !== undefined && !Number.isFinite(input.damageBonus)) {
+    return Result.fail('invalid-authoritative-state')
+  }
   if (input.heldItem !== null && !isItemType(input.heldItem)) return Result.fail('invalid-authoritative-state')
 
   const cooldown = meleeAttackCooldownForItem(input.heldItem, input.ticksSinceLastAttack)
   if (Result.isFailure(cooldown)) return Result.fail('invalid-attack-timing')
 
   const critical = input.critical && cooldown.success.charge >= MIN_ATTACK_COOLDOWN_FOR_CRITICAL
-  const attackDamage = meleeDamageForKnownItem(input.heldItem, critical) * cooldown.success.damageMultiplier
+  const attackDamage = Math.max(
+    0,
+    meleeDamageForKnownItem(input.heldItem, critical) * cooldown.success.damageMultiplier +
+      (input.damageBonus ?? 0),
+  )
 
   const eyeY = pose.feetPosition.y + EYE_LEVEL_OFFSET
 

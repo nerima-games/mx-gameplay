@@ -277,7 +277,13 @@ describe('gameplay melee durability stage', () => {
 
       yield* runFrame(stages)
 
-      expect(yield* Ref.get(state.operationFailures)).toHaveLength(1)
+      const operationFailures = yield* Ref.get(state.operationFailures)
+      expect(operationFailures).toHaveLength(2)
+      expect(operationFailures).toContainEqual(expect.objectContaining({
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+      }))
       expect(yield* Ref.get(state.pendingMeleeAttacks)).toHaveLength(1)
       expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
     }),

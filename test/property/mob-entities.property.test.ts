@@ -20,6 +20,7 @@ import {
   position as makePosition,
   type Position,
 } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import {
   ARROW_PROFILE,
   DESPAWNED,
@@ -105,6 +106,7 @@ const position = (x: number, y: number, z: number): Position =>
 
 const ORIGIN = position(0, 64, 0)
 const normalizedRoll = fc.double({ min: 0, max: 0.999_999_999, noNaN: true })
+const enchantmentLevel = (value: number) => Result.getOrThrow(EnchantmentLevel.result(value))
 
 const launchRequest = (serial: number, tick: number, revision: number): ProjectileLaunchRequest => ({
   projectileId: Schema.decodeUnknownSync(ProjectileIdSchema)(`property-arrow-${String(serial)}`),
@@ -226,17 +228,17 @@ describe('mob entity properties', () => {
           const highRoll = Math.max(firstCountRoll, secondCountRoll)
           const withoutLooting = rollMobDrop(
             countRule,
-            { _tag: 'Slain', lootingLevel: 0 },
+            { _tag: 'Slain', lootingLevel: enchantmentLevel(0) },
             { chance: 0, count: lowRoll },
           )
           const withLooting = rollMobDrop(
             countRule,
-            { _tag: 'Slain', lootingLevel },
+            { _tag: 'Slain', lootingLevel: enchantmentLevel(lootingLevel) },
             { chance: 0, count: lowRoll },
           )
           const highCount = rollMobDrop(
             countRule,
-            { _tag: 'Slain', lootingLevel },
+            { _tag: 'Slain', lootingLevel: enchantmentLevel(lootingLevel) },
             { chance: 0, count: highRoll },
           )
           const rolls: DropRolls = { chance: 0, count: lowRoll }
@@ -251,7 +253,7 @@ describe('mob entity properties', () => {
           expect(withLooting!.count).toBe(withoutLooting!.count)
           expect(highCount!.count).toBeGreaterThanOrEqual(withLooting!.count)
           expect(rollMobDrop(rule, { _tag: 'SelfDestruct' }, rolls)).toBeUndefined()
-          expect(mobXpReward({ _tag: 'Slain', lootingLevel }, 10)).toBe(10)
+          expect(mobXpReward({ _tag: 'Slain', lootingLevel: enchantmentLevel(lootingLevel) }, 10)).toBe(10)
           expect(mobXpReward({ _tag: 'SelfDestruct' }, 10)).toBe(0)
         },
       ),

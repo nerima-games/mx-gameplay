@@ -87,6 +87,8 @@ import {
   type Vitals,
 } from '../../src/domain/death-cause'
 import { AIR_BLOCK_ID, BlockId, DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
+import { Result } from 'effect'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
@@ -753,7 +755,10 @@ export const slayCreeper = (state: ArenaState): void => {
     return
   }
 
-  const kill = { _tag: 'Slain', lootingLevel: state.lootingLevel } as const
+  const kill = {
+    _tag: 'Slain',
+    lootingLevel: Result.getOrThrow(EnchantmentLevel.result(state.lootingLevel)),
+  } as const
   creeper.alive = false
   state.loot = rollMobDrops(CREEPER_DROPS, kill, () => LOWEST_ROLLS)
   state.xp = mobXpReward(kill, CREEPER_XP_REWARD)
@@ -972,7 +977,10 @@ export const ARENA_DROP_TABLES: ReadonlyArray<
 
 /** What a table yields at a given chance roll. Every number is `rollMobDrops`'. */
 export const dropsAtRoll = (rules: ReadonlyArray<MobDropRule>, chance: number): string => {
-  const drops = rollMobDrops(rules, { _tag: 'Slain', lootingLevel: 0 }, () => ({ chance, count: 0 }))
+  const drops = rollMobDrops(rules, {
+    _tag: 'Slain',
+    lootingLevel: Result.getOrThrow(EnchantmentLevel.result(0)),
+  }, () => ({ chance, count: 0 }))
   return drops.length === 0 ? '(nothing)' : drops.map((drop) => `${drop.item} x${String(drop.count)}`).join(', ')
 }
 

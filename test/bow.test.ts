@@ -69,7 +69,18 @@ import {
   makeGameplayFrameStateForOwner,
   requestBowShot,
 } from '../src/stages/registration'
-import { DimensionIdSchema, EntityHealthPoints, PositionAxis, SimulationTickSchema, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
+import {
+  DimensionIdSchema,
+  EntityHealthPoints,
+  PositionAxis,
+  SimulationTickSchema,
+  enchantmentsComponent,
+  itemComponents,
+  itemStack,
+  StackCount,
+  type BlockId,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -1008,7 +1019,7 @@ const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
 
 const scene = (
   initial: EntityRoster<MobBehaviour>,
-  inventorySlots?: ReadonlyArray<Slot>,
+  inventorySlots: ReadonlyArray<Slot> = inventoryWith(true, false),
   ownerInitial: GameplayOwnerInitialState = {},
 ) =>
   Effect.gen(function* () {
@@ -1226,6 +1237,28 @@ inventory: { mode: 'creative', slotIndex: 0 },
     }),
   )
 
+  it.effect('refuses a shot when the requested slot does not hold a bow', () =>
+    Effect.gen(function* () {
+      const { state, commit, stages } = yield* scene(AHEAD, inventoryWith(false, true))
+      yield* Ref.set(state.pendingBowShots, [{
+        requestId: 'missing-bow',
+        origin: EYE,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      }])
+
+      yield* runFrame(stages)
+
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'missing-bow', success: false, outcome: 'InventoryUnavailable' },
+      ])
+    }),
+  )
+
   it.effect('THE INBOX IS DRAINED, so one shot is serviced once', () =>
     Effect.gen(function* () {
       const { state, commit, stages } = yield* scene(AHEAD)
@@ -1281,6 +1314,68 @@ inventory: { mode: 'creative', slotIndex: 0 },
       )
     }),
   )
+
+  it.effect('settles Infinity, Unbreaking, Flame, and Punch through two survival shots', () =>
+    Effect.gen(function* () {
+      const enchantments = Result.getOrThrow(enchantmentsComponent({
+        'minecraft:flame': 1,
+        'minecraft:infinity': 1,
+        'minecraft:punch': 2,
+        'minecraft:unbreaking': 3,
+      }))
+      const components = Result.getOrThrow(itemComponents('bow', { enchantments }))
+      const enchantedBow = Result.getOrThrow(itemStack('bow', StackCount(1), { components }))
+      const inventory = [...inventoryWith(true, true)]
+      inventory[0] = enchantedBow
+      const { state, commit, stages } = yield* scene(AHEAD, inventory)
+      yield* Ref.set(state.rollSeed, 3)
+      yield* Ref.set(state.pendingBowShots, [
+        {
+          requestId: 'enchanted-survival-shot-1',
+          origin: EYE,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          chargeSecs: BOW_FULL_CHARGE_SECS,
+          inventory: { mode: 'survival', slotIndex: 0 },
+        },
+        {
+          requestId: 'enchanted-survival-shot-2',
+          origin: EYE,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          chargeSecs: BOW_FULL_CHARGE_SECS,
+          inventory: { mode: 'survival', slotIndex: 0 },
+        },
+      ])
+
+      yield* runFrame(stages)
+
+      const roster = yield* ownerRoster(commit)
+      const storage = yield* ownerStorage(commit)
+      const fire = yield* Ref.get(state.fireLifecycle)
+      const knockbacks = yield* drainBowKnockbacks(state)
+      expect(roster.entities[0]?.healthPoints).toBe(2)
+      expect(storage.inventory.slots[0]).toStrictEqual(enchantedBow)
+      expect(storage.inventory.slots[1]).toMatchObject({ item: 'arrow', count: 1 })
+      expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
+      expect(yield* Ref.get(state.rollSeed)).not.toBe(3)
+      expect(knockbacks).toHaveLength(2)
+      expect(knockbacks.map(({ strength }) => strength)).toStrictEqual([6, 6])
+      expect(fire.burningActors).toMatchObject([{
+        id: 'target',
+        kind: 'entity',
+        remainingTicks: 100,
+        damageCooldownTicks: 0,
+      }])
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'enchanted-survival-shot-1', success: true, outcome: 'Fired' },
+        { requestId: 'enchanted-survival-shot-2', success: true, outcome: 'Fired' },
+      ])
+    }),
+  )
+
 
   it.effect('rejects a survival shot without an arrow before combat', () =>
     Effect.gen(function* () {

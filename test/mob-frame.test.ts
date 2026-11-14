@@ -78,9 +78,12 @@ import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-sp
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import { durabilityForItem, EntityId, EntityKind, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+
+const enchantmentLevel = (value: number) => Result.getOrThrow(EnchantmentLevel.result(value))
 
 const blockPosition = (x: number, y: number, z: number) =>
   makeBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
@@ -146,7 +149,7 @@ const SPAWN_CANDIDATE: SpawnCandidate = {
 describe('the loot table is keyed by a kind that something actually spawns', () => {
   it.effect('defaults absent chance and count rolls to zero', () =>
     Effect.sync(() => {
-      expect(rollDropsOfKind(ZOMBIE_KIND, { _tag: 'Slain', lootingLevel: 0 }, [])).toStrictEqual(Result.succeed([]))
+      expect(rollDropsOfKind(ZOMBIE_KIND, { _tag: 'Slain', lootingLevel: enchantmentLevel(0) }, [])).toStrictEqual(Result.succeed([]))
     }),
   )
 
@@ -461,7 +464,7 @@ describe('dropRulesOfKind and xpRewardOfKind: an unknown kind', () => {
       expect(dropRulesOfKind(NO_RULE_KIND)).toStrictEqual(Result.fail(unknown))
       expect(dropRollsNeeded(NO_RULE_KIND)).toStrictEqual(Result.fail(unknown))
       expect(xpRewardOfKind(NO_RULE_KIND)).toStrictEqual(Result.fail(unknown))
-      expect(rollDropsOfKind(NO_RULE_KIND, { _tag: 'Slain', lootingLevel: 0 }, []))
+      expect(rollDropsOfKind(NO_RULE_KIND, { _tag: 'Slain', lootingLevel: enchantmentLevel(0) }, []))
         .toStrictEqual(Result.fail(unknown))
       expect(rollCasualtyDrops([{ id: EntityId('e:unknown'), kind: NO_RULE_KIND, at: ORIGIN }], 7))
         .toStrictEqual({ _tag: 'Unsupported', drops: [], seed: 7, issues: [unknown] })
@@ -1105,6 +1108,7 @@ describe('experienceOfCasualties', () => {
         id: EntityId('e:player'),
         kind: ZOMBIE_KIND,
         at: ORIGIN,
+        dimension: 'nether',
         killCredit: 'player',
         lastHitTick: SimulationTick(100),
         deathTick: atTick,
@@ -1175,7 +1179,7 @@ describe('experienceOfCasualties', () => {
         noReward, noCredit, recentPlayer, staleHit, futureHit, playerTnt, babyZombie, wolfCredit,
         witherNoCredit, wither, dragon,
       ])).toStrictEqual({ _tag: 'Resolved', experience: [
-        { source: recentPlayer.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
+        { source: recentPlayer.id, kind: ZOMBIE_KIND, at: ORIGIN, dimension: 'nether', amount: ZOMBIE_XP_REWARD },
         { source: playerTnt.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
         { source: babyZombie.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: 12 },
         { source: wolfCredit.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },

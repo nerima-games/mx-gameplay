@@ -6,20 +6,31 @@
  * dropped-item-metadata tests for where those two joined).
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Result } from 'effect'
+import * as FastCheck from 'fast-check'
+import { Result, Schema } from 'effect'
+import { WorldRevisionSchema, enchantmentsComponent, itemComponents } from '@nerima-games/mc-kernel'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   emptyEquipment,
   emptyPlayerStorage,
   equip,
   equipmentItem,
+  durabilityForItem,
   itemStack,
   withInventory,
   type Inventory,
   type ItemStack,
   type PlayerStorage,
 } from '@nerima-games/mc-sim'
-import { deathDropsFromPlayerStorage, type PlayerSlotMetadata } from '../src/domain/entities/dropped-item'
+import {
+  appendPlayerDeathDropSpawns,
+  deathDropsFromPlayerStorage as planDeathDrops,
+  DroppedItemOwnerSnapshotSchema,
+  type PlayerSlotMetadata,
+} from '../src/domain/entities/dropped-item'
+
+const deathDropsFromPlayerStorage = (...args: Parameters<typeof planDeathDrops>) =>
+  Result.getOrThrow(planDeathDrops(...args))
 
 const makeItemStack = (item: Parameters<typeof itemStack>[0], count: number): ItemStack =>
   Result.getOrThrow(itemStack(item, count))
@@ -51,6 +62,119 @@ describe('deathDropsFromPlayerStorage', () => {
       { item: 'gunpowder', count: 3, at, durability: null },
       { item: 'stick', count: 1, at, durability: null },
     ])
+  })
+
+  it('preserves supported component enchantments on ordinary death drops', () => {
+    const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
+    const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments }))
+    const pickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
+    const result = planDeathDrops(storageWith([pickaxe]), at)
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success[0]?.enchantments).toStrictEqual([{ id: 'mending', level: 1 }])
+
+    const appended = appendPlayerDeathDropSpawns(
+      { items: [] },
+      result.success,
+      Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+    )
+    expect(Schema.is(DroppedItemOwnerSnapshotSchema)(appended)).toBe(true)
+    expect(appended.items[0]?.behaviour.enchantments).toStrictEqual([{ id: 'mending', level: 1 }])
+  })
+
+  it('rejects unsupported or out-of-range enchantments as typed metadata failures', () => {
+    const unsupported = Result.getOrThrow(enchantmentsComponent({ 'minecraft:unknown_enchantment': 1 }))
+    const unsupportedComponents = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments: unsupported }))
+    const unsupportedPickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components: unsupportedComponents }))
+    expect(Result.isFailure(planDeathDrops(storageWith([unsupportedPickaxe]), at))).toBe(true)
+
+    const overLevel = Result.getOrThrow(enchantmentsComponent({ 'minecraft:sharpness': 6 }))
+    const overLevelComponents = Result.getOrThrow(itemComponents('diamond_sword', { enchantments: overLevel }))
+    const overLevelSword = Result.getOrThrow(itemStack('diamond_sword', 1, { components: overLevelComponents }))
+    expect(Result.isFailure(planDeathDrops(storageWith([overLevelSword]), at))).toBe(true)
+
+    const overLevelHelmetComponents = Result.getOrThrow(itemComponents('iron_helmet', { enchantments: overLevel }))
+    const overLevelHelmet = Result.getOrThrow(itemStack('iron_helmet', 1, { components: overLevelHelmetComponents }))
+    const equippedHelmet = equipmentItemOrThrow(overLevelHelmet)
+    const equipmentStorage: PlayerStorage = {
+      ...emptyPlayerStorage(),
+      equipment: equipState(emptyEquipment(), 'head', equippedHelmet),
+    }
+    expect(Result.isFailure(planDeathDrops(equipmentStorage, at))).toBe(true)
+  })
+
+  it('appends every valid death-drop count without losing or duplicating items', () => {
+    FastCheck.assert(FastCheck.property(
+      FastCheck.integer({ min: 1, max: 64 }),
+      (count) => {
+        const result = planDeathDrops(storageWith([makeItemStack('stick', count)]), at)
+        if (Result.isFailure(result)) return false
+        const appended = appendPlayerDeathDropSpawns(
+          { items: [] },
+          result.success,
+          Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+        )
+        return Schema.is(DroppedItemOwnerSnapshotSchema)(appended) &&
+          appended.items.reduce((sum, item) => sum + item.behaviour.count, 0) === count
+      },
+    ))
+    for (const count of [1, 64]) {
+      const result = planDeathDrops(storageWith([makeItemStack('stick', count)]), at)
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isFailure(result)) continue
+      expect(appendPlayerDeathDropSpawns(
+        { items: [] },
+        result.success,
+        Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+      ).items.reduce((sum, item) => sum + item.behaviour.count, 0)).toBe(count)
+    }
+  })
+
+  it('removes only Vanishing-cursed inventory and equipment while keeping an ordinary item', () => {
+    // Java Edition removes Curse of Vanishing items on player death, regardless of inventory slot:
+    // https://minecraft.wiki/w/Curse_of_vanishing and https://bugs.mojang.com/browse/MC-298183.
+    const curse = Result.getOrThrow(enchantmentsComponent({ 'minecraft:vanishing_curse': 1 }))
+    const cursedComponents = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments: curse }))
+    const cursedPickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components: cursedComponents }))
+    const slots: Inventory['slots'] = [cursedPickaxe, makeItemStack('stick', 2)]
+    const metadata: PlayerSlotMetadata = {
+      customNames: { '1': 'Keepsake' },
+      enchantedItems: {
+        'equipment:head': {
+          item: 'iron_helmet',
+          durability: durabilityForItem('iron_helmet'),
+          enchantments: [{ id: 'vanishing_curse', level: 1 }],
+        },
+      },
+    }
+
+    const drops = deathDropsFromPlayerStorage(
+      storageWith(slots, { slot: 'head', item: makeItemStack('iron_helmet', 1) }),
+      at,
+      metadata,
+    )
+
+    expect(drops).toStrictEqual([
+      { item: 'stick', count: 2, at, durability: null, customName: 'Keepsake' },
+    ])
+  })
+
+  it('does not apply a stale Vanishing curse to a replacement item in that slot', () => {
+    const metadata: PlayerSlotMetadata = {
+      customNames: {},
+      enchantedItems: {
+        '0': {
+          item: 'iron_helmet',
+          durability: durabilityForItem('iron_helmet'),
+          enchantments: [{ id: 'vanishing_curse', level: 1 }],
+        },
+      },
+    }
+
+    const drops = deathDropsFromPlayerStorage(storageWith([makeItemStack('stick', 1)]), at, metadata)
+
+    expect(drops).toStrictEqual([{ item: 'stick', count: 1, at, durability: null }])
   })
 
   it('drops equipped items, and leaves an empty equipment slot uncounted', () => {
@@ -113,6 +237,22 @@ describe('deathDropsFromPlayerStorage', () => {
     const drops = deathDropsFromPlayerStorage(storageWith(slots), at, metadata)
 
     expect(drops[0]?.enchantments).toBeUndefined()
+  })
+
+  it('keeps component enchantments when slot metadata belongs to a replaced item', () => {
+    const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
+    const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments }))
+    const pickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
+    const metadata: PlayerSlotMetadata = {
+      customNames: {},
+      enchantedItems: {
+        '0': { item: 'wooden_pickaxe', durability: null, enchantments: [{ id: 'unbreaking', level: 1 }] },
+      },
+    }
+
+    const drops = deathDropsFromPlayerStorage(storageWith([pickaxe]), at, metadata)
+
+    expect(drops[0]?.enchantments).toStrictEqual([{ id: 'mending', level: 1 }])
   })
 
   it('keys equipment metadata as `equipment:<slot>`, distinct from inventory index keys', () => {

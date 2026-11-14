@@ -5,7 +5,9 @@ import {
   EntityHealthPoints,
   EntitySerial,
   PositionAxis,
+  SimulationTickSchema,
   StackCount,
+  WorldPositionSchema,
   WorldIdSchema,
   position,
 } from '@nerima-games/mc-kernel'
@@ -27,7 +29,7 @@ import {
   DroppedItemOwnerSnapshotSchema,
   type DroppedItemOwnerSnapshot,
 } from '../src/domain/entities/dropped-item.js'
-import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import { CREEPER_KIND, type MobBehaviour, type MobExperienceEvent } from '../src/domain/entities/mob-frame.js'
 import { INITIAL_PLAYER_POSE } from '../src/domain/in-memory-player.js'
 import {
   drainGameplayUnsupportedOperations,
@@ -65,9 +67,16 @@ const makeCreeper = (): Entity<MobBehaviour> => ({
 const makeHarness = (options: Readonly<{
   readonly entity?: Entity<MobBehaviour> | null
   readonly droppedItems?: DroppedItemOwnerSnapshot
-  readonly orb?: Readonly<{ id: ReturnType<typeof EntityId>; amount: number }>
+  readonly orb?: Readonly<{
+    id: ReturnType<typeof EntityId>
+    amount: number
+    position?: Schema.Schema.Type<typeof WorldPositionSchema>
+    spawnedAt?: number
+  }>
   readonly withoutCoordinator?: boolean
   readonly withoutEntitiesOwner?: boolean
+  readonly withoutExperienceOrbsOwner?: boolean
+  readonly mobSimulation?: boolean
 }> = {}) => Effect.gen(function* () {
   const entities = options.entity === null ? [] : [options.entity ?? makeCreeper()]
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
@@ -79,7 +88,14 @@ const makeHarness = (options: Readonly<{
       ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
       ...(options.orb === undefined
         ? {}
-        : { experienceOrbs: { orbs: [{ id: options.orb.id, value: Result.getOrThrow(createExperienceOrbValue(options.orb.amount)) }] } }),
+        : { experienceOrbs: { orbs: [{
+            id: options.orb.id,
+            value: Result.getOrThrow(createExperienceOrbValue(options.orb.amount)),
+            ...(options.orb.position === undefined ? {} : { position: options.orb.position }),
+            ...(options.orb.spawnedAt === undefined
+              ? {}
+              : { spawnedAt: Schema.decodeUnknownSync(SimulationTickSchema)(options.orb.spawnedAt) }),
+          }] } }),
     }),
     chunkStores: { forDimension: () => store.api },
   })
@@ -102,7 +118,9 @@ const makeHarness = (options: Readonly<{
         playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
         droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
         vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
-        experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+        ...(options.withoutExperienceOrbsOwner === true
+          ? {}
+          : { experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID }),
         ...(options.withoutEntitiesOwner === true ? {} : { entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID }),
       }
   const context: GameplayStageContext = {
@@ -112,7 +130,7 @@ const makeHarness = (options: Readonly<{
     time,
     vehicleService: undefined,
     vehicleEnvironment: undefined,
-    options: {},
+    options: options.mobSimulation === undefined ? {} : { mobSimulation: options.mobSimulation },
     commit,
   }
   return {
@@ -266,5 +284,124 @@ describe('entities-stage owner-backed coverage', () => {
     expect(after.revision).toBe(before.revision + 1)
     expect(after.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0 })
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(registered.state))).toStrictEqual([])
+  })
+
+  it('keeps queued mob XP when a lower-level stage composition omits the orb owner', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      withoutExperienceOrbsOwner: true,
+    }))
+    const experience = {
+      source: EntityId('test:queued-experience'),
+      kind: CREEPER_KIND,
+      at: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      amount: 5,
+    }
+    await Effect.runPromise(Ref.set(harness.state.mobExperience, [experience]))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual({
+      _tag: 'Unsupported',
+      action: 'ExperienceOrbCreation',
+      reason: 'OwnerRegistrationUnavailable',
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([experience])
+    expect(harness.requests).toHaveLength(0)
+  })
+
+  it('does no XP owner work when a live entity frame has no queued casualty rewards', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, mobSimulation: false }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([])
+    expect(harness.requests).toHaveLength(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([])
+  })
+
+  it('rejects invalid XP rewards and positions before creating an orb owner candidate', async () => {
+    const invalidAmount = await Effect.runPromise(makeHarness({ entity: null, mobSimulation: false }))
+    const event: MobExperienceEvent = {
+      source: EntityId('test:invalid-xp-reward'),
+      kind: CREEPER_KIND,
+      at: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      amount: -1,
+    }
+    await Effect.runPromise(Ref.set(invalidAmount.state.mobExperience, [event]))
+    await invalidAmount.run()
+
+    expect(await Effect.runPromise(Ref.get(invalidAmount.state.operationFailures))).toContainEqual(
+      expect.objectContaining({ _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb' }),
+    )
+    expect(invalidAmount.requests).toHaveLength(0)
+
+    const invalidPosition = await Effect.runPromise(makeHarness({ entity: null, mobSimulation: false }))
+    const malformedAt = position(PositionAxis(0), PositionAxis(64), PositionAxis(0))
+    expect(Reflect.set(malformedAt, 'x', Number.NaN)).toBe(true)
+    const malformedPosition: MobExperienceEvent = {
+      source: EntityId('test:invalid-xp-position'),
+      kind: CREEPER_KIND,
+      at: malformedAt,
+      amount: 5,
+    }
+    await Effect.runPromise(Ref.set(invalidPosition.state.mobExperience, [malformedPosition]))
+    await invalidPosition.run()
+
+    expect(await Effect.runPromise(Ref.get(invalidPosition.state.operationFailures))).toContainEqual(
+      expect.objectContaining({ _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb' }),
+    )
+    expect(invalidPosition.requests).toHaveLength(0)
+  })
+
+  it('keeps future-dated orbs live and blocks pickup until the cooldown tick is reached', async () => {
+    const orbPosition = Schema.decodeUnknownSync(WorldPositionSchema)({
+      dimension: 'overworld', x: 40, y: 64, z: 40,
+    })
+    const futureOrb = await Effect.runPromise(makeHarness({
+      entity: null,
+      mobSimulation: false,
+      orb: { id: EntityId('test:future-xp-orb'), amount: 3, position: orbPosition, spawnedAt: 1 },
+    }))
+    await futureOrb.run()
+    expect(await Effect.runPromise(Ref.get(futureOrb.state.operationFailures))).toStrictEqual([])
+    expect(futureOrb.requests).toHaveLength(0)
+
+    const futureCooldown = await Effect.runPromise(makeHarness({
+      entity: null,
+      mobSimulation: false,
+      orb: { id: EntityId('test:cooldown-xp-orb'), amount: 3, position: orbPosition, spawnedAt: 0 },
+    }))
+    await Effect.runPromise(Ref.set(
+      futureCooldown.state.lastExperienceOrbPickupTick,
+      Schema.decodeUnknownSync(SimulationTickSchema)(1),
+    ))
+    await futureCooldown.run()
+    expect(await Effect.runPromise(Ref.get(futureCooldown.state.operationFailures))).toStrictEqual([])
+    expect(futureCooldown.requests).toHaveLength(0)
+  })
+
+  it('rejects invalid simulation ticks before XP attraction and reward processing', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, mobSimulation: false }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, -1))
+    await Effect.runPromise(Ref.set(harness.state.mobExperience, [{
+      source: EntityId('test:invalid-xp-tick'),
+      kind: CREEPER_KIND,
+      at: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      amount: 5,
+    }]))
+
+    await harness.run()
+
+    const failures = await Effect.runPromise(Ref.get(harness.state.operationFailures))
+    const tickFailures = failures.filter((failure) =>
+      failure._tag === 'Failed' && failure.operation === 'CandidateBuild' && failure.subject === 'ExperienceOrb',
+    )
+    expect(tickFailures).toHaveLength(1)
+    expect(tickFailures[0]).toMatchObject({
+      requestId: String(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID),
+      occurrences: 2,
+    })
+    expect(harness.requests).toHaveLength(0)
   })
 })

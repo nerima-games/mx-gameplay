@@ -1,3 +1,4 @@
+import { Brand } from 'effect'
 import {
   GameplayBrewingBottleItemUseResultSchema,
   GameplayBrewingItemUseResultSchema,
@@ -23,6 +24,7 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
+  recordGameplayStageFailureDeduplicated,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollAt,
@@ -35,10 +37,19 @@ import {
   stepStatusEffects,
   useBucket,
 } from './registration-core.js'
-import { AttackRangeDistance, EntityHealthPoints, EntityId, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
+import {
+  AttackRangeDistance,
+  EnchantmentLevel,
+  EntityHealthPoints,
+  EntityId,
+  PositionAxis,
+  RandomSeed,
+  weaponComponent,
+  type EnchantmentLevel as EnchantmentLevelValue,
+} from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
-import { Option, Result } from 'effect'
+import { Equal, Option, Result, Schema } from 'effect'
 import {
   DamageAmount,
   DamageCause,
@@ -50,8 +61,9 @@ import {
   withInventory,
   type PlayerStorage,
   type StorageLocation,
+  type EquipmentItem,
 } from '@nerima-games/mc-sim'
-import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
+import type { BlockPosition, DeltaTimeSecs, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
@@ -68,6 +80,7 @@ import type {
   BlockUseResult,
   CollectBrewingBottleRequest,
   BrewingItemUseRequest,
+  GameplayFrameState,
   BowShotRequest,
   DroppedItemSpawn,
   GameplayStageContext,
@@ -87,6 +100,7 @@ import type {
 
 import {
   AIR_BLOCK_ID,
+  BlockPositionSchema,
   adjacentBlockPosition,
   EntityIdSchema,
   DomainEventSchema,
@@ -112,6 +126,10 @@ import {
   BREWING_MAX_FUEL_CHARGES,
   FishingStateSchema,
   FishingLootSampleSchema,
+  FishingWaitTicksSchema,
+  EnchantmentTableInventorySlotSchema,
+  EnchantmentTableOfferSchema as SimEnchantmentTableOfferSchema,
+  ItemStackSchema,
   ProjectileServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
   launchProjectile,
@@ -131,12 +149,21 @@ import {
   type CropState,
   primeTnt,
   spawnEntity,
+  type EnchantmentTableApplyResult,
+  type EnchantmentTableInventorySlot,
+  type EnchantmentTableOffer as RawEnchantmentTableOffer,
+  type EnchantmentTableOffers as RawEnchantmentTableOffers,
+  type ItemStack,
+  type EnchantmentTableServiceApi,
 } from '@nerima-games/mc-sim'
-import { Schema } from 'effect'
 import {
-  applyStatusEffect,
-  SPEED_MOVEMENT_MULTIPLIER,
+  applyStatusEffectToValidatedState,
+  persistentStatusEffectApplicationFromValidatedFields,
+  statusEffectModifiers,
   StatusEffectStateSchema,
+  ValidatedStatusEffectStateSchema,
+  type AttackDamageBonus,
+  type StatusEffectState,
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
 import { cropDrops } from '../domain/interactions/crop-drops.js'
@@ -160,6 +187,32 @@ import {
   shotTargetWithCandidate,
 } from '../domain/interactions/bow-shot.js'
 import { bowCharge, bowDamage, canFireBow } from '../domain/interactions/draw-bow.js'
+import {
+  bowDamageWithEnchantments,
+  durabilityWearWithEnchantments,
+  enchantmentLevel,
+  fireAspectDurationTicks,
+  flameDurationTicks,
+  infinityPreventsArrowConsumption,
+  lootingLevel,
+  meleeDamageWithEnchantments,
+  knockbackLevel,
+  type KnockbackStrength,
+  punchKnockbackBonus,
+  silkTouchEnabled,
+  EnchantmentTableShelfCountSchema,
+  generateEnchantmentTableOffersForItem,
+  type EnchantmentSource,
+} from '../domain/enchantment.js'
+import {
+  advanceMiningProgress,
+  miningLootContextForItem,
+} from '../domain/interactions/mining-progress.js'
+import {
+  FISHING_MAX_ENCHANTMENT_LEVEL,
+  fishingLootSampleWithLuckOfTheSea,
+  fishingWaitTicksWithLure,
+} from '../domain/interactions/fishing-enchantment.js'
 import {
   MeleeCooldownTicksSchema,
   prepareMeleeAttack,
@@ -208,9 +261,35 @@ const DEFAULT_WEAPON_ITEM_DAMAGE = Result.getOrThrow(weaponComponent()).itemDama
 const FISHING_ROD_REEL_WEAR = 1
 const VALIDATED_FISHING_ROD_LOCATION = Symbol('ValidatedFishingRodLocation')
 
+type FishingEnchantments = Readonly<{
+  lureLevel: EnchantmentLevelValue
+  luckOfTheSeaLevel: EnchantmentLevelValue
+  openWater: boolean
+}>
+
+const fishingEnchantmentsForRod = (
+  rod: Pick<EquipmentItem, 'components'> | null,
+  openWater: boolean,
+): FishingEnchantments => {
+  const enchantments = rod?.components.enchantments ?? []
+  return {
+    lureLevel: Result.getOrThrow(EnchantmentLevel.result(
+      Math.min(FISHING_MAX_ENCHANTMENT_LEVEL, enchantmentLevel(enchantments, 'lure')),
+    )),
+    luckOfTheSeaLevel: Result.getOrThrow(EnchantmentLevel.result(
+      Math.min(
+        FISHING_MAX_ENCHANTMENT_LEVEL,
+        enchantmentLevel(enchantments, 'luck_of_the_sea'),
+      ),
+    )),
+    openWater,
+  }
+}
+
 type ValidatedFishingRodLocation = Readonly<{
   storage: PlayerStorage
   location: StorageLocation
+  rod: Pick<EquipmentItem, 'components'>
   [VALIDATED_FISHING_ROD_LOCATION]: true
 }>
 
@@ -222,7 +301,7 @@ const validatedFishingRodAt = (
     ? storage.inventory.slots[location.slotIndex]
     : storage.equipment.slots[location.slot]
   return heldStack?.item === 'fishing_rod'
-    ? { storage, location, [VALIDATED_FISHING_ROD_LOCATION]: true }
+    ? { storage, location, rod: heldStack, [VALIDATED_FISHING_ROD_LOCATION]: true }
     : undefined
 }
 
@@ -274,8 +353,43 @@ const validatedMeleeWeaponAt = (
   }
 }
 
-const damageValidatedMeleeWeaponAt = (weapon: ValidatedMeleeWeaponLocation): PlayerStorage =>
-  damagePlayerStorageAt(weapon.storage, weapon.location, weapon.wear).storage
+const damageValidatedMeleeWeaponAt = (
+  weapon: ValidatedMeleeWeaponLocation,
+  wear = weapon.wear,
+): PlayerStorage => damagePlayerStorageAt(weapon.storage, weapon.location, wear).storage
+
+const UNDEAD_MOB_KINDS = new Set([
+  'bogged', 'drowned', 'husk', 'phantom', 'skeleton', 'skeleton_horse', 'stray', 'wither',
+  'wither_skeleton', 'zoglin', 'zombie', 'zombie_horse', 'zombie_villager', 'zombified_piglin',
+])
+const ARTHROPOD_MOB_KINDS = new Set(['bee', 'cave_spider', 'endermite', 'silverfish', 'spider'])
+
+const meleeEnchantmentTarget = (kind: string): 'undead' | 'arthropod' | 'other' =>
+  UNDEAD_MOB_KINDS.has(kind) ? 'undead' : ARTHROPOD_MOB_KINDS.has(kind) ? 'arthropod' : 'other'
+
+const igniteMobAfterCommit = (
+  state: GameplayStageContext['state'],
+  id: import('@nerima-games/mc-kernel').EntityId,
+  position: Readonly<{ x: number; y: number; z: number }>,
+  durationTicks: number,
+): Effect.Effect<void> =>
+  Ref.update(state.fireLifecycle, (current) => {
+    const actors = current.burningActors ?? []
+    const existing = actors.find((actor) => actor.id === id)
+    return {
+      ...current,
+      burningActors: [
+        ...actors.filter((actor) => actor.id !== id),
+        {
+          id,
+          kind: 'entity' as const,
+          position,
+          remainingTicks: Math.max(existing?.remainingTicks ?? 0, durationTicks),
+          damageCooldownTicks: existing?.damageCooldownTicks ?? 0,
+        },
+      ],
+    }
+  })
 
 const commitMobDamage = (
   state: GameplayStageContext['state'],
@@ -289,9 +403,12 @@ const commitMobDamage = (
     id: import('@nerima-games/mc-kernel').EntityId
     damage: Damage
     killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'>
+    lootingLevel: EnchantmentLevelValue
+    burning?: boolean
   }> | undefined,
   storageCandidate?: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
   event?: Schema.Schema.Type<typeof DomainEventSchema>,
+  rollSeedOverride?: number,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const ownerId = Option.getOrThrow(Option.fromNullishOr(context.entitiesOwnerId))
@@ -303,6 +420,8 @@ const commitMobDamage = (
         damage: hit.damage,
         killCredit: hit.killCredit,
         lastHitTick: tick,
+        lootingLevel: hit.lootingLevel,
+        ...(hit.burning === undefined ? {} : { burning: hit.burning }),
       }],
       tick,
     )
@@ -312,7 +431,7 @@ const commitMobDamage = (
       dimension,
     ))
 
-    const seed = yield* Ref.get(state.rollSeed)
+    const seed = rollSeedOverride ?? (yield* Ref.get(state.rollSeed))
     const drops = rollCasualtyDrops(damage.casualties, seed)
     const casualtyExperience = rollCasualtyExperience(damage.casualties, drops.seed)
     const changes: Array<ReplicatedOwnerCandidate> = []
@@ -377,6 +496,7 @@ const commitMobDamage = (
       yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
     }
     if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, casualtyExperience.seed)
+    else if (rollSeedOverride !== undefined) yield* Ref.set(state.rollSeed, rollSeedOverride)
     if (drops.drops.length > 0) {
       yield* Ref.update(state.mobDrops, (pending) => [...pending, ...drops.drops])
     }
@@ -433,8 +553,10 @@ const processBowShot = (
       yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
       return
     }
-    if (context.entitiesOwnerId === undefined || context.playerOwnerId === undefined ||
-      (request.inventory.mode === 'survival' && context.playerStorageOwnerId === undefined)) {
+    if (
+      context.entitiesOwnerId === undefined || context.playerOwnerId === undefined ||
+      context.playerStorageOwnerId === undefined
+    ) {
       yield* recordGameplayUnsupportedOperation(state, {
         _tag: 'Unsupported', action: 'BowShot',
         ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
@@ -468,6 +590,60 @@ const processBowShot = (
       return
     }
 
+    const storage = yield* Effect.result(context.coordinator.snapshot(
+      context.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    ))
+    if (Result.isFailure(storage)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: storage.failure,
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    if (storage.success.revision !== entities.success.revision) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+        error: new WorldRevisionConflict({ expected: entities.success.revision, actual: storage.success.revision }),
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    const heldBow = storage.success.state.inventory.slots[request.inventory.slotIndex]
+    if (heldBow?.item !== 'bow') {
+      yield* result('InventoryUnavailable')
+      return
+    }
+    const bowEnchantments: EnchantmentSource = heldBow.components?.enchantments ?? []
+    const infinity = infinityPreventsArrowConsumption(bowEnchantments)
+    let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
+    let seedAfterWear: number | undefined
+    if (request.inventory.mode === 'survival') {
+      const arrows = removeInventoryItem(storage.success.state.inventory, 'arrow', 1)
+      if (Result.isFailure(arrows) || arrows.success.removed !== 1) {
+        yield* result('InventoryUnavailable')
+        return
+      }
+      const inventory = infinity
+        ? storage.success.state
+        : Result.getOrThrow(withInventory(storage.success.state, arrows.success.inventory))
+      const currentSeed = yield* Ref.get(state.rollSeed)
+      const unbreaking = enchantmentLevel(bowEnchantments, 'unbreaking')
+      const wearRolls = unbreaking > 0 ? drawRolls(currentSeed, 1) : undefined
+      const appliedWear = durabilityWearWithEnchantments(
+        1,
+        bowEnchantments,
+        wearRolls?.rolls ?? [],
+        'tool',
+      )
+      storageCandidate = appliedWear === 0
+        ? inventory
+        : damagePlayerStorageAt(inventory, {
+          _tag: 'Inventory', slotIndex: request.inventory.slotIndex,
+        }, appliedWear).storage
+      if (wearRolls !== undefined) seedAfterWear = wearRolls.seed
+    }
+
     const target = shotTargetWithCandidate(
       entities.success.state.entities,
       request.origin,
@@ -477,7 +653,12 @@ const processBowShot = (
         z: request.dirZ,
       },
     )
-    let hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined
+    let hit: Readonly<{
+      id: import('@nerima-games/mc-kernel').EntityId
+      damage: Damage
+    lootingLevel: EnchantmentLevelValue
+      burning?: boolean
+    }> | undefined
     let knockback: ReturnType<typeof knockbackDirection> | undefined
     if (target !== undefined) {
       const unitAim = { x: directionComponent(0), y: directionComponent(0), z: directionComponent(0) }
@@ -494,57 +675,27 @@ const processBowShot = (
       )
       const isBlockedAt = solidityFromStore(store)
       if (!shotBlockedByTerrain((x, y, z) => isBlockedAt({ x, y, z }), request.origin, end)) {
-        const amount = DamageAmount.result(bowDamage(
-          bowCharge(request.chargeSecs),
-          request.powerLevel === undefined ? {} : { powerLevel: request.powerLevel },
+        const damageEnchantments: EnchantmentSource = request.powerLevel === undefined
+          ? bowEnchantments
+          : [{ id: 'power', level: request.powerLevel }]
+        // The request decoder bounds charge and enchantment levels before this finite calculation.
+        const amount = DamageAmount(bowDamageWithEnchantments(
+          bowDamage(bowCharge(request.chargeSecs)),
+          damageEnchantments,
         ))
-        if (Result.isFailure(amount)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
-          })
-          yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-          return
+        const flame = flameDurationTicks(bowEnchantments) > 0
+        hit = {
+          id: target.hit.id,
+          damage: { amount, cause: 'projectile' },
+          lootingLevel: lootingLevel(bowEnchantments),
+          ...(flame ? { burning: true } : {}),
         }
-        hit = { id: target.hit.id, damage: { amount: amount.success, cause: 'projectile' } }
         const pose = player.success.state.pose.feetPosition
         knockback = knockbackDirection(
           target.candidate.feetPosition.x - pose.x,
           target.candidate.feetPosition.z - pose.z,
         )
       }
-    }
-
-    let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
-    if (request.inventory.mode === 'survival') {
-      const storage = yield* Effect.result(context.coordinator.snapshot(
-        context.playerStorageOwnerId!, PlayerStorageSnapshotSchema,
-      ))
-      if (Result.isFailure(storage)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: storage.failure,
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      if (storage.success.revision !== entities.success.revision) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
-          error: new WorldRevisionConflict({ expected: entities.success.revision, actual: storage.success.revision }),
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      const consumed = removeInventoryItem(storage.success.state.inventory, 'arrow', 1)
-      if (Result.isFailure(consumed) || consumed.success.removed !== 1 ||
-        storage.success.state.inventory.slots[request.inventory.slotIndex]?.item !== 'bow') {
-        yield* result('InventoryUnavailable')
-        return
-      }
-      const inventory = Result.getOrThrow(withInventory(storage.success.state, consumed.success.inventory))
-      const damaged = damagePlayerStorageAt(inventory, {
-        _tag: 'Inventory', slotIndex: request.inventory.slotIndex,
-      }, 1)
-      storageCandidate = damaged.storage
     }
 
     let damageEvent: Schema.Schema.Type<typeof DomainEventSchema> | undefined
@@ -571,13 +722,28 @@ const processBowShot = (
       hit === undefined ? undefined : { ...hit, killCredit: 'player' },
       storageCandidate,
       damageEvent,
+      seedAfterWear,
     )
     if (!committed) {
       yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
       return
     }
     if (hit !== undefined && knockback !== undefined) {
-      yield* Ref.update(state.bowKnockbacks, (pending) => [...pending, { id: hit.id, direction: knockback! }])
+      const punchStrength = punchKnockbackBonus(bowEnchantments)
+      yield* Ref.update(state.bowKnockbacks, (pending) => [...pending, {
+        id: hit.id,
+        direction: knockback,
+        ...(punchStrength === 0 ? {} : { strength: punchStrength }),
+      }])
+      if (flameDurationTicks(bowEnchantments) > 0 && target !== undefined &&
+        Number(target.candidate.healthPoints) > hit.damage.amount) {
+        yield* igniteMobAfterCommit(
+          state,
+          hit.id,
+          target.candidate.feetPosition,
+          flameDurationTicks(bowEnchantments),
+        )
+      }
     }
     if (request.requestId !== undefined) {
       yield* Ref.update(state.handledBowShotRequestIds, (handled) => new Set(handled).add(request.requestId!))
@@ -590,8 +756,7 @@ const processMeleeAttack = (
   context: GameplayStageContext['commit'],
   request: MeleeAttackRequest,
   playerDead: boolean,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
+): Effect.Effect<void> => Effect.gen(function* () {
     const recordFailure = (outcome?: 'InvalidToolLocation') => {
       const requestId = request.requestId
       if (requestId === undefined) return Effect.void
@@ -679,7 +844,9 @@ const processMeleeAttack = (
       return
     }
     let heldItem: ItemType | null = null
+    let heldEnchantments: EnchantmentSource = []
     let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
+    let seedAfterWear: number | undefined
     if (toolLocation !== undefined) {
       const storage = yield* Effect.result(context.coordinator.snapshot(
         storageOwnerId!,
@@ -702,8 +869,22 @@ const processMeleeAttack = (
       }
       const weapon = validatedMeleeWeaponAt(storage.success.state, toolLocation)
       heldItem = weapon.item
+      const heldStack = storage.success.state.inventory.slots[toolLocation.slotIndex]
+      heldEnchantments = heldStack?.components?.enchantments ?? []
       if (weapon.wear > 0) {
-        storageCandidate = damageValidatedMeleeWeaponAt(weapon)
+        const unbreaking = enchantmentLevel(heldEnchantments, 'unbreaking')
+        const currentSeed = yield* Ref.get(state.rollSeed)
+        const wearRolls = unbreaking > 0 ? drawRolls(currentSeed, weapon.wear) : undefined
+        const appliedWear = durabilityWearWithEnchantments(
+          weapon.wear,
+          heldEnchantments,
+          wearRolls?.rolls ?? [],
+          'tool',
+        )
+        storageCandidate = appliedWear === 0
+          ? storage.success.state
+          : damageValidatedMeleeWeaponAt(weapon, appliedWear)
+        if (wearRolls !== undefined) seedAfterWear = wearRolls.seed
       }
     }
     const intent: MeleeAttackIntent = {
@@ -727,10 +908,26 @@ const processMeleeAttack = (
       yield* recordFailure()
       return
     }
+    // `prepareMeleeAttack` selected this ID from the same unchanged roster.
+    const targetEntity = entities.success.state.entities.find(
+      (entity) => entity.id === initialPreparation.success.target.id,
+    )!
+    const statusModifiers = yield* Ref.get(state.playerStatusEffectModifiers)
+    // Both operands are finite: enchantment levels come from decoded storage,
+    // and status modifiers are computed from validated effect state.
+    const damageBonus = Brand.nominal<AttackDamageBonus>()(
+      meleeDamageWithEnchantments(
+        0,
+        heldEnchantments,
+        meleeEnchantmentTarget(targetEntity.kind),
+      ) + statusModifiers.attackDamageBonus,
+    )
     const previousTargetDamageState = targetDamageStates.get(initialPreparation.success.target.id) ?? null
-    const preparation = previousTargetDamageState === null
-      ? initialPreparation
-      : prepareMeleeAttack(intent, { ...preparationInput, targetDamageState: previousTargetDamageState })
+    const preparation = prepareMeleeAttack(intent, {
+      ...preparationInput,
+      damageBonus,
+      targetDamageState: previousTargetDamageState,
+    })
     if (Result.isFailure(preparation)) {
       if (preparation.failure === 'target-invulnerable') {
         yield* Ref.set(state.meleeLastAttackTick, tick)
@@ -747,9 +944,12 @@ const processMeleeAttack = (
         id: preparation.success.target.id,
         damage: { amount: preparation.success.event.amount, cause: 'mob' },
         killCredit: 'player',
+        lootingLevel: lootingLevel(heldEnchantments),
+        ...(fireAspectDurationTicks(heldEnchantments) > 0 ? { burning: true } : {}),
       },
       storageCandidate,
       preparation.success.event,
+      seedAfterWear,
     )
     if (!committed) {
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
@@ -760,6 +960,26 @@ const processMeleeAttack = (
       preparation.success.target.id,
       preparation.success.targetDamageState,
     ))
+    const knockback = knockbackLevel(heldEnchantments)
+    if (knockback > 0) {
+      // The decoded enchantment table bounds this level before multiplication.
+      const strength = Brand.nominal<KnockbackStrength>()(3 * knockback)
+      yield* Ref.update(state.meleeKnockbacks, (pending) => [...pending, {
+        id: preparation.success.target.id,
+        direction: preparation.success.knockback,
+        strength,
+      }])
+    }
+    const fireDuration = fireAspectDurationTicks(heldEnchantments)
+    if (fireDuration > 0 && targetEntity !== undefined &&
+      Number(targetEntity.healthPoints) > preparation.success.event.amount) {
+      yield* igniteMobAfterCommit(
+        state,
+        preparation.success.target.id,
+        targetEntity.feetPosition,
+        fireDuration,
+      )
+    }
     if (request.requestId !== undefined) {
       const result: import('./registration-core.js').GameplayMeleeAttackResult = {
         requestId: request.requestId,
@@ -868,6 +1088,7 @@ const processFishingItemUse = (
   state: GameplayStageContext['state'],
   context: GameplayStageContext['commit'],
   request: FishingItemUseRequest,
+  enchantmentsByActor: Map<EntityId, FishingEnchantments>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (context === undefined) {
@@ -913,6 +1134,7 @@ const processFishingItemUse = (
       undefined
     let nextSeed: number | undefined
     let projectilePlan: WorldCommitPlanFragment<unknown> | undefined
+    let reelEnchantments = enchantmentsByActor.get(request.actor) ?? fishingEnchantmentsForRod(null, true)
     const activeRod = snapshot.state.rods.find((rod) => rod.actor === request.actor)
     let removeBobber: import('@nerima-games/mc-kernel').ProjectileId | undefined
     let playerStoragePlan: PlayerStorageCommitSnapshot | undefined
@@ -939,6 +1161,7 @@ const processFishingItemUse = (
         yield* Ref.update(state.itemUseResults, (results) => [...results, result])
         return
       }
+      reelEnchantments = fishingEnchantmentsForRod(rod.rod, reelEnchantments.openWater)
       playerStoragePlan = {
         world: storageObserved.success.world,
         expectedRevision: storageObserved.success.revision,
@@ -1011,10 +1234,21 @@ const processFishingItemUse = (
         projectilePlan = projectileFragment
         plans.push(projectilePlan)
     } else if (request.action === 'AdvanceFishing') {
+        const requestedWaitTicks = Schema.decodeUnknownResult(FishingWaitTicksSchema)(request.waitTicks)
+        if (Result.isFailure(requestedWaitTicks)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: requestedWaitTicks.failure,
+          })
+          return
+        }
+        const adjustedWaitTicks = fishingWaitTicksWithLure(
+          requestedWaitTicks.success,
+          enchantmentsByActor.get(request.actor)?.lureLevel ?? EnchantmentLevel(0),
+        )
         const intent = {
           actor: request.actor,
           elapsedTicks: request.elapsedTicks,
-          waitTicks: request.waitTicks,
+          waitTicks: adjustedWaitTicks,
           approachTicks: request.approachTicks,
           biteWindowTicks: request.biteWindowTicks,
           hasWater: request.environment.hasWater,
@@ -1044,7 +1278,14 @@ const processFishingItemUse = (
         const tick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
         const seed = yield* Ref.get(state.rollSeed)
         const batch = drawRolls(seed, 1)
-        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(rollAt(batch, 0))
+        const baseSample = Schema.decodeUnknownSync(FishingLootSampleSchema)(rollAt(batch, 0))
+        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(
+          fishingLootSampleWithLuckOfTheSea(
+            baseSample,
+            reelEnchantments.luckOfTheSeaLevel,
+            reelEnchantments.openWater,
+          ),
+        )
         const intent = {
           actor: request.actor,
           tick,
@@ -1161,6 +1402,18 @@ const processFishingItemUse = (
       () => Effect.gen(function* () {
         if (nextSeed !== undefined) yield* Ref.set(state.rollSeed, nextSeed)
         yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+        if (request.action === 'CastFishing') {
+          enchantmentsByActor.set(
+            request.actor,
+            fishingEnchantmentsForRod(request.rod, request.environment.isOpenWater),
+          )
+        } else if (
+          request.action === 'CancelFishing' ||
+          request.action === 'ReelFishing' ||
+          (request.action === 'AdvanceFishing' && outcome?._tag === 'Cancelled')
+        ) {
+          enchantmentsByActor.delete(request.actor)
+        }
       }),
       () => Ref.update(state.pendingItemUses, (pending) => [request, ...pending]),
     )
@@ -1384,16 +1637,24 @@ const processBrewingItemUse = (
         }
         const observedEffects = yield* Effect.result(context.coordinator.observe(
           context.statusEffectsOwnerId,
-          StatusEffectStateSchema,
+          ValidatedStatusEffectStateSchema,
           [],
         ))
         if (Result.isFailure(observedEffects)) {
-          yield* recordGameplayStageFailure(state, {
+          yield* recordGameplayStageFailureDeduplicated(state, {
             _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observedEffects.failure,
+            requestId: request.requestId,
           })
           return
         }
-        const nextEffects = applyStatusEffect(observedEffects.success.state, drinkPlan.result.effect)
+        const validatedApplication = persistentStatusEffectApplicationFromValidatedFields(
+          drinkPlan.result.effect,
+        )
+        const applied = applyStatusEffectToValidatedState(
+          observedEffects.success.state,
+          validatedApplication,
+        )
+        const nextEffects = applied.state
         const effectSnapshot = {
           world: observedEffects.success.world,
           expectedRevision: observedEffects.success.revision,
@@ -1424,11 +1685,9 @@ const processBrewingItemUse = (
         plans,
         () => Effect.gen(function* () {
           if (statusCandidate !== undefined) {
-            yield* Ref.set(state.playerMovementSpeedMultiplier,
-              statusCandidate.effects.some((effect) => effect.type === 'speed')
-                ? SPEED_MOVEMENT_MULTIPLIER
-                : 1,
-            )
+            const modifiers = statusEffectModifiers(statusCandidate)
+            yield* Ref.set(state.playerMovementSpeedMultiplier, modifiers.movementSpeedMultiplier)
+            yield* Ref.set(state.playerStatusEffectModifiers, modifiers)
           }
           yield* Ref.update(state.itemUseResults, (results) => [...results, result])
         }),
@@ -1957,8 +2216,484 @@ const processEnderPearlThrow = (
     yield* Ref.update(state.enderPearlOutcomes, (outcomes) => [...outcomes, outcome])
   })
 
+const advanceBlockMiningAttempt = (
+  state: GameplayStageContext['state'],
+  commit: GameplayStageContext['commit'],
+  store: GameplayStageContext['store'],
+  dt: DeltaTimeSecs,
+  playerDead: boolean,
+): Effect.Effect<void> => Effect.gen(function* () {
+  const attempt = yield* Ref.getAndSet(state.pendingBlockMiningAttempt, null)
+  if (attempt === null || playerDead) {
+    yield* Ref.set(state.miningProgress, null)
+    return
+  }
+  if (commit === undefined) {
+    yield* Ref.set(state.miningProgress, null)
+    yield* recordGameplayUnsupportedOperation(state, {
+      _tag: 'Unsupported',
+      action: 'MineBlock',
+      reason: 'WorldCommitCoordinatorUnavailable',
+    })
+    return
+  }
+  const reading = yield* store.getBlock(attempt.position)
+  if (reading._tag !== 'Block' || reading.block === AIR_BLOCK_ID) {
+    yield* Ref.set(state.miningProgress, null)
+    return
+  }
+  const snapshot = yield* Effect.result(commit.coordinator.snapshot(
+    commit.playerStorageOwnerId,
+    PlayerStorageSnapshotSchema,
+  ))
+  if (Result.isFailure(snapshot)) {
+    yield* Ref.set(state.miningProgress, null)
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed',
+      operation: 'OwnerSnapshot',
+      subject: 'Mining',
+      error: snapshot.failure,
+    })
+    return
+  }
+  const heldStack = attempt.toolLocation?._tag === 'Inventory'
+    ? snapshot.success.state.inventory.slots[attempt.toolLocation.slotIndex]
+    : undefined
+  const item = heldStack?.item ?? null
+  const enchantments: EnchantmentSource = heldStack?.components?.enchantments ?? []
+  const modifiers = yield* Ref.get(state.playerStatusEffectModifiers)
+  const progress = advanceMiningProgress({
+    current: yield* Ref.get(state.miningProgress),
+    target: { position: attempt.position, blockId: reading.block },
+    isMining: true,
+    selectedItem: item,
+    efficiencyLevel: enchantmentLevel(enchantments, 'efficiency'),
+    miningSpeedMultiplier: modifiers.miningSpeedMultiplier,
+    deltaSecs: dt,
+  })
+  yield* Ref.set(state.miningProgress, progress.nextProgress)
+  if (progress.shouldBreak) {
+    const lootContext = attempt.toolLocation === undefined
+      ? yield* Ref.get(state.heldTool)
+      : miningLootContextForItem(item)
+    yield* requestBlockBreak(state, attempt.position, lootContext, {
+      dimension: attempt.dimension,
+      toolLocation: attempt.toolLocation,
+    })
+  }
+})
+
+type GameplayEnchantmentTableRequestId = string
+type GameplayEnchantmentTableOffer = Schema.Schema.Type<typeof SimEnchantmentTableOfferSchema>
+const PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT = Schema.decodeUnknownSync(EnchantmentTableShelfCountSchema)(0)
+// mc-sim's offer generation never inspects the world, so the stage owns the
+// check that the requested position still holds an enchanting table.
+const ENCHANTING_TABLE_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('enchanting_table'))
+type GameplayEnchantmentTableOffers = readonly [
+  GameplayEnchantmentTableOffer | undefined,
+  GameplayEnchantmentTableOffer | undefined,
+  GameplayEnchantmentTableOffer | undefined,
+]
+const EnchantmentTableRequestIdSchema: Schema.Codec<GameplayEnchantmentTableRequestId, string> = Schema.String.check(
+  Schema.makeFilter((requestId) => requestId.length > 0),
+)
+
+export type GameplayEnchantmentTableOffersRequest = Readonly<{
+  readonly requestId: GameplayEnchantmentTableRequestId
+  readonly itemSlot: EnchantmentTableInventorySlot
+  readonly lapisSlot: EnchantmentTableInventorySlot
+  readonly tablePosition: BlockPosition
+}>
+export const GameplayEnchantmentTableOffersRequestSchema: Schema.Codec<
+  GameplayEnchantmentTableOffersRequest,
+  unknown
+> = Schema.Struct({
+  requestId: EnchantmentTableRequestIdSchema,
+  itemSlot: EnchantmentTableInventorySlotSchema,
+  lapisSlot: EnchantmentTableInventorySlotSchema,
+  tablePosition: BlockPositionSchema,
+}).check(Schema.makeFilter(({ itemSlot, lapisSlot }) => itemSlot !== lapisSlot))
+
+export type GameplayEnchantmentTableApplyRequest = Readonly<{
+  readonly requestId: GameplayEnchantmentTableRequestId
+  readonly tableSlot: 0 | 1 | 2
+}>
+export const GameplayEnchantmentTableApplyRequestSchema: Schema.Codec<
+  GameplayEnchantmentTableApplyRequest,
+  unknown
+> = Schema.Struct({
+  requestId: EnchantmentTableRequestIdSchema,
+  tableSlot: Schema.Literals([0, 1, 2]),
+})
+
+type EnchantmentTableOfferEntry = Readonly<{
+  readonly slot: 0 | 1 | 2
+  readonly offer: GameplayEnchantmentTableOffer
+}>
+const EnchantmentTableOfferEntrySchema: Schema.Codec<EnchantmentTableOfferEntry, unknown> = Schema.Struct({
+  slot: Schema.Literals([0, 1, 2]),
+  offer: SimEnchantmentTableOfferSchema,
+})
+type EnchantmentTableRejectionReason =
+  | 'service-unavailable'
+  | 'player-dead'
+  | 'no-item'
+  | 'already-enchanted'
+  | 'invalid-seed'
+  | 'offer-generation-failed'
+  | 'duplicate-session'
+  | 'session-not-found'
+  | 'item-changed'
+  | 'invalid-offer'
+  | 'empty-item-slot'
+  | 'invalid-item'
+  | 'not-enchantable'
+  | 'insufficient-level'
+  | 'insufficient-lapis'
+  | 'invalid-storage'
+  | 'item-stack-failure'
+  | 'transaction-failed'
+  | 'table-missing'
+const EnchantmentTableRejectionReasonSchema: Schema.Codec<EnchantmentTableRejectionReason, string> = Schema.Literals([
+  'service-unavailable', 'player-dead', 'no-item', 'already-enchanted', 'invalid-seed',
+  'offer-generation-failed', 'duplicate-session', 'session-not-found', 'item-changed',
+  'invalid-offer', 'empty-item-slot', 'invalid-item', 'not-enchantable', 'insufficient-level',
+  'insufficient-lapis', 'invalid-storage', 'item-stack-failure', 'transaction-failed', 'table-missing',
+])
+export type GameplayEnchantmentTableResult =
+  | Readonly<{
+      readonly _tag: 'OffersGeneratedWithoutBookshelfCount'
+      readonly requestId: GameplayEnchantmentTableRequestId
+      readonly offers: ReadonlyArray<EnchantmentTableOfferEntry>
+    }>
+  | Readonly<{
+      readonly _tag: 'Applied'
+      readonly requestId: GameplayEnchantmentTableRequestId
+      readonly tableSlot: 0 | 1 | 2
+      readonly offer: GameplayEnchantmentTableOffer
+      readonly item: ItemStack
+    }>
+  | Readonly<{
+      readonly _tag: 'Rejected'
+      readonly requestId: GameplayEnchantmentTableRequestId
+      readonly reason: EnchantmentTableRejectionReason
+    }>
+export const GameplayEnchantmentTableResultSchema: Schema.Codec<
+  GameplayEnchantmentTableResult,
+  unknown
+> = Schema.Union([
+  Schema.TaggedStruct('OffersGeneratedWithoutBookshelfCount', {
+    requestId: EnchantmentTableRequestIdSchema,
+    offers: Schema.Array(EnchantmentTableOfferEntrySchema),
+  }),
+  Schema.TaggedStruct('Applied', {
+    requestId: EnchantmentTableRequestIdSchema,
+    tableSlot: Schema.Literals([0, 1, 2]),
+    offer: SimEnchantmentTableOfferSchema,
+    item: ItemStackSchema,
+  }),
+  Schema.TaggedStruct('Rejected', {
+    requestId: EnchantmentTableRequestIdSchema,
+    reason: EnchantmentTableRejectionReasonSchema,
+  }),
+])
+
+type EnchantmentTableQueuedRequest =
+  | { readonly _tag: 'GenerateOffers'; readonly request: GameplayEnchantmentTableOffersRequest }
+  | { readonly _tag: 'ApplyOffer'; readonly request: GameplayEnchantmentTableApplyRequest }
+
+type EnchantmentTableOfferSession = Readonly<{
+  readonly itemSlot: EnchantmentTableInventorySlot
+  readonly lapisSlot: EnchantmentTableInventorySlot
+  readonly tablePosition: BlockPosition
+  readonly sourceStack: ItemStack
+  readonly offers: GameplayEnchantmentTableOffers
+}>
+
+type EnchantmentTableMailbox = {
+  readonly requests: Array<EnchantmentTableQueuedRequest>
+  readonly results: Array<GameplayEnchantmentTableResult>
+  readonly sessions: Map<string, EnchantmentTableOfferSession>
+}
+
+const enchantmentTableMailboxes = new WeakMap<GameplayFrameState, EnchantmentTableMailbox>()
+const enchantmentTableServices = new WeakMap<GameplayFrameState, EnchantmentTableServiceApi>()
+
+const enchantmentTableMailboxFor = (state: GameplayFrameState): EnchantmentTableMailbox => {
+  let mailbox = enchantmentTableMailboxes.get(state)
+  if (mailbox === undefined) {
+    mailbox = { requests: [], results: [], sessions: new Map() }
+    enchantmentTableMailboxes.set(state, mailbox)
+  }
+  return mailbox
+}
+
+/** Internal composition hook; the public module binds the mc-sim service before building stages. */
+export const bindEnchantmentTableService = (
+  state: GameplayFrameState,
+  service: EnchantmentTableServiceApi,
+): void => {
+  enchantmentTableServices.set(state, service)
+}
+
+export const requestEnchantmentTableOffers = (
+  state: GameplayFrameState,
+  input: unknown,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Schema.decodeUnknownEffect(GameplayEnchantmentTableOffersRequestSchema)(input).pipe(
+    Effect.flatMap((request) => Effect.sync(() => {
+      enchantmentTableMailboxFor(state).requests.push({ _tag: 'GenerateOffers', request })
+    })),
+  )
+
+export const requestEnchantmentTableApply = (
+  state: GameplayFrameState,
+  input: unknown,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Schema.decodeUnknownEffect(GameplayEnchantmentTableApplyRequestSchema)(input).pipe(
+    Effect.flatMap((request) => Effect.sync(() => {
+      enchantmentTableMailboxFor(state).requests.push({ _tag: 'ApplyOffer', request })
+    })),
+  )
+
+export const drainEnchantmentTableResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<GameplayEnchantmentTableResult>> =>
+  Effect.sync(() => enchantmentTableMailboxFor(state).results.splice(0))
+
+const sameItemStack = (left: ItemStack, right: ItemStack): boolean =>
+  Equal.equals(left, right)
+
+const decodeGeneratedOffer = (
+  offer: RawEnchantmentTableOffer | undefined,
+): Result.Result<GameplayEnchantmentTableOffer | undefined, Schema.SchemaError> =>
+  offer === undefined
+    ? Result.succeed(undefined)
+    : Schema.decodeUnknownResult(SimEnchantmentTableOfferSchema)(offer)
+
+const decodeGeneratedOffers = (
+  offers: RawEnchantmentTableOffers,
+): Result.Result<GameplayEnchantmentTableOffers, Schema.SchemaError> =>
+  Result.all([
+    decodeGeneratedOffer(offers[0]),
+    decodeGeneratedOffer(offers[1]),
+    decodeGeneratedOffer(offers[2]),
+  ] as const)
+
+export const publishGeneratedEnchantmentOffers = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  request: GameplayEnchantmentTableOffersRequest,
+  sourceStack: ItemStack,
+  offers: RawEnchantmentTableOffers,
+): Effect.Effect<void> => Effect.gen(function* () {
+  const serviceOffers = decodeGeneratedOffers(offers)
+  if (Result.isFailure(serviceOffers)) {
+    yield* recordGameplayStageFailureDeduplicated(state, {
+      _tag: 'Failed',
+      operation: 'CandidateBuild',
+      subject: 'ItemUse',
+      requestId: request.requestId,
+      error: serviceOffers.failure,
+    })
+    mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
+    return
+  }
+  mailbox.sessions.set(request.requestId, {
+    itemSlot: request.itemSlot,
+    lapisSlot: request.lapisSlot,
+    tablePosition: request.tablePosition,
+    sourceStack,
+    offers: serviceOffers.success,
+  })
+  mailbox.results.push({
+    _tag: 'OffersGeneratedWithoutBookshelfCount',
+    requestId: request.requestId,
+    offers: serviceOffers.success.flatMap((offer, slot) => offer === undefined
+      ? []
+      : [{ slot: slot as 0 | 1 | 2, offer }]),
+  })
+})
+
+const isEnchantingTableAt = (
+  store: GameplayStageContext['store'],
+  position: BlockPosition,
+): Effect.Effect<boolean> =>
+  Effect.map(store.getBlock(position), (reading) =>
+    reading._tag === 'Block' && reading.block === ENCHANTING_TABLE_BLOCK_ID)
+
+const applyEnchantmentTableRequest = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  store: GameplayStageContext['store'],
+  commit: GameplayStageContext['commit'],
+  service: EnchantmentTableServiceApi | undefined,
+  request: GameplayEnchantmentTableApplyRequest,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (
+      commit === undefined ||
+      commit.vitalsOwnerId === undefined ||
+      service === undefined
+    ) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'service-unavailable' })
+      return
+    }
+    const session = mailbox.sessions.get(request.requestId)
+    if (session === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'session-not-found' })
+      return
+    }
+    // Vanilla closes the table screen when the table is removed.
+    if (!(yield* isEnchantingTableAt(store, session.tablePosition))) {
+      mailbox.sessions.delete(request.requestId)
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'table-missing' })
+      return
+    }
+    const storage = yield* Effect.result(commit.coordinator.snapshot(
+      commit.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    ))
+    if (Result.isFailure(storage)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: storage.failure,
+      })
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'transaction-failed' })
+      return
+    }
+    const currentStack = storage.success.state.inventory.slots[session.itemSlot]
+    if (currentStack === undefined || !sameItemStack(currentStack, session.sourceStack)) {
+      mailbox.sessions.delete(request.requestId)
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'item-changed' })
+      return
+    }
+    const offer = session.offers[request.tableSlot]
+    if (offer === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'invalid-offer' })
+      return
+    }
+    const applied = yield* Effect.result(service.apply({
+      playerStorageOwnerId: commit.playerStorageOwnerId,
+      vitalsOwnerId: commit.vitalsOwnerId,
+      itemSlot: session.itemSlot,
+      lapisSlot: session.lapisSlot,
+      tableSlot: request.tableSlot,
+      offer,
+    }))
+    if (Result.isFailure(applied)) {
+      if ('_tag' in applied.failure && applied.failure._tag === 'EnchantmentTableApplyFailure') {
+        mailbox.results.push({
+          _tag: 'Rejected', requestId: request.requestId, reason: applied.failure.reason,
+        })
+      } else {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse', error: applied.failure,
+        })
+        mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'transaction-failed' })
+      }
+      return
+    }
+    mailbox.sessions.delete(request.requestId)
+    const result: EnchantmentTableApplyResult = applied.success.result
+    mailbox.results.push({
+      _tag: 'Applied',
+      requestId: request.requestId,
+      tableSlot: request.tableSlot,
+      offer,
+      item: result.item,
+    })
+  })
+
+const generateEnchantmentTableOffersRequest = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  store: GameplayStageContext['store'],
+  commit: GameplayStageContext['commit'],
+  service: EnchantmentTableServiceApi | undefined,
+  request: GameplayEnchantmentTableOffersRequest,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (commit === undefined || service === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'service-unavailable' })
+      return
+    }
+    if (mailbox.sessions.has(request.requestId)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'duplicate-session' })
+      return
+    }
+    if (!(yield* isEnchantingTableAt(store, request.tablePosition))) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'table-missing' })
+      return
+    }
+    const storage = yield* Effect.result(commit.coordinator.snapshot(
+      commit.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    ))
+    if (Result.isFailure(storage)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: storage.failure,
+      })
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'transaction-failed' })
+      return
+    }
+    const sourceStack = storage.success.state.inventory.slots[request.itemSlot]
+    if (sourceStack === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'no-item' })
+      return
+    }
+    if (sourceStack.components.enchantments !== undefined || sourceStack.components.storedEnchantments !== undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'already-enchanted' })
+      return
+    }
+    const seedValue = yield* Ref.get(state.rollSeed)
+    const seed = RandomSeed.result(seedValue)
+    if (Result.isFailure(seed)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'invalid-seed' })
+      return
+    }
+    yield* Ref.set(state.rollSeed, drawRolls(seedValue, 1).seed)
+    // The generated seed, zero-shelf brand, and deterministic RNG satisfy
+    // mc-sim's input contract; an error here would indicate a broken producer.
+    const offers = Result.getOrThrow(generateEnchantmentTableOffersForItem(
+      sourceStack.item,
+      seed.success,
+      PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT,
+    ))
+    yield* publishGeneratedEnchantmentOffers(state, mailbox, request, sourceStack, offers)
+  })
+
+const processEnchantmentTableRequests = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  store: GameplayStageContext['store'],
+  commit: GameplayStageContext['commit'],
+  service: EnchantmentTableServiceApi | undefined,
+  playerDead: boolean,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const requests = yield* Effect.sync(() => mailbox.requests.splice(0))
+    for (const queued of requests) {
+      if (playerDead) {
+        mailbox.results.push({
+          _tag: 'Rejected',
+          requestId: queued.request.requestId,
+          reason: 'player-dead',
+        })
+        continue
+      }
+      if (queued._tag === 'GenerateOffers') {
+        yield* generateEnchantmentTableOffersRequest(state, mailbox, store, commit, service, queued.request)
+      } else {
+        yield* applyEnchantmentTableRequest(state, mailbox, store, commit, service, queued.request)
+      }
+    }
+  })
+
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
+  const enchantmentTableMailbox = enchantmentTableMailboxFor(state)
+  const enchantmentTableService = enchantmentTableServices.get(state)
+  const fishingEnchantmentsByActor = new Map<EntityId, FishingEnchantments>()
   return {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
@@ -1981,6 +2716,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           return
         }
         const playerDead = vitalsSnapshot.success.vitals.healthPoints <= 0
+        yield* processEnchantmentTableRequests(
+          state,
+          enchantmentTableMailbox,
+          store,
+          commit,
+          enchantmentTableService,
+          playerDead,
+        )
         const playerState = yield* gameplayPlayerStateForStage(state, commit)
         const portalTravel = commit !== undefined && playerState !== undefined
           ? { commit, playerState }
@@ -2010,6 +2753,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           )
         }
         yield* stepStatusEffects(state, commit, dt)
+        yield* advanceBlockMiningAttempt(state, commit, store, dt, playerDead)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be
@@ -2273,10 +3017,38 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               toolLocation: request?.toolLocation,
             })
             if (plan._tag === 'PlannedCascade') {
+              const toolLocation = request?.toolLocation
+              const heldStack = toolLocation?._tag === 'Inventory'
+                ? plan.ownerSnapshot.state.inventory.slots[toolLocation.slotIndex]
+                : undefined
+              const heldEnchantments: EnchantmentSource = heldStack?.components?.enchantments ?? []
+              const lootContext = toolLocation === undefined
+                ? tool
+                : {
+                    ...miningLootContextForItem(heldStack?.item ?? null),
+                    fortuneLevel: enchantmentLevel(heldEnchantments, 'fortune'),
+                    silkTouch: silkTouchEnabled(heldEnchantments),
+                  }
               const seed = yield* Ref.get(state.rollSeed)
-              const plannedLoot = plannedDropsForBrokenBlock(seed, plan.yielded, tool, breakPosition)
+              const unbreaking = toolLocation === undefined
+                ? 0
+                : enchantmentLevel(heldEnchantments, 'unbreaking')
+              const wearRolls = unbreaking > 0 ? drawRolls(seed, 1) : undefined
+              const wear = toolLocation === undefined
+                ? 0
+                : durabilityWearWithEnchantments(
+                    1,
+                    heldEnchantments,
+                    wearRolls?.rolls ?? [],
+                    'tool',
+                  )
+              const candidateStorage = toolLocation === undefined || wear === 0
+                ? plan.ownerSnapshot.state
+                : damagePlayerStorageAt(plan.ownerSnapshot.state, toolLocation, wear).storage
+              const lootSeed = wearRolls?.seed ?? seed
+              const plannedLoot = plannedDropsForBrokenBlock(lootSeed, plan.yielded, lootContext, breakPosition)
               const drops = plannedLoot.drops
-              let candidate: PlayerStorage = plan.candidateStorage
+              let candidate: PlayerStorage = candidateStorage
               const leftovers: Array<DroppedItemSpawn> = []
               for (const item of drops) {
                 const added = Result.getOrThrow(addInventoryItem(candidate.inventory, item.item, item.count))
@@ -3096,6 +3868,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 let statusEffectCandidate: ReplicatedOwnerCandidate | undefined
+                let nextStatusEffectState: StatusEffectState | undefined
                 if (outcome.effects.length > 0) {
                   const statusEffectsOwnerId = commit.statusEffectsOwnerId
                   if (statusEffectsOwnerId === undefined) {
@@ -3109,22 +3882,24 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   }
                   const statusEffectsSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                     statusEffectsOwnerId,
-                    StatusEffectStateSchema,
+                    ValidatedStatusEffectStateSchema,
                   ))
                   if (Result.isFailure(statusEffectsSnapshot)) {
-                    yield* recordGameplayStageFailure(state, {
+                    yield* recordGameplayStageFailureDeduplicated(state, {
                       _tag: 'Failed',
                       operation: 'OwnerSnapshot',
                       subject: 'ItemUse',
+                      requestId: request.requestId,
                       error: statusEffectsSnapshot.failure,
                     })
                     break itemUseAction
                   }
                   if (statusEffectsSnapshot.success.revision !== storageSnapshot.success.revision) {
-                    yield* recordGameplayStageFailure(state, {
+                    yield* recordGameplayStageFailureDeduplicated(state, {
                       _tag: 'Failed',
                       operation: 'OwnerSnapshot',
                       subject: 'ItemUse',
+                      requestId: request.requestId,
                       error: new WorldRevisionConflict({
                         expected: storageSnapshot.success.revision,
                         actual: statusEffectsSnapshot.success.revision,
@@ -3135,19 +3910,18 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   }
                   let nextStatusEffects = statusEffectsSnapshot.success.state
                   for (const effect of outcome.effects) {
-                    nextStatusEffects = applyStatusEffect(nextStatusEffects, effect)
+                    const applied = applyStatusEffectToValidatedState(nextStatusEffects, effect)
+                    nextStatusEffects = applied.state
                   }
                   statusEffectCandidate = {
                     ownerId: statusEffectsOwnerId,
                     state: nextStatusEffects,
                   }
+                  nextStatusEffectState = nextStatusEffects
                 }
                 const nutrition = Result.getOrThrow(FoodNutrition.result(outcome.foodPoints))
                 const saturation = Result.getOrThrow(SaturationModifier.result(outcome.saturationModifier))
                 const nextVitals = eatVitals(vitals, nutrition, saturation)
-                const validatedVitals = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)({
-                  vitals: nextVitals,
-                })
                 const committed = yield* Effect.result(commit.coordinator.commit({
                   expectedRevision: storageSnapshot.success.revision,
                   expectedDimensions: [],
@@ -3155,22 +3929,28 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     storageCandidate,
                     {
                       ownerId: commit.vitalsOwnerId,
-                      state: validatedVitals,
+                      state: { vitals: nextVitals },
                     },
                     ...(statusEffectCandidate === undefined ? [] : [statusEffectCandidate]),
                   ],
                 }))
                 if (Result.isFailure(committed)) {
-                  yield* recordGameplayStageFailure(state, {
+                  yield* recordGameplayStageFailureDeduplicated(state, {
                     _tag: 'Failed',
                     operation: 'WorldCommit',
                     subject: 'Vitals',
+                    requestId: request.requestId,
                     error: committed.failure,
                   })
                   yield* requeueItemUsesFrom(itemUseIndex)
                   break itemUseRequests
                 }
                 publishFoodResult(true, 1, outcome)
+                if (nextStatusEffectState !== undefined) {
+                  const nextModifiers = statusEffectModifiers(nextStatusEffectState)
+                  yield* Ref.set(state.playerMovementSpeedMultiplier, nextModifiers.movementSpeedMultiplier)
+                  yield* Ref.set(state.playerStatusEffectModifiers, nextModifiers)
+                }
                 break itemUseAction
               }
               else if (request.action === 'UseBucket') {
@@ -3229,7 +4009,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break itemUseAction
               }
               else if (request.action === 'CastFishing' || request.action === 'AdvanceFishing' || request.action === 'CancelFishing' || request.action === 'ReelFishing') {
-                yield* processFishingItemUse(state, commit, request)
+                yield* processFishingItemUse(state, commit, request, fishingEnchantmentsByActor)
                 break itemUseAction
               }
               else if (request.action === 'CollectBrewingBottle') {
@@ -3576,6 +4356,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
         }
-      }).pipe(Effect.orDie),
+      }),
   }
 }

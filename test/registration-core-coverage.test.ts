@@ -1,8 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
 import {
   DeltaTimeSecs,
   EntityHealthPoints,
   EntitySerial,
+  FoodSaturation,
   PositionAxis,
   StackCount,
   blockIdOf,
@@ -10,9 +12,12 @@ import {
   type DeltaTimeSecs as DeltaTimeSecsValue,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
+import { STATUS_EFFECT_AMPLIFIER_MAX, STATUS_EFFECT_NAMES } from '@nerima-games/mc-kernel/domain/status-effect'
 import {
   EntityId,
   EntityKind,
+  HungerPoints,
+  SPAWN_VITALS,
   WorldCommitBlockWriteMismatch,
   WorldCommitEmptyRequest,
   itemStack as makeItemStack,
@@ -25,9 +30,11 @@ import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   drainDroppedItemPickupExecutions,
   drainExperienceOrbAbsorptionExecutions,
+  drainGameplayStageFailures,
   drainItemUseResults,
   drainPlayerDamages,
   drainPlayerHeals,
+  getPlayerStatusEffectModifiers,
   getPlayerMovementSpeedMultiplier,
   gameplayStages,
   makeGameplayFrameState,
@@ -44,11 +51,16 @@ import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
   isRetryableWorldCommitFailure,
+  recordGameplayStageFailureDeduplicated,
 } from '../src/stages/registration-core'
 import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
-import { StatusEffectStateSchema } from '../src/domain/status-effect'
+import {
+  StatusEffectApplicationErrorSchema,
+  StatusEffectStateSchema,
+  ValidatedStatusEffectApplicationSchema,
+} from '../src/domain/status-effect'
 import { INITIAL_DIMENSION } from '../src/domain/in-memory-player'
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
@@ -103,6 +115,80 @@ const makeHarness = (
 
 type Harness = Effect.Success<ReturnType<typeof makeHarness>>
 type GameplayStageCommitServices = NonNullable<Parameters<typeof gameplayStages>[9]>
+
+describe('gameplay stage failure drain', () => {
+  it.effect('keeps same-reason failures for distinct request ids separate', () => Effect.gen(function* () {
+    const state = yield* makeGameplayFrameState
+    const failure = {
+      _tag: 'Failed' as const,
+      operation: 'OwnerSnapshot' as const,
+      subject: 'Brewing' as const,
+      error: new WorldCommitEmptyRequest(),
+    }
+
+    yield* recordGameplayStageFailureDeduplicated(state, { ...failure, requestId: 'first' })
+    yield* recordGameplayStageFailureDeduplicated(state, { ...failure, requestId: 'second' })
+
+    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
+      { ...failure, requestId: 'first', occurrences: 1 },
+      { ...failure, requestId: 'second', occurrences: 1 },
+    ])
+  }))
+
+  it.effect('deduplicates execution faults with non-string causes', () => Effect.gen(function* () {
+    const state = yield* makeGameplayFrameState
+    const causes: ReadonlyArray<unknown> = [
+      null,
+      { _tag: 1 },
+      { _tag: 1, reason: 1 },
+    ]
+
+    for (const [index, cause] of causes.entries()) {
+      const failure = {
+        _tag: 'Failed' as const,
+        operation: 'CandidateBuild' as const,
+        subject: 'EntityRoster' as const,
+        requestId: `non-string-cause-${index}`,
+        error: { _tag: 'GameplayStageExecutionFailure' as const, cause },
+      }
+      yield* recordGameplayStageFailureDeduplicated(state, failure)
+      yield* recordGameplayStageFailureDeduplicated(state, failure)
+    }
+
+    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
+      { requestId: 'non-string-cause-0', occurrences: 2 },
+      { requestId: 'non-string-cause-1', occurrences: 2 },
+      { requestId: 'non-string-cause-2', occurrences: 2 },
+    ])
+  }))
+
+  it.effect('keeps execution faults with different string causes separate', () => Effect.gen(function* () {
+    const state = yield* makeGameplayFrameState
+    const failureFor = (cause: string) => ({
+      _tag: 'Failed' as const,
+      operation: 'CandidateBuild' as const,
+      subject: 'EntityRoster' as const,
+      requestId: 'different-string-causes',
+      error: { _tag: 'GameplayStageExecutionFailure' as const, cause },
+    })
+
+    yield* recordGameplayStageFailureDeduplicated(state, failureFor('invalid-damage-state'))
+    yield* recordGameplayStageFailureDeduplicated(state, failureFor('invalid-shield-state'))
+
+    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
+      {
+        requestId: 'different-string-causes',
+        occurrences: 1,
+        error: { cause: 'invalid-damage-state' },
+      },
+      {
+        requestId: 'different-string-causes',
+        occurrences: 1,
+        error: { cause: 'invalid-shield-state' },
+      },
+    ])
+  }))
+})
 
 const interactionsWithCommit = (
   harness: Harness,
@@ -372,6 +458,7 @@ describe('registration-core public paths omitted from focused coverage', () => {
 
       yield* runInteractions(harness.interactions, 0)
       expect(yield* getPlayerMovementSpeedMultiplier(harness.state)).toBe(1)
+      expect((yield* getPlayerStatusEffectModifiers(harness.state)).movementSpeedMultiplier).toBe(1)
       expect((yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)).state.effects)
         .toStrictEqual([])
       expect(yield* commit.coordinator.revision).toBe(revisionBefore)
@@ -415,18 +502,28 @@ describe('registration-core public paths omitted from focused coverage', () => {
       }
       yield* runInteractions(harness.interactions, 2.5)
 
+      // Java Edition Poison II pulses every floor(25 / 2) = 12 ticks.
+      // Four pulses in 2.5 seconds leave this independently derived remainder.
+      // https://minecraft.wiki/w/Poison
+      const poisonIntervalSecs = Math.floor(25 / 2) / 20
+      const poisonPulses = Math.floor(2.5 / poisonIntervalSecs)
+      const poisonPulseClockSecs = 2.5 - poisonPulses * poisonIntervalSecs
+      const regenerationIntervalSecs = Math.floor(50 / 2) / 20
+      const regenerationPulses = Math.floor(2.5 / regenerationIntervalSecs)
       const status = yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)
       expect(status.state.effects).toStrictEqual([
-        { type: 'poison', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
+        { type: 'hunger', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
+        { type: 'poison', remainingSecs: 0.5, pulseClockSecs: poisonPulseClockSecs, amplifier: 1 },
         { type: 'regeneration', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
         { type: 'speed', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 0 },
-        { type: 'hunger', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
       ])
       const vitalsAfter = yield* commit.coordinator.snapshot(
         GAMEPLAY_VITALS_OWNER_ID,
         ExperienceOrbVitalsOwnerSnapshotSchema,
       )
-      expect(vitalsAfter.state.vitals.healthPoints).toBe(vitalsBefore.state.vitals.healthPoints - 3)
+      expect(vitalsAfter.state.vitals.healthPoints).toBe(
+        vitalsBefore.state.vitals.healthPoints - poisonPulses + regenerationPulses,
+      )
       expect(vitalsAfter.state.vitals.exhaustion).toBe(vitalsBefore.state.vitals.exhaustion + 0.5)
       expect(yield* drainPlayerHeals(harness.state)).toStrictEqual([
         {
@@ -447,23 +544,105 @@ describe('registration-core public paths omitted from focused coverage', () => {
     }),
   )
 
-  it.effect('keeps a status application pending when a valid high amplifier overflows its poison pulse clock', () =>
+  it.effect('applies instant health, instant damage, and saturation through the registered status stage', () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness(world([]), true)
+      const startingVitals = {
+        ...SPAWN_VITALS,
+        healthPoints: EntityHealthPoints(10),
+        hungerPoints: HungerPoints(10),
+        saturation: FoodSaturation(0),
+      }
+      const harness = yield* makeHarness(world([]), true, { vitals: startingVitals })
       const commit = harness.commit
-      if (commit?.statusEffectsOwnerId === undefined) throw new Error('status-effect owner was not registered')
-      const application = { type: 'poison' as const, durationSecs: 2, amplifier: Number.MAX_SAFE_INTEGER }
+      if (commit?.vitalsOwnerId === undefined || commit.statusEffectsOwnerId === undefined) {
+        throw new Error('status-effect and vitals owners were not registered')
+      }
 
-      yield* requestStatusEffect(harness.state, application)
-      yield* runInteractions(harness.interactions, 1)
+      for (const application of [
+        { type: 'instant_health', durationSecs: 0 },
+        { type: 'instant_damage', durationSecs: 0 },
+        { type: 'saturation', durationSecs: 0 },
+      ] as const) {
+        yield* requestStatusEffect(harness.state, application)
+      }
+      yield* runInteractions(harness.interactions, 0)
 
-      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
-        expect.objectContaining({ _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing' }),
+      const vitalsAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
       )
-      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([application])
+      expect(vitalsAfter.state.vitals.healthPoints).toBe(8)
+      expect(vitalsAfter.state.vitals.hungerPoints).toBe(12)
+      expect(vitalsAfter.state.vitals.saturation).toBe(4)
       expect((yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)).state.effects)
         .toStrictEqual([])
-      expect(yield* commit.coordinator.revision).toBe(0)
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('rejects an amplifier outside the status application schema before queueing', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const application = { type: 'poison' as const, durationSecs: 2, amplifier: Number.MAX_SAFE_INTEGER }
+
+      const result = yield* Effect.result(requestStatusEffect(harness.state, application))
+
+      expect(result).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'InvalidStatusEffectApplication', reason: 'invalid-amplifier' },
+      })
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([])
+    }),
+  )
+
+  it('validates every queued status-effect request at the public boundary (fast-check)', () => {
+    const state = Effect.runSync(makeGameplayFrameState)
+    const statusType = FastCheck.constantFrom(...STATUS_EFFECT_NAMES)
+    const duration = FastCheck.double({ noNaN: true, noDefaultInfinity: true })
+    const application = FastCheck.oneof(
+      FastCheck.record({ type: statusType, durationSecs: duration }),
+      FastCheck.record({
+        type: statusType,
+        durationSecs: duration,
+        amplifier: FastCheck.integer({ min: -1, max: Number.MAX_SAFE_INTEGER }),
+      }),
+    )
+
+    FastCheck.assert(FastCheck.property(application, (candidate) => {
+      const result = Effect.runSync(Effect.result(requestStatusEffect(state, candidate)))
+      const pending = Effect.runSync(Ref.getAndSet(state.pendingStatusEffects, []))
+      if (Result.isFailure(result)) {
+        expect(Schema.decodeUnknownResult(StatusEffectApplicationErrorSchema)(result.failure)).toMatchObject({
+          _tag: 'Success',
+        })
+        expect(pending).toStrictEqual([])
+      } else {
+        expect(pending).toHaveLength(1)
+        expect(Schema.decodeUnknownResult(ValidatedStatusEffectApplicationSchema)(pending[0])).toMatchObject({
+          _tag: 'Success',
+        })
+      }
+    }))
+  })
+
+  it.effect('accepts the maximum status amplifier and rejects the next value at enqueue', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const valid = yield* Effect.result(requestStatusEffect(harness.state, {
+        type: 'instant_health', durationSecs: 0, amplifier: STATUS_EFFECT_AMPLIFIER_MAX,
+      }))
+      expect(Result.isSuccess(valid)).toBe(true)
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
+
+      const invalid = yield* Effect.result(requestStatusEffect(harness.state, {
+        type: 'instant_health', durationSecs: 0, amplifier: STATUS_EFFECT_AMPLIFIER_MAX + 1,
+      }))
+      expect(invalid).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'InvalidStatusEffectApplication', reason: 'invalid-amplifier' },
+      })
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
     }),
   )
 
@@ -475,7 +654,7 @@ describe('registration-core public paths omitted from focused coverage', () => {
       const application = {
         type: 'hunger' as const,
         durationSecs: Number.MAX_VALUE,
-        amplifier: Number.MAX_SAFE_INTEGER,
+        amplifier: STATUS_EFFECT_AMPLIFIER_MAX,
       }
 
       yield* requestStatusEffect(harness.state, application)
@@ -546,8 +725,10 @@ describe('registration-core public paths omitted from focused coverage', () => {
       const { vitalsOwnerId: _vitalsOwnerId, ...withoutVitalsOwner } = commit
       const interactions = interactionsWithCommit(harness, withoutVitalsOwner)
 
-      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 1 })
-      yield* runInteractions(interactions, 1)
+      // Java Edition poison I first pulses at 25 ticks (1.25 seconds).
+      // https://minecraft.wiki/w/Poison
+      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 2 })
+      yield* runInteractions(interactions, 1.25)
 
       expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
         _tag: 'Unsupported',
@@ -573,8 +754,9 @@ describe('registration-core public paths omitted from focused coverage', () => {
       }
       const interactions = interactionsWithCommit(harness, mismatchedCommit)
 
-      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 1 })
-      yield* runInteractions(interactions, 1)
+      // Reach Poison I's 25-tick interval before checking the vitals owner.
+      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 2 })
+      yield* runInteractions(interactions, 1.25)
 
       expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
         expect.objectContaining({
@@ -800,6 +982,62 @@ describe('registration-core public paths omitted from focused coverage', () => {
       expect((yield* Ref.get(harness.state.fireLifecycle)).burningActors).toContainEqual(
         expect.objectContaining({ id: 'player', kind: 'player' }),
       )
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('suppresses direct and continuing fire damage under fire resistance', () =>
+    Effect.gen(function* () {
+      const firePosition = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* makeHarness(world([]), true)
+      const fire = fireStageWithCommit(harness, harness.commit)
+      if (fire === undefined) throw new Error('fire stage was not registered')
+      yield* requestStatusEffect(harness.state, { type: 'fire_resistance', durationSecs: 3 })
+      yield* runInteractions(harness.interactions, 0)
+      yield* Ref.set(harness.state.fireLifecycle, {
+        ...makeFireLifecycleState([], 19),
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position: firePosition,
+          remainingTicks: FIRE_DAMAGE_INTERVAL_TICKS,
+          damageCooldownTicks: 0,
+        }],
+      })
+
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainPlayerDamages(harness.state)).toStrictEqual([])
+      expect(yield* getPlayerStatusEffectModifiers(harness.state)).toMatchObject({ fireResistance: true })
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('suppresses direct fire damage when Resistance reduces damage taken to zero', () =>
+    Effect.gen(function* () {
+      const firePosition = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* makeHarness(world([]), true)
+      const fire = fireStageWithCommit(harness, harness.commit)
+      if (fire === undefined) throw new Error('fire stage was not registered')
+      yield* requestStatusEffect(harness.state, { type: 'resistance', durationSecs: 3, amplifier: 4 })
+      yield* runInteractions(harness.interactions, 0)
+      yield* Ref.set(harness.state.fireLifecycle, {
+        ...makeFireLifecycleState([], 23),
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position: firePosition,
+          remainingTicks: FIRE_DAMAGE_INTERVAL_TICKS,
+          damageCooldownTicks: 0,
+        }],
+      })
+
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* getPlayerStatusEffectModifiers(harness.state).pipe(Effect.map(
+        ({ damageTakenMultiplier }) => damageTakenMultiplier,
+      ))).toBe(0)
+      expect(yield* drainPlayerDamages(harness.state)).toStrictEqual([])
       expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
     }),
   )

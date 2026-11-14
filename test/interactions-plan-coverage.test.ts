@@ -14,6 +14,8 @@ import {
   ProjectileIdSchema,
   SimulationTickSchema,
   StackCount,
+  enchantmentsComponent,
+  itemComponents,
   WorldIdSchema,
   WorldPositionSchema,
   blockIdOf,
@@ -31,6 +33,7 @@ import {
   DomainEventBus,
   EntityId,
   EntityKind,
+  emptyFurnaceState,
   FishingStateSchema,
   FishingElapsedTicksSchema,
   FishingWaitTicksSchema,
@@ -78,6 +81,7 @@ import {
   drainBlockPlacementResults,
   drainBlockUseResults,
   drainBowShotResults,
+  drainMeleeKnockbacks,
   drainMeleeAttackResults,
   drainVillagerTradeResults,
   gameplayStages,
@@ -102,6 +106,7 @@ import {
   requestFishingReel,
   requestBlockPlacement,
   requestBucketUse,
+  requestFurnaceAdvance,
   insertBrewingBottle,
   insertBrewingFuel,
   insertBrewingIngredient,
@@ -239,6 +244,19 @@ const playerStorageWithItems = (items: ReadonlyArray<readonly [ItemType, number]
       ? undefined
       : Result.getOrThrow(makeItemStack(entry[0], StackCount(entry[1])))
   })
+  return {
+    ...empty,
+    inventory: { ...empty.inventory, slots },
+    inventoryDurability: slots.map((slot) => slot === undefined ? null : durabilityForItem(slot.item)),
+  }
+}
+
+const playerStorageWithKnockbackSword = (): PlayerStorage => {
+  const empty = emptyPlayerStorage()
+  const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:knockback': 2 }))
+  const components = Result.getOrThrow(itemComponents('iron_sword', { enchantments }))
+  const sword = Result.getOrThrow(makeItemStack('iron_sword', StackCount(1), { components }))
+  const slots = empty.inventory.slots.map((slot, index) => index === 0 ? sword : slot)
   return {
     ...empty,
     inventory: { ...empty.inventory, slots },
@@ -2566,7 +2584,7 @@ describe('retrying item-use intents after owner revision conflicts', () => {
     }])
     expect(storage.state.inventory.slots[0]).toBeUndefined()
     expect(nextVitals.state.vitals.hungerPoints).toBeGreaterThan(vitals.hungerPoints)
-    expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['poison', 'hunger', 'nausea'])
+    expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['hunger', 'nausea', 'poison'])
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
       GAMEPLAY_VITALS_OWNER_ID,
@@ -2715,7 +2733,7 @@ describe('retrying item-use intents after owner revision conflicts', () => {
     }])
     expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
     expect(storageAfter.state.inventory.slots[0]).toBeUndefined()
-    expect(statusAfter.state.effects.map(({ type }) => type)).toStrictEqual(['poison', 'hunger', 'nausea'])
+    expect(statusAfter.state.effects.map(({ type }) => type)).toStrictEqual(['hunger', 'nausea', 'poison'])
     expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
   })
 
@@ -2811,6 +2829,58 @@ describe('retrying item-use intents after owner revision conflicts', () => {
     expect(await Effect.runPromise(harness.store.blockAt(firstTarget))).toBe(water)
     expect(await Effect.runPromise(harness.store.blockAt(secondTarget))).toBeUndefined()
     expect(harness.commitCalls()).toBe(1)
+  })
+
+  it('publishes a failed bucket result when an empty bucket targets a solid block', async () => {
+    const target = blockPosition(BlockAxis(10), BlockAxis(64), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, stone]],
+      playerStorage: playerStorageWithItem('bucket', 1),
+    }))
+    await Effect.runPromise(requestBucketUse(
+      harness.state,
+      'bucket-wrong-target',
+      target,
+      'bucket',
+      DIMENSION,
+    ))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'UseBucket',
+      requestId: 'bucket-wrong-target',
+      heldItem: 'bucket',
+      success: false,
+      outcome: { _tag: 'WrongTarget', block: stone },
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(stone)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('publishes a successful furnace plan through the registered interaction stage', async () => {
+    const furnace = {
+      ...Result.getOrThrow(emptyFurnaceState()),
+      input: Result.getOrThrow(makeItemStack('raw_iron', StackCount(3))),
+      fuel: Result.getOrThrow(makeItemStack('coal', StackCount(1))),
+    }
+    const harness = await Effect.runPromise(makeHarness())
+    await Effect.runPromise(requestFurnaceAdvance(
+      harness.state,
+      'registered-furnace-advance',
+      furnace,
+      25,
+    ))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'AdvanceFurnace',
+      requestId: 'registered-furnace-advance',
+      success: true,
+      plan: { advancedSecs: 10, deferredSecs: 15 },
+    }])
   })
 
   it('replans food consumption after a concurrent commit advances the owner revision', async () => {
@@ -3194,6 +3264,38 @@ describe('registered combat and teleport requests in the interactions stage', ()
       amount: 1,
       cause: 'mob',
     }])
+  })
+
+  it('drains knockback produced by a registered melee hit with an enchanted sword exactly once', async () => {
+    const target = combatTarget('coverage-melee-knockback-target')
+    const harness = await Effect.runPromise(makeHarness({
+      entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerStorage: playerStorageWithKnockbackSword(),
+      playerPose: meleePlayerPose,
+    }))
+    await Effect.runPromise(requestMeleeAttack(harness.state, {
+      requestId: 'melee-knockback-outbox',
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      direction: position(PositionAxis(0), PositionAxis(0), PositionAxis(1)),
+      reach: AttackRangeDistance(3),
+      damage: 4,
+      toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toMatchObject([{
+      requestId: 'melee-knockback-outbox',
+      success: true,
+      target: { id: target.id, distance: 2 },
+    }])
+    expect(await Effect.runPromise(drainMeleeKnockbacks(harness.state))).toStrictEqual([{
+      id: target.id,
+      direction: { _tag: 'Away', x: 0, z: 1 },
+      strength: 6,
+    }])
+    expect(await Effect.runPromise(drainMeleeKnockbacks(harness.state))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(1)
   })
 
   it('keeps a lethal melee hit pending when its mob drop owner is not registered', async () => {
@@ -3735,7 +3837,9 @@ describe('registered combat and teleport requests in the interactions stage', ()
   })
 
   it('completes a charged creative bow miss without committing owners', async () => {
-    const harness = await Effect.runPromise(makeHarness())
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItems([['bow', 1]]),
+    }))
     await Effect.runPromise(requestBowShot(harness.state, 'creative-bow-miss', {
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
       dirX: 0,
@@ -3758,7 +3862,9 @@ describe('registered combat and teleport requests in the interactions stage', ()
   })
 
   it('reports undercharge and duplicate bow request IDs without committing owners twice', async () => {
-    const harness = await Effect.runPromise(makeHarness())
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItems([['bow', 1]]),
+    }))
     const shot = {
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
       dirX: 0,
@@ -4730,6 +4836,48 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('requeues a valid potato planting when its owner and block commit is rejected', async () => {
+    const soil = blockPosition(BlockAxis(11), BlockAxis(64), BlockAxis(2))
+    const cropPosition = blockPosition(BlockAxis(11), BlockAxis(65), BlockAxis(2))
+    const farmland = Option.getOrThrow(blockIdOf('farmland'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[soil, farmland]],
+      playerStorage: playerStorageWithItem('potato', 1),
+      crops: { crops: [] },
+    }))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const requestId = 'plant-commit-rejected'
+    await Effect.runPromise(requestPotatoPlanting(harness.state, requestId, soil))
+    harness.rejectCommits(true)
+
+    await harness.run()
+
+    expect(harness.commitCalls()).toBe(1)
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed',
+      operation: 'WorldCommit',
+      subject: 'ItemUse',
+      error: { _tag: 'WorldCommitEmptyRequest' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'PlantPotato',
+      requestId,
+      heldItem: 'potato',
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(soil))).toBe(farmland)
+    expect(await Effect.runPromise(harness.store.blockAt(cropPosition))).toBeUndefined()
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+  })
+
   it('handles bone meal crop-owner absence and stale crop registration', async () => {
     const boneMealPosition = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
     const plantingPosition = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
@@ -5475,6 +5623,42 @@ describe('schema-valid interaction edge paths', () => {
       requestId: 'harvest-without-drop-owner-id',
       reason: 'OwnerRegistrationUnavailable',
     })
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a player-storage snapshot failure for a valid potato harvest', async () => {
+    const harvestTarget = blockPosition(BlockAxis(10), BlockAxis(64), BlockAxis(2))
+    const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[harvestTarget, potatoCrop]],
+      crops: {
+        crops: [{
+          dimension: DIMENSION,
+          position: harvestTarget,
+          crop: 'potato_crop',
+          growthSecs: POTATO_MATURITY_SECS,
+        }],
+      },
+      playerStorage: playerStorageWithItem('potato', 1),
+      omitPlayerStorageRegistration: true,
+    }))
+    await Effect.runPromise(requestPotatoHarvest(
+      harness.state,
+      'harvest-storage-snapshot-failure',
+      harvestTarget,
+      0.5,
+    ))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed',
+      operation: 'OwnerSnapshot',
+      subject: 'ItemUse',
+      error: { _tag: 'ReplicatedOwnerUnknown' },
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(harvestTarget))).toBe(potatoCrop)
     expect(harness.commitCalls()).toBe(0)
   })
 

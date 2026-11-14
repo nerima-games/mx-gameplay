@@ -2,35 +2,8 @@ import { DamageAmountSchema } from '@nerima-games/mc-kernel'
 import type { Equipment, EquipmentSlot } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
 import type { Damage, DeathCause } from '../death-cause.js'
-
-const MAX_ARMOR_POINTS = 20
-
-/**
- * `DeathCause`s whose damage ignores armour's per-point mitigation entirely,
- * matching vanilla's bypasses-armor damage-type tag. This is a narrower list
- * than "environmental": touching a damaging block (lava, cactus, `in_fire`) IS
- * mitigated by armour, same as a sword hit — only these are the exception, and
- * each was checked individually rather than inferred from a shared "not
- * combat" theme.
- *
- * `in_fire` and `on_fire` used to be one undifferentiated `'fire'` cause,
- * produced by both standing-in-the-fire-block contact (armour-mitigated in
- * vanilla) and the burning-over-time tick after leaving it (armour-bypassing
- * in vanilla). `fire-lifecycle.ts`'s `advanceBurningActors` now assigns the
- * cause per tick from whether the actor is still inside a fire cell, so
- * `on_fire` belongs here and `in_fire` does not.
- */
-const CAUSES_BYPASSING_ARMOR: ReadonlySet<DeathCause> = new Set<DeathCause>([
-  'fall',
-  'drowning',
-  'suffocation',
-  'starvation',
-  'void',
-  'ender_pearl',
-  'poison',
-  'on_fire',
-  'generic',
-])
+import { enchantmentProtectionFactor, type EnchantmentDamageCategory, type EnchantmentSource } from '../enchantment.js'
+import { applyArmorPointsToDamage, type ArmorPoints } from './armor-mitigation.js'
 
 const WORN_ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'] as const
 // Compile-time-only validation, kept off the declaration above: line 54 below
@@ -66,8 +39,36 @@ const armorTier = (item: string): 'iron' | 'diamond' | 'netherite' | undefined =
   return undefined
 }
 
+const protectionCategoryForCause = (cause: DeathCause): EnchantmentDamageCategory => {
+  switch (cause) {
+    case 'lava':
+    case 'in_fire':
+    case 'on_fire':
+      return 'fire'
+    case 'explosion':
+      return 'explosion'
+    case 'projectile':
+      return 'projectile'
+    case 'fall':
+    case 'ender_pearl':
+      return 'fall'
+    case 'starvation':
+    case 'void':
+    case 'generic':
+      return 'unprotected'
+    default:
+      return 'generic'
+  }
+}
+
+const enchantmentSourcesForEquipment = (equipment: Equipment): ReadonlyArray<EnchantmentSource> =>
+  WORN_ARMOR_SLOTS.flatMap((slot) => {
+    const source = equipment.slots[slot]?.components?.enchantments
+    return source === undefined ? [] : [source]
+  })
+
 /** Sum the protection supplied by correctly slotted iron, diamond, and netherite armour. */
-export const armorPointsForEquipment = (equipment: Equipment): number => {
+export const armorPointsForEquipment = (equipment: Equipment): ArmorPoints => {
   let points = 0
 
   for (const slot of WORN_ARMOR_SLOTS) {
@@ -78,7 +79,7 @@ export const armorPointsForEquipment = (equipment: Equipment): number => {
     if (rule !== undefined && equipped.item === rule.item) points += rule.points
   }
 
-  return points
+  return points as ArmorPoints
 }
 
 /** Sum armor toughness from correctly slotted diamond and netherite pieces. */
@@ -95,20 +96,20 @@ export const armorToughnessForEquipment = (equipment: Equipment): number => {
 }
 
 /** Apply Java Edition's armor and toughness damage formula. */
-export const applyArmorToDamage = (damage: Damage, armorPoints: number, toughness = 0): Damage => {
-  if (CAUSES_BYPASSING_ARMOR.has(damage.cause)) return damage
-
-  const normalizedPoints = Number.isNaN(armorPoints) ? 0 : Math.max(0, armorPoints)
-  const normalizedToughness = Number.isNaN(toughness)
-    ? 0
-    : Math.min(MAX_ARMOR_POINTS, Math.max(0, toughness))
-  const effectiveArmor = Math.min(
-    MAX_ARMOR_POINTS,
-    Math.max(normalizedPoints / 5, normalizedPoints - 4 * damage.amount / (normalizedToughness + 8)),
+export const applyArmorToDamage = (
+  damage: Damage,
+  armorPoints: number,
+  toughness = 0,
+  enchantmentSources: ReadonlyArray<EnchantmentSource> = [],
+  damageMultiplier = 1,
+): Damage => {
+  const afterArmor = applyArmorPointsToDamage(damage, armorPoints as ArmorPoints, toughness)
+  const afterEnchantments = afterArmor.amount * enchantmentProtectionFactor(
+    enchantmentSources,
+    protectionCategoryForCause(damage.cause),
   )
-
   return {
-    amount: damage.amount * (1 - effectiveArmor / 25),
+    amount: afterEnchantments * Math.max(0, Math.min(1, damageMultiplier)),
     cause: damage.cause,
   }
 }
@@ -147,10 +148,20 @@ export type ArmorHitPreparation = Result.Result<ArmorHitResolution, 'invalid-dam
 export const prepareArmorHit = (
   equipment: Equipment,
   damage: Damage,
+  damageMultiplier = 1,
 ): ArmorHitPreparation => {
   if (!Number.isFinite(damage.amount) || damage.amount <= 0) return Result.fail('invalid-damage')
+  if (!Number.isFinite(damageMultiplier) || damageMultiplier <= 0 || damageMultiplier > 1) {
+    return Result.fail('invalid-damage')
+  }
   const resolved = {
-    damage: applyArmorToDamage(damage, armorPointsForEquipment(equipment), armorToughnessForEquipment(equipment)),
+    damage: applyArmorToDamage(
+      damage,
+      armorPointsForEquipment(equipment),
+      armorToughnessForEquipment(equipment),
+      enchantmentSourcesForEquipment(equipment),
+      damageMultiplier,
+    ),
     durabilityWear: armorDurabilityWearFromPreMitigationDamage(damage),
     wornSlots: WORN_ARMOR_SLOTS.filter((slot) => equipment.slots[slot] !== null),
   }
@@ -162,7 +173,12 @@ export const prepareArmorHit = (
 
 /** Resolve one hit against the equipment snapshot that exists before that hit. */
 export const resolveArmorHit = (equipment: Equipment, damage: Damage): ArmorHitResolution => ({
-  damage: applyArmorToDamage(damage, armorPointsForEquipment(equipment), armorToughnessForEquipment(equipment)),
+  damage: applyArmorToDamage(
+    damage,
+    armorPointsForEquipment(equipment),
+    armorToughnessForEquipment(equipment),
+    enchantmentSourcesForEquipment(equipment),
+  ),
   durabilityWear: armorDurabilityWearFromPreMitigationDamage(damage),
   wornSlots: WORN_ARMOR_SLOTS.filter((slot) => equipment.slots[slot] !== null),
 })

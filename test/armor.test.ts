@@ -17,6 +17,7 @@ import {
   prepareArmorHit,
   resolveArmorHit,
 } from '../src/domain/combat/armor'
+import { ArmorPointsSchema, applyArmorPointsToDamage } from '../src/domain/combat/armor-mitigation'
 
 const armourItem = (item: EquipmentItem['item']): EquipmentItem =>
   Result.getOrThrow(equipmentItem(Result.getOrThrow(itemStack(item, 1))))
@@ -33,10 +34,33 @@ const equipmentWith = (
   },
 })
 
+const armorPoints = (value: number) =>
+  Result.getOrThrow(Schema.decodeUnknownResult(ArmorPointsSchema)(value))
+
 const ARMOR_SOURCE = 'https://minecraft.wiki/w/Armor'
 const ARMOR_EDITION = 'Java Edition 26.3'
 
 describe('armor damage reduction', () => {
+  it('brands valid armor-point counts and applies the Java Edition formula over the full range', () => {
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ArmorPointsSchema)(0))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ArmorPointsSchema)(20))).toBe(true)
+    for (const invalid of [-1, 20.5, 21]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(ArmorPointsSchema)(invalid))).toBe(true)
+    }
+
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 20 }), (points) => {
+        const damage = 10
+        const effectiveArmor = Math.min(20, Math.max(points / 5, points - 4 * damage / 8))
+        const result = applyArmorPointsToDamage(
+          { amount: damage, cause: 'mob' },
+          armorPoints(points),
+        )
+        return result.amount === damage * (1 - effectiveArmor / 25) && result.cause === 'mob'
+      }),
+    )
+  })
+
   it('assigns no points when no armour is equipped', () => {
     expect(armorPointsForEquipment(equipmentWith())).toBe(0)
   })
@@ -59,6 +83,8 @@ describe('armor damage reduction', () => {
     })
 
     expect(armorPointsForEquipment(equipment)).toBe(15)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ArmorPointsSchema)(armorPointsForEquipment(equipment))))
+      .toBe(true)
     expect(applyArmorToDamage({ amount: 10, cause: 'mob' }, 15)).toEqual({
       amount: 6,
       cause: 'mob',
@@ -297,6 +323,36 @@ describe('validated armor hit preparation', () => {
 
     expect(Result.isFailure(result)).toBe(true)
     expect(JSON.stringify(equipment)).toBe(before)
+  })
+
+  it('accepts every multiplier in (0, 1] and rejects either boundary outside it', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: Number.MIN_VALUE, max: 1, noNaN: true, noDefaultInfinity: true }),
+        (damageMultiplier) => {
+          const result = prepareArmorHit(equipmentWith(), { amount: 10, cause: 'mob' }, damageMultiplier)
+          if (Result.isFailure(result)) return false
+          const decoded = Schema.decodeUnknownResult(ArmorHitResolutionSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) && decoded.success.damage.amount === 10 * damageMultiplier
+        },
+      ),
+      { numRuns: 250 },
+    )
+
+    for (const multiplier of [0, -Number.EPSILON, 1 + Number.EPSILON, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = prepareArmorHit(equipmentWith(), { amount: 10, cause: 'mob' }, multiplier)
+      expect(Result.isFailure(result) && result.failure).toBe('invalid-damage')
+    }
+
+    expect(prepareArmorHit(equipmentWith(), { amount: 10, cause: 'mob' }, 1)).toEqual(
+      Result.succeed({
+        damage: { amount: 10, cause: 'mob' },
+        durabilityWear: 2,
+        wornSlots: [],
+      }),
+    )
   })
 
   it('returns a typed failure for a damage cause outside the runtime vocabulary', () => {
