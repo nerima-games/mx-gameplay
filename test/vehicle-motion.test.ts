@@ -18,6 +18,9 @@ import {
 const rider = OccupantId('player:one')
 const transitionOrThrow = <E>(result: Result.Result<VehicleTransition, E>): VehicleTransition =>
   Result.getOrThrow(result)
+const malformedCollisionWithExplicitUndefinedImpactSpeed = (
+  collision: Omit<VehicleCollision, 'impactSpeed'>,
+): VehicleCollision => ({ ...collision, impactSpeed: undefined } as unknown as VehicleCollision)
 
 type VehicleFixtureOverrides = Omit<
   Partial<Vehicle>,
@@ -198,8 +201,8 @@ describe('vehicle collision lifecycle', () => {
   it('rejects an explicitly undefined or non-finite impact speed', () => {
     const cart = vehicle('minecart', { occupant: rider })
     const track = { kind: 'none' as const, shape: 'isolated' as const }
-    const explicitUndefined = { collided: true, impactSpeed: undefined } as VehicleCollision
-    const destroyedWithUndefinedSpeed = { destroyed: true, impactSpeed: undefined } as VehicleCollision
+    const explicitUndefined = malformedCollisionWithExplicitUndefinedImpactSpeed({ collided: true })
+    const destroyedWithUndefinedSpeed = malformedCollisionWithExplicitUndefinedImpactSpeed({ destroyed: true })
 
     expect(stepMinecart(cart, track, explicitUndefined, 0.05)).toStrictEqual(Result.fail({
       _tag: 'InvalidImpactSpeed',

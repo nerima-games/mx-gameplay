@@ -8,8 +8,6 @@ import {
   solidityFromStore,
   targetabilityFromStore,
 } from '../src/domain/in-memory-world'
-import { blockPosition, chunkCoord } from './support/coordinate-fixtures'
-
 describe('in-memory world input boundaries', () => {
   it.effect('returns typed failures for explicitly undefined world options', () =>
     Effect.gen(function* () {

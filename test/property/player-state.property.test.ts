@@ -147,11 +147,12 @@ describe('player state properties', () => {
         (pitch, yaw, pitchDelta, yawDelta) => {
           const before = pose(pitch, yaw)
           const after = applyLook(before, yawDelta, pitchDelta)
+          if (Result.isFailure(after)) return false
 
-          return after.pitchRadians >= PITCH_MIN_RADIANS &&
-            after.pitchRadians <= PITCH_MAX_RADIANS &&
-            after.yawRadians === yaw + yawDelta &&
-            after.feetPosition === before.feetPosition
+          return after.success.pitchRadians >= PITCH_MIN_RADIANS &&
+            after.success.pitchRadians <= PITCH_MAX_RADIANS &&
+            after.success.yawRadians === yaw + yawDelta &&
+            after.success.feetPosition === before.feetPosition
         },
       ),
     )

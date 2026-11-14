@@ -45,7 +45,10 @@ import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
 const splitWithBudget = (
   frontier: ReadonlyArray<FluidWorkItem>,
   options: { readonly budget: number; readonly lavaTickActive: boolean },
-) => Result.getOrThrow(splitBudget(frontier, options))
+) => Result.getOrThrow(splitBudget(frontier, {
+  budget: options.budget,
+  lavaTickActive: options.lavaTickActive,
+}))
 
 const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
 const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))

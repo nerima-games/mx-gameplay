@@ -293,8 +293,10 @@ const makeHarness = (options: Readonly<{
     options.loadedChunks ?? ['0,0'],
   )
   const chunkStore = store.api
-  const registrations = Result.getOrThrow(gameplayOwnerRegistrations({
-    ...(Object.hasOwn(options, 'playerPose') ? { playerPose: options.playerPose } : { playerPose: INITIAL_PLAYER_POSE }),
+  const registrationResult = gameplayOwnerRegistrations({
+    ...(Object.hasOwn(options, 'playerPose')
+      ? { playerPose: options.playerPose }
+      : { playerPose: INITIAL_PLAYER_POSE }),
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
     ...(options.projectiles === undefined ? {} : { projectiles: options.projectiles }),
     ...(options.brewing === undefined ? {} : { brewing: options.brewing }),
@@ -304,7 +306,11 @@ const makeHarness = (options: Readonly<{
     ...(options.entities === undefined ? {} : { entities: options.entities }),
     ...(options.crops === undefined ? {} : { crops: options.crops }),
     ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
-  }))
+  } as unknown as GameplayOwnerInitialState)
+  if (Result.isFailure(registrationResult)) {
+    throw new Error(`test fixture: invalid gameplay owner registrations: ${JSON.stringify(registrationResult.failure)}`)
+  }
+  const registrations = registrationResult.success
   const owners = registrations.filter(({ ownerId }) =>
     !(options.omitPlayerRegistration && ownerId === GAMEPLAY_PLAYER_OWNER_ID) &&
     !(options.omitVitalsRegistration && ownerId === GAMEPLAY_VITALS_OWNER_ID) &&
@@ -543,14 +549,17 @@ const coordinatorWithOutOfWorldRead = (
     WorldReadSnapshot<Codec>,
     Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
     Schema.Codec.DecodingServices<Codec>
-  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => ({
-    ...snapshot,
-    blocks: snapshot.blocks.map((block) =>
-      block.position.x === target.x && block.position.y === target.y && block.position.z === target.z
-        ? { ...block, reading: { _tag: 'OutOfWorld' as const } }
-        : block,
-    ),
-  }))
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => {
+    if (!('blocks' in snapshot)) return snapshot
+    return {
+      ...snapshot,
+      blocks: snapshot.blocks.map((block) =>
+        block.position.x === target.x && block.position.y === target.y && block.position.z === target.z
+          ? { ...block, reading: { _tag: 'OutOfWorld' as const } }
+          : block,
+      ),
+    }
+  })
   return { ...coordinator, observe }
 }
 

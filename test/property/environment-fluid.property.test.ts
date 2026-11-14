@@ -81,6 +81,7 @@ describe('environment fluid properties', () => {
           }
           expect(new Set(partition.map(identify)).size).toBe(frontier.length)
           expect(partition.map(identify).sort()).toStrictEqual(frontier.map(identify).sort())
+          return true
         },
       ),
     )

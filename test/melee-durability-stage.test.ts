@@ -313,7 +313,7 @@ describe('gameplay melee durability stage', () => {
         error: { _tag: 'WorldRevisionConflict' },
       }])
       const failure = failures[0]
-      if (failure === undefined || failure.error._tag !== 'WorldRevisionConflict') {
+      if (failure === undefined || !('_tag' in failure.error) || failure.error._tag !== 'WorldRevisionConflict') {
         throw new Error('Expected the owner snapshots to have different revisions.')
       }
       expect(failure.error.actual).toBeGreaterThan(failure.error.expected)
@@ -471,7 +471,7 @@ describe('gameplay melee durability stage', () => {
     Effect.gen(function* () {
       const initialStorage = storageWith('iron_sword')
       const { state, commit, stages } = yield* scene(initialStorage)
-      const request = { ...forgedMeleeRequest('undefined-hit-distance'), hitDistance: undefined } as MeleeAttackRequest
+      const request = { ...forgedMeleeRequest('undefined-hit-distance'), hitDistance: undefined } as unknown as MeleeAttackRequest
       yield* requestMeleeAttack(state, request)
       yield* requestMeleeAttack(state, {
         requestId: 'valid-after-invalid',

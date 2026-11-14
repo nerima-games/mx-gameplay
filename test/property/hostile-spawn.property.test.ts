@@ -221,9 +221,9 @@ describe('hostile spawn properties', () => {
   })
 
   it('keeps an absent player distance as the named unmeasurable refusal', () => {
-    const candidate = { ...validCandidate }
-    delete (candidate as Partial<SpawnCandidate>).distanceToPlayerBlocksXZ
-    expect(canMobSpawnAt(CREEPER_KIND, candidate as SpawnCandidate)).toStrictEqual({
+    const { distanceToPlayerBlocksXZ: presentDistance, ...candidateWithoutDistance } = validCandidate
+    expect(presentDistance).toBe(30)
+    expect(canMobSpawnAt(CREEPER_KIND, candidateWithoutDistance as SpawnCandidate)).toStrictEqual({
       _tag: 'Refused',
       reason: 'unmeasurable',
     })

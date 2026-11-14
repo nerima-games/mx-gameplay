@@ -38,8 +38,8 @@ import {
   miningLootContextForItem,
 } from '../../src/index.js'
 import {
-  dayPhase,
-  hostileSpawnsAllowed,
+  dayPhase as dayPhaseResult,
+  hostileSpawnsAllowed as hostileSpawnsAllowedResult,
   NIGHT_END_FRACTION,
   NIGHT_START_FRACTION,
 } from '../../src/domain/day-night.js'
@@ -65,6 +65,9 @@ import {
   setBlockBreakRequest,
   type BalanceTimeServiceReading,
 } from './gameplay-harness.js'
+
+const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
+const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 
 export type BalanceEffectRunner = typeof Effect.runPromise
 

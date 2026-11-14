@@ -56,7 +56,7 @@ import {
   type CreeperFuse,
 } from '../src/domain/mob/creeper-fuse'
 import { dropRollsNeeded, rollDropsOfKind } from '../src/domain/entities/mob-frame'
-import { nextRoll } from '../src/domain/frame-rolls'
+import { nextRoll as nextRollResult } from '../src/domain/frame-rolls'
 import {
   CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
@@ -155,11 +155,23 @@ const lit = (burnedSecs: number): CreeperFuse => ({ _tag: 'Lit', burnedSecs })
 const applyDamage = (vitals: Parameters<typeof applyDamageResult>[0], damage: Parameters<typeof applyDamageResult>[1]) =>
   Result.getOrThrow(applyDamageResult(vitals, damage))
 const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
-const explosionDamageAmount = (...args: Parameters<typeof explosionDamageAmountResult>) =>
-  Result.getOrThrow(explosionDamageAmountResult(...args))
-const explosionDamageAt = (...args: Parameters<typeof explosionDamageAtResult>) =>
-  Result.getOrThrow(explosionDamageAtResult(...args))
+const explosionDamageAmount = (
+  ...args: [power: number, distanceToCentre: number] | [power: number, distanceToCentre: number, exposure: number]
+) => Result.getOrThrow(
+  args.length === 2
+    ? explosionDamageAmountResult(args[0], args[1])
+    : explosionDamageAmountResult(args[0], args[1], args[2]),
+)
+const explosionDamageAt = (
+  ...args: [explosion: Parameters<typeof explosionDamageAtResult>[0], distanceToCentre: number] |
+    [explosion: Parameters<typeof explosionDamageAtResult>[0], distanceToCentre: number, exposure: number]
+) => Result.getOrThrow(
+  args.length === 2
+    ? explosionDamageAtResult(args[0], args[1])
+    : explosionDamageAtResult(args[0], args[1], args[2]),
+)
 const explosionRadius = (power: number) => Result.getOrThrow(explosionRadiusResult(power))
+const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
 
 describe('creeper: the fuse is a state machine with a timer and an irreversible end', () => {
   it.effect('carries the reference implementation’s two constants', () =>
@@ -593,8 +605,8 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
         _tag: 'InvalidSpawnCandidate',
         field: 'distanceToPlayerBlocksXZ',
       })
-      const absentDistance = { ...candidate() }
-      delete (absentDistance as Partial<SpawnCandidate>).distanceToPlayerBlocksXZ
+      const { distanceToPlayerBlocksXZ: presentDistance, ...absentDistance } = candidate()
+      expect(presentDistance).toBe(30)
       expect(canHostileSpawnAt(absentDistance as SpawnCandidate)).toStrictEqual({
         _tag: 'Refused',
         reason: 'unmeasurable',

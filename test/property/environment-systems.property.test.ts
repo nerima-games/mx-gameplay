@@ -20,7 +20,7 @@ import {
   takeBatch,
 } from '../../src/domain/falling-block'
 import {
-  resolveNextWeatherState,
+  resolveNextWeatherState as resolveNextWeatherStateResult,
   WEATHER_DURATION_RANGES,
   WEATHERS,
 } from '../../src/domain/weather'
@@ -29,6 +29,10 @@ import { blockPosition } from '../support/coordinate-fixtures'
 const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
 const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
+const resolveNextWeatherState = (
+  current: Parameters<typeof resolveNextWeatherStateResult>[0],
+  rolls: Parameters<typeof resolveNextWeatherStateResult>[1],
+) => Result.getOrThrow(resolveNextWeatherStateResult(current, rolls))
 
 const positionKey = (id: number) => blockPositionKeyOf(blockPosition(0, id, 0))
 
