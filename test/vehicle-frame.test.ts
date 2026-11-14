@@ -556,7 +556,7 @@ describe('vehicle frame', () => {
     expect(velocity.z).toBe(0)
   })
 
-  it('treats a non-finite delta time as no elapsed time and performs no updates', async () => {
+  it('records malformed delta time per active vehicle without reading terrain or updating state', async () => {
     const vehicle = {
       id: VehicleId('v:frozen'),
       type: 'minecart' as const,
@@ -566,18 +566,33 @@ describe('vehicle frame', () => {
       yawRadians: 0,
     }
     let updateCount = 0
+    const inactive = { ...vehicle, id: VehicleId('v:inactive'), dimension: 'nether' as const }
     const service = {
-      vehicles: Effect.succeed([vehicle]),
+      vehicles: Effect.succeed([vehicle, inactive]),
       updateState: () => Effect.sync(() => {
         updateCount += 1
       }),
     } as unknown as VehicleServiceApi
+    let reads = 0
     const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      getBlock: () => Effect.sync(() => {
+        reads += 1
+        return { _tag: 'OutOfWorld' as const }
+      }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, Number.NaN))
+    const results = await Promise.all([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.05]
+      .map((dt) => Effect.runPromise(advanceVehicles(store, service, dt, {
+        isActiveDimension: (dimension) => dimension === 'overworld',
+      }))))
+    for (const result of results) {
+      expect(result).toStrictEqual([{
+        _tag: 'VehicleMotionFailure', vehicleId: vehicle.id,
+        failure: { _tag: 'InvalidVehicleDeltaTime' },
+      }])
+    }
 
     expect(updateCount).toBe(0)
+    expect(reads).toBe(0)
   })
 })
