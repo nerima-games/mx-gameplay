@@ -100,36 +100,38 @@ const machineLoad = (label) => {
   return snapshot
 }
 
-const measure = async (arm, cwd, output) => {
+const measureMode = async (arm, mode, cwd, output) => {
+  const label = `${arm}-${mode}`
+  const args = ['exec', 'vitest', 'run', ...testFiles, '--reporter=verbose', '--reporter=json',
+    `--outputFile.json=${resolve(output, `${label}.json`)}`]
+  if (mode === 'cov' || mode === 'cpu-cov') args.push('--coverage')
+  if (mode.startsWith('cpu-')) {
+    const profileDir = resolve(output, mode.slice(4))
+    mkdirSync(profileDir, { recursive: true })
+    // Vitest 4+ moved poolOptions.forks.execArgv to top-level execArgv.
+    args.push('--execArgv=--cpu-prof', `--execArgv=--cpu-prof-dir=${profileDir}`)
+  }
+  const before = machineLoad(`${label} before`)
+  console.log(`GENPERF command (${arm}): pnpm ${args.join(' ')}`)
+  const log = createWriteStream(resolve(output, `${label}.log`))
+  const started = performance.now()
+  const result = await new Promise((done, reject) => {
+    const child = spawn('pnpm', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    child.stdout.on('data', (data) => { process.stdout.write(data); log.write(data) })
+    child.stderr.on('data', (data) => { process.stderr.write(data); log.write(data) })
+    child.on('error', reject)
+    child.on('close', (code, signal) => log.end(() => done({ code, signal })))
+  })
+  const record = { arm, mode, ...result, wallMs: performance.now() - started, before, after: machineLoad(`${label} after`) }
+  writeFileSync(resolve(output, `${label}-status.json`), `${JSON.stringify(record, null, 2)}\n`)
+  console.log(`GENPERF exit ${label}: ${JSON.stringify(result)}`)
+}
+
+const measure = (arm, cwd, output) => {
   if (!['head', 'main'].includes(arm)) throw new Error('Expected head or main arm')
   mkdirSync(output, { recursive: true })
   const modes = arm === 'head' ? ['nocov', 'cov', 'cpu-nocov', 'cpu-cov'] : ['nocov', 'cov']
-  for (const mode of modes) {
-    const label = `${arm}-${mode}`
-    const args = ['exec', 'vitest', 'run', ...testFiles, '--reporter=verbose', '--reporter=json',
-      `--outputFile.json=${resolve(output, `${label}.json`)}`]
-    if (mode === 'cov' || mode === 'cpu-cov') args.push('--coverage')
-    if (mode.startsWith('cpu-')) {
-      const profileDir = resolve(output, mode.slice(4))
-      mkdirSync(profileDir, { recursive: true })
-      // Vitest 4+ moved poolOptions.forks.execArgv to top-level execArgv.
-      args.push('--execArgv=--cpu-prof', `--execArgv=--cpu-prof-dir=${profileDir}`)
-    }
-    const before = machineLoad(`${label} before`)
-    console.log(`GENPERF command (${arm}): pnpm ${args.join(' ')}`)
-    const log = createWriteStream(resolve(output, `${label}.log`))
-    const started = performance.now()
-    const result = await new Promise((done, reject) => {
-      const child = spawn('pnpm', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
-      child.stdout.on('data', (data) => { process.stdout.write(data); log.write(data) })
-      child.stderr.on('data', (data) => { process.stderr.write(data); log.write(data) })
-      child.on('error', reject)
-      child.on('close', (code, signal) => log.end(() => done({ code, signal })))
-    })
-    const record = { arm, mode, ...result, wallMs: performance.now() - started, before, after: machineLoad(`${label} after`) }
-    writeFileSync(resolve(output, `${label}-status.json`), `${JSON.stringify(record, null, 2)}\n`)
-    console.log(`GENPERF exit ${label}: ${JSON.stringify(result)}`)
-  }
+  return modes.reduce((previous, mode) => previous.then(() => measureMode(arm, mode, cwd, output)), Promise.resolve())
 }
 
 const renderProfile = (label, summary) => {
@@ -194,7 +196,11 @@ const summarize = (output) => {
     let nextId = 1
     for (const profile of profiles) {
       summarizeCpuProfile(profile)
-      const ids = new Map(profile.nodes.map((node) => [node.id, nextId++]))
+      const ids = new Map()
+      for (const node of profile.nodes) {
+        ids.set(node.id, nextId)
+        nextId += 1
+      }
       combined.nodes.push(...profile.nodes.map((node) => ({ ...node, id: ids.get(node.id), children: (node.children ?? []).map((id) => ids.get(id)) })))
       combined.samples.push(...profile.samples.map((id) => ids.get(id)))
       combined.timeDeltas.push(...profile.timeDeltas)
