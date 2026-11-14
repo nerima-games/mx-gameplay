@@ -12,7 +12,6 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
-import * as FastCheck from 'fast-check'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   EntityId,
@@ -570,58 +569,6 @@ describe('the spawn ring', () => {
       for (const attempt of found.attempts) {
         expect(attempt.candidate.timeOfDay).toBe(0.5)
       }
-    }),
-  )
-})
-
-describe('spawn search input validation', () => {
-  it.effect('rejects every invalid target coordinate, time fraction, and present optional value', () =>
-    Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(new Map(), [])
-      const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
-
-      FastCheck.assert(FastCheck.property(anyNumber, (x) => {
-        const result = Effect.runSync(Effect.result(searchSpawnCandidates(
-          store.api,
-          { ...PLAYER, x } as Position,
-          MIDNIGHT,
-          RandomSeed(1),
-        )))
-        return Result.isFailure(result) === !Number.isFinite(x)
-      }))
-      FastCheck.assert(FastCheck.property(anyNumber, (timeOfDay) => {
-        const result = Effect.runSync(Effect.result(searchSpawnCandidates(
-          store.api,
-          PLAYER,
-          timeOfDay as never,
-          RandomSeed(1),
-        )))
-        const valid = Number.isFinite(timeOfDay) && timeOfDay >= 0 && timeOfDay < 1
-        return Result.isFailure(result) === !valid
-      }))
-
-      expect(Result.isFailure(Effect.runSync(Effect.result(searchSpawnCandidates(
-        store.api,
-        PLAYER,
-        MIDNIGHT,
-        RandomSeed(1),
-        undefined as unknown as Dimension,
-      ))))).toBe(true)
-      expect(Result.isFailure(Effect.runSync(Effect.result(searchSpawnCandidates(
-        store.api,
-        PLAYER,
-        MIDNIGHT,
-        RandomSeed(1),
-        'overworld',
-        undefined as never,
-      ))))).toBe(true)
-      expect(Result.isFailure(Effect.runSync(Effect.result(searchSpawnCandidates(
-        store.api,
-        PLAYER,
-        MIDNIGHT,
-        RandomSeed(1),
-        'invalid' as unknown as Dimension,
-      ))))).toBe(true)
     }),
   )
 })

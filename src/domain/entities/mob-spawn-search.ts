@@ -166,14 +166,7 @@ type MobSpawnSearch = {
   }>>
 }
 
-export type MobSpawnSearchFailure = FrameRollFailure | Readonly<{
-  _tag: 'InvalidMobSpawnSearchInput'
-  field: 'target' | 'timeOfDay' | 'dimension' | 'mode'
-}>
-
-const invalidSearchInput = (
-  field: Exclude<MobSpawnSearchFailure, FrameRollFailure>['field'],
-): MobSpawnSearchFailure => ({ _tag: 'InvalidMobSpawnSearchInput', field })
+export type MobSpawnSearchFailure = FrameRollFailure
 
 const EMPTY_ATTEMPTS: ReadonlyArray<never> = []
 
@@ -192,21 +185,6 @@ export const searchSpawnCandidates = (
   Effect.gen(function* () {
     const dimension = options.length === 0 ? 'overworld' : options[0]
     const mode = options.length < 2 ? 'hostile' : options[1]
-    if (
-      typeof target !== 'object' || target === null ||
-      !Number.isFinite(target.x) || !Number.isFinite(target.y) || !Number.isFinite(target.z)
-    ) {
-      return yield* Effect.fail(invalidSearchInput('target'))
-    }
-    if (!Number.isFinite(timeOfDay) || timeOfDay < 0 || timeOfDay >= 1) {
-      return yield* Effect.fail(invalidSearchInput('timeOfDay'))
-    }
-    if (dimension !== 'overworld' && dimension !== 'nether' && dimension !== 'end') {
-      return yield* Effect.fail(invalidSearchInput('dimension'))
-    }
-    if (mode !== 'hostile' && mode !== 'passive') {
-      return yield* Effect.fail(invalidSearchInput('mode'))
-    }
     const batch = drawRolls(seed, SPAWN_SEARCH_ROLLS)
     if (Result.isFailure(batch)) return yield* Effect.fail(batch.failure)
     if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, worldFaults: [], seed: batch.success.seed }
