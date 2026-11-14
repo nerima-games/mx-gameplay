@@ -78,6 +78,7 @@ import {
 import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { isPrimedTnt } from '../src/domain/mob/primed-tnt'
 import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
@@ -552,6 +553,14 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       return fuse === undefined || fuse._tag === 'Dormant' || fuse._tag === 'Detonated' ||
         (fuse._tag === 'Lit' && typeof fuse.burnedSecs === 'number' &&
           Number.isFinite(fuse.burnedSecs) && fuse.burnedSecs >= 0 && fuse.burnedSecs < CREEPER_FUSE_SECS)
+    }))
+  })
+
+  it('returns an allowed value or typed fault for arbitrary entity kinds and persisted JSON', () => {
+    fc.assert(fc.property(fc.stringMatching(/\S/).map(EntityKind), fc.jsonValue(), (kind, storedBehaviour) => {
+      const repaired = repairMobBehaviour(kind, storedBehaviour)
+      return repaired === undefined || isMobBehaviourRepairFault(repaired) || isHostileMobSnapshot(repaired) ||
+        isDroppedItemBehaviour(repaired) || isPrimedTnt(repaired)
     }))
   })
 
