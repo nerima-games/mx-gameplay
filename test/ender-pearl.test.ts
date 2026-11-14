@@ -446,7 +446,10 @@ describe('gameplay:interactions — the pearl arm', () => {
       for (const endermite of spawned) {
         expect(endermite.kind).toBe(ENDERMITE_KIND)
         expect(endermite.healthPoints).toBe(ENDERMITE_MAX_HEALTH)
-        expect(endermite.behaviour).toBeUndefined()
+        expect(endermite.behaviour).toMatchObject({
+          _tag: 'HostileMob',
+          behaviour: { _tag: 'EcosystemMob' },
+        })
         expect(landingZs.has(endermite.feetPosition.z)).toBe(true)
       }
     }),
