@@ -1725,7 +1725,12 @@ describe('stage behaviour', () => {
         { requestId: 'melee-invalid-block-distance', success: false },
       ])
       expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
-      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([{
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'Entities',
+        error: { _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' },
+      }])
     }),
   )
 
@@ -2123,7 +2128,7 @@ describe('stage behaviour', () => {
     }),
   )
 
-  it.effect('rejects an overflowing enchantment damage candidate without committing the shot', () =>
+  it.effect('rejects an unsafe enchantment power level without committing the shot', () =>
     Effect.gen(function* () {
       const target = {
         id: EntityId('bow-overflow-target'),
@@ -2154,12 +2159,13 @@ describe('stage behaviour', () => {
       expect(yield* harness.commit.coordinator.revision).toBe(revision)
       expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
         .toStrictEqual(before)
-      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toStrictEqual([])
       expect(yield* drainBowShotResults(harness.state)).toStrictEqual([])
       expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
-      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
-        { _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player' },
-      ])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-overflow', reason: 'InvalidBowPowerLevel',
+      }])
     }),
   )
 
@@ -4195,16 +4201,16 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
     }),
   )
 
-  it.effect('restoreFireLifecycle dies on a snapshot that fails validation', () =>
+  it.effect('restoreFireLifecycle rejects an invalid snapshot without changing its state', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
       const invalid = { version: 999 } as unknown as FireLifecycleSnapshot
 
-      const exit = yield* Effect.exit(restoreFireLifecycle(state, invalid))
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe('Unsupported fire lifecycle snapshot')
-      }
+      const before = yield* Ref.get(state.fireLifecycle)
+      expect(yield* Effect.flip(restoreFireLifecycle(state, invalid))).toStrictEqual({
+        _tag: 'InvalidFireLifecycleInput', field: 'snapshot',
+      })
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(before)
     }),
   )
 
@@ -6877,7 +6883,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(40, 64, 40)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'])
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestBoneMeal(state, 'bone-meal-stage', position)
@@ -7042,7 +7048,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('bone meal against an unloaded cell reports not-a-crop without a block reading', () =>
+  it.effect('defers bone meal against an unloaded cell without inventing a crop result', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([]), [])
@@ -7051,16 +7057,10 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestBoneMeal(state, 'bone-meal-unloaded', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainItemUseResults(state)).toStrictEqual([
-        {
-          action: 'ApplyBoneMeal',
-          requestId: 'bone-meal-unloaded',
-          heldItem: 'bone_meal',
-          success: false,
-          consumedCount: 0,
-          outcome: { _tag: 'notCrop', at: position, block: undefined },
-        },
-      ])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingItemUses)).toMatchObject([{
+        action: 'ApplyBoneMeal', requestId: 'bone-meal-unloaded',
+      }])
     }),
   )
 
@@ -7187,7 +7187,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('reports a registered crop as unavailable when its world chunk is not loaded for harvest', () =>
+  it.effect('defers harvesting a registered crop while its world chunk is unloaded', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(
@@ -7202,11 +7202,9 @@ describe('farming and food item uses through the full interactions stage', () =>
 
       expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
       expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
-      expect(yield* drainItemUseResults(state)).toMatchObject([{
-        action: 'HarvestPotato',
-        requestId: 'harvest-unloaded-crop',
-        success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingItemUses)).toMatchObject([{
+        action: 'HarvestPotato', requestId: 'harvest-unloaded-crop',
       }])
     }),
   )
@@ -7216,7 +7214,7 @@ describe('farming and food item uses through the full interactions stage', () =>
       const position = fixtureBlockPosition(41, 64, 41)
       const slots = [...emptySlots()]
       slots[0] = itemStack('iron_hoe', 1)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['0,0'], undefined, slots)
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'], undefined, slots)
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestSoilTill(state, 'till-fail', position, 'iron_hoe')
@@ -7265,7 +7263,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('reports the typed owner-unavailable result when a valid soil position has no representable cell above', () =>
+  it.effect('records a coordinate fault when a valid soil position has no representable cell above', () =>
     Effect.gen(function* () {
       const soil = fixtureBlockPosition(0, Number.MAX_SAFE_INTEGER, 0)
       const harness = yield* builtStagesInWorld(world([]))
@@ -7274,12 +7272,12 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestSoilTill(harness.state, 'till-at-coordinate-limit', soil, 'iron_hoe')
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
-        _tag: 'Unsupported',
-        action: 'TillSoil',
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'GameplayRequestFault',
+        source: 'ItemUse',
         requestId: 'till-at-coordinate-limit',
-        reason: 'OwnerRegistrationUnavailable',
-      })
+        reason: 'NeighbourPositionOverflow',
+      }])
       expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
       expect(yield* Ref.get(harness.commitCalls)).toBe(0)
     }),
@@ -7392,7 +7390,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('planting a potato on non-farmland reports failure with nothing consumed', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'])
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestPotatoPlanting(state, 'plant-fail', position)
