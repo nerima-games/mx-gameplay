@@ -70,6 +70,11 @@ const applyCollision = (
   vehicle: Vehicle,
   collision: VehicleCollision,
 ): Result.Result<VehicleTransition, VehicleMotionFailure> => {
+  const hasImpactSpeed = Object.hasOwn(collision, 'impactSpeed')
+  if (hasImpactSpeed && (collision.impactSpeed === undefined || !Number.isFinite(collision.impactSpeed))) {
+    return Result.fail({ _tag: 'InvalidImpactSpeed' })
+  }
+
   const occupant = vehicle.occupant
   if (collision.destroyed) {
     const stopped = withoutOccupant({ ...vehicle, velocity: vehicleVelocity(0, 0, 0) })
@@ -79,7 +84,6 @@ const applyCollision = (
   }
   if (!collision.collided) return Result.succeed({ vehicle })
 
-  const hasImpactSpeed = Object.hasOwn(collision, 'impactSpeed')
   const impactSpeed = hasImpactSpeed ? collision.impactSpeed : speed(vehicle)
   if (impactSpeed === undefined || !Number.isFinite(impactSpeed)) {
     return Result.fail({ _tag: 'InvalidImpactSpeed' })

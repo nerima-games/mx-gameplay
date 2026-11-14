@@ -215,11 +215,12 @@ describe('C2 melee preparation', () => {
     ]))
     for (const kind of mobKinds) {
       const candidate = { ...zombie, id: EntityId(`melee-target-${kind}`), kind: EntityKind(kind) }
-      expect(meleeTarget([candidate], request)?.id).toBe(candidate.id)
+      const target = meleeTarget([candidate], request)
+      expect(Result.isSuccess(target) && target.success?.id).toBe(candidate.id)
     }
     for (const kind of nonMobKinds) {
       const candidate = { ...zombie, id: EntityId(`melee-target-${kind}`), kind: EntityKind(kind) }
-      expect(meleeTarget([candidate], request)).toBeUndefined()
+      expect(meleeTarget([candidate], request)).toStrictEqual(Result.succeed(undefined))
     }
   })
 
@@ -431,17 +432,18 @@ describe('C2 melee preparation', () => {
       damage: 1,
     }
     const candidates = [zombie]
-    const target = meleeTarget(candidates, request)
+    const targetResult = meleeTarget(candidates, request)
 
-    expect(target).toMatchObject({ id: zombie.id })
-    if (target === undefined) return
+    expect(Result.isSuccess(targetResult) && targetResult.success).toMatchObject({ id: zombie.id })
+    if (Result.isFailure(targetResult) || targetResult.success === undefined) return
+    const target = targetResult.success
 
-    expect(meleeTargetBeforeBlock(candidates, request, undefined)).toStrictEqual(target)
-    expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toBeUndefined()
-    expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)).toStrictEqual(target)
+    expect(meleeTargetBeforeBlock(candidates, request, undefined)).toStrictEqual(Result.succeed(target))
+    expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toStrictEqual(Result.succeed(undefined))
+    expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)).toStrictEqual(Result.succeed(target))
   })
 
-  it('rejects an invalid hit distance', () => {
+  it('distinguishes invalid hit distances from an absent target', () => {
     const request: MeleeAttackRequest = {
       origin: atPosition(0, 64 + 1.62, 0),
       direction: atPosition(0, 0, -1),
@@ -449,8 +451,13 @@ describe('C2 melee preparation', () => {
       damage: 1,
     }
 
-    expect(meleeTarget([zombie], { ...request, hitDistance: -1 })).toBeUndefined()
-    expect(meleeTarget([zombie], { ...request, hitDistance: Number.NaN })).toBeUndefined()
+    const invalid = Result.fail({ _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' })
+    expect(meleeTarget([zombie], { ...request, hitDistance: -1 })).toStrictEqual(invalid)
+    expect(meleeTarget([zombie], { ...request, hitDistance: Number.NaN })).toStrictEqual(invalid)
+    expect(meleeTarget([zombie], { ...request, hitDistance: Number.POSITIVE_INFINITY })).toStrictEqual(invalid)
+    expect(meleeTarget([zombie], { ...request, hitDistance: undefined } as MeleeAttackRequest)).toStrictEqual(invalid)
+    expect(meleeTarget([], request)).toStrictEqual(Result.succeed(undefined))
+    expect(prepareMeleeAttack(intent, { ...input, blockDistance: undefined } as never)).toStrictEqual(invalid)
   })
 
   it('keeps valid authoritative ticks in the emitted event', () => {

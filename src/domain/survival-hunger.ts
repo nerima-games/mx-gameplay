@@ -320,7 +320,10 @@ export const makeReplicatedSurvivalHungerRuntime = (
     const pending = yield* Ref.make<PendingSurvivalActivities>({ nextSequence: 0, queue: [] })
 
     const transact = <A>(
-      operation: (vitals: PlayerVitals) => Effect.Effect<Readonly<{ vitals: PlayerVitals; result: A }>, Brand.BrandError>,
+      operation: (vitals: PlayerVitals) => Effect.Effect<
+        Readonly<{ vitals: PlayerVitals; result: A }>,
+        SurvivalHungerError
+      >,
     ): Effect.Effect<A, SurvivalHungerError> =>
       Effect.gen(function* () {
         const observed = yield* coordinator.snapshot(ownerId, ExperienceOrbVitalsOwnerSnapshotSchema)

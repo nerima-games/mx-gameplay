@@ -19,9 +19,15 @@ export const makeVehiclesStage = (context: GameplayStageContext): StageRegistrat
     for (const failure of failures) {
       if (failure._tag === 'VehicleWorldDataFault') {
         yield* recordGameplayEntityWorldDataFault(context.state, 'VehicleMovement', failure.failure)
+      } else if (failure._tag === 'VehicleWorldUnavailable') {
+        // The next frame retries unloaded chunks; an out-of-world position has no vehicle transition.
+        continue
       } else {
         yield* recordGameplayStageFailure(context.state, {
-          _tag: 'Failed', operation: 'WorldCommit', subject: 'Vehicle', error: failure.failure,
+          _tag: 'Failed',
+          operation: failure._tag === 'VehicleUpdateFailure' ? 'WorldCommit' : 'CandidateBuild',
+          subject: 'Vehicle',
+          error: failure.failure,
         })
       }
     }

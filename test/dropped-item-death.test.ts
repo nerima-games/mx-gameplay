@@ -129,6 +129,14 @@ describe('deathDropsFromPlayerStorage', () => {
     }))
   })
 
+  it('distinguishes an omitted optional metadata argument from explicit undefined', () => {
+    expect(deathDropsFromPlayerStorage(emptyPlayerStorage(), at)).toStrictEqual(Result.succeed([]))
+    expect(deathDropsFromPlayerStorage(emptyPlayerStorage(), at, undefined)).toStrictEqual(Result.fail({
+      _tag: 'InvalidPlayerSlotMetadata',
+      field: 'metadata',
+    }))
+  })
+
   it('keys equipment metadata as `equipment:<slot>`, distinct from inventory index keys', () => {
     const metadata: PlayerSlotMetadata = {
       customNames: { 'equipment:head': 'Old Faithful', '0': 'Wrong Slot' },

@@ -336,11 +336,11 @@ export const enchantmentOffers = (
   bookshelfCount: unknown,
 ): Result.Result<readonly [EnchantmentOffer, EnchantmentOffer, EnchantmentOffer], EnchantmentOfferFailure> => {
   const first = enchantmentOffer(seed, bookshelfCount, 0)
-  if (Result.isFailure(first)) return first
+  if (Result.isFailure(first)) return Result.fail(first.failure)
   const second = enchantmentOffer(seed, bookshelfCount, 1)
-  if (Result.isFailure(second)) return second
+  if (Result.isFailure(second)) return Result.fail(second.failure)
   const third = enchantmentOffer(seed, bookshelfCount, 2)
-  if (Result.isFailure(third)) return third
+  if (Result.isFailure(third)) return Result.fail(third.failure)
   const offers: readonly [EnchantmentOffer, EnchantmentOffer, EnchantmentOffer] = [
     first.success,
     second.success,

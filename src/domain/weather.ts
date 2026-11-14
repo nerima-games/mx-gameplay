@@ -114,6 +114,16 @@ export type WeatherState = {
   readonly remainingSecs: number
 }
 
+export type WeatherInputFailure = Readonly<{
+  _tag: 'InvalidWeatherInput'
+  field: 'weather' | 'roll' | 'rolls' | 'state' | 'deltaSeconds' | 'transition' | 'duration'
+}>
+
+const invalidWeatherInput = (field: WeatherInputFailure['field']): WeatherInputFailure => ({
+  _tag: 'InvalidWeatherInput',
+  field,
+})
+
 /** Runtime validation for weather values crossing an untyped host boundary. */
 export const isWeather = (value: unknown): value is Weather =>
   typeof value === 'string' && (WEATHERS as ReadonlyArray<string>).includes(value)
@@ -129,6 +139,8 @@ export const isWeatherState = (value: unknown): value is WeatherState => {
 
   const candidate = value as { readonly weather?: unknown; readonly remainingSecs?: unknown }
   return (
+    Object.hasOwn(value, 'weather') &&
+    Object.hasOwn(value, 'remainingSecs') &&
     isWeather(candidate.weather) &&
     typeof candidate.remainingSecs === 'number' &&
     Number.isFinite(candidate.remainingSecs) &&
@@ -144,8 +156,7 @@ export const applyWeatherState = (
   : Result.fail('invalid-weather-state')
 
 /** Clamp into `[0, 1]`. `weather.ts:30` — INCLUSIVE of 1, which the oracle pins. */
-const clampUnit = (value: number): number =>
-  Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0
+const clampUnit = (value: number): number => Math.min(1, Math.max(0, value))
 
 /**
  * How long a stretch of this weather lasts, from one roll.
@@ -155,23 +166,29 @@ const clampUnit = (value: number): number =>
  * is over `max - min + 1` so that the range is INCLUSIVE, which means a roll of
  * exactly 1 would otherwise land one second past the end.
  *
- * TOTAL: `clampUnit` maps a roll that is not a number to 0, so a caller with a
- * broken generator gets the SHORTEST legal stretch rather than a `NaN` countdown
- * that never expires. That direction is chosen — a weather with a `NaN` duration
- * is weather that never changes again, and it looks exactly like a working game.
+ * A non-finite roll is a typed input failure. Finite values outside the unit
+ * interval retain the reference-compatible clamp.
  */
-export const resolveWeatherDurationSecs = (weather: Weather, roll: number): number => {
+export const resolveWeatherDurationSecs = (
+  weather: Weather,
+  roll: number,
+): Result.Result<number, WeatherInputFailure> => {
+  if (!isWeather(weather)) return Result.fail(invalidWeatherInput('weather'))
+  if (!Number.isFinite(roll)) return Result.fail(invalidWeatherInput('roll'))
   const range = WEATHER_DURATION_RANGES[weather]
   const offset = Math.floor(clampUnit(roll) * (range.max - range.min + 1))
 
-  return Math.min(range.max, range.min + offset)
+  return Result.succeed(Math.min(range.max, range.min + offset))
 }
 
 /** A fresh stretch of the named weather. `weather.ts:41-47`. */
-export const createWeatherState = (weather: Weather, durationRoll: number): WeatherState => ({
-  weather,
-  remainingSecs: resolveWeatherDurationSecs(weather, durationRoll),
-})
+export const createWeatherState = (
+  weather: Weather,
+  durationRoll: number,
+): Result.Result<WeatherState, WeatherInputFailure> => Result.map(
+  resolveWeatherDurationSecs(weather, durationRoll),
+  (remainingSecs) => ({ weather, remainingSecs }),
+)
 
 /**
  * What a world starts with.
@@ -182,7 +199,7 @@ export const createWeatherState = (weather: Weather, durationRoll: number): Weat
  * (`weather-service.ts:13`), so two runs of one scenario disagree about when the
  * first rain arrives.
  */
-export const INITIAL_WEATHER: WeatherState = createWeatherState('clear', 0)
+export const INITIAL_WEATHER: WeatherState = { weather: 'clear', remainingSecs: CLEAR_DURATION_RANGE_SECS.min }
 
 /** The two rolls one transition needs, both in `[0, 1)`. */
 export type WeatherRolls = {
@@ -210,7 +227,16 @@ export const WEATHER_TRANSITION_ROLLS = 2
  * rain and CLEAR. A `Record<Weather, [Weather, Weather]>` would say the same
  * thing today and would hide which of the six edges a future edit moved.
  */
-export const resolveNextWeatherState = (current: Weather, rolls: WeatherRolls): WeatherState => {
+export const resolveNextWeatherState = (
+  current: Weather,
+  rolls: WeatherRolls,
+): Result.Result<WeatherState, WeatherInputFailure> => {
+  if (!isWeather(current)) return Result.fail(invalidWeatherInput('weather'))
+  if (typeof rolls !== 'object' || rolls === null) return Result.fail(invalidWeatherInput('rolls'))
+  if (!Object.hasOwn(rolls, 'transition')) return Result.fail(invalidWeatherInput('transition'))
+  if (!Object.hasOwn(rolls, 'duration')) return Result.fail(invalidWeatherInput('duration'))
+  if (!Number.isFinite(rolls.transition)) return Result.fail(invalidWeatherInput('transition'))
+  if (!Number.isFinite(rolls.duration)) return Result.fail(invalidWeatherInput('duration'))
   if (current === 'clear') {
     return createWeatherState(
       rolls.transition < THUNDER_AFTER_CLEAR_CHANCE ? 'thunder' : 'rain',
@@ -240,13 +266,17 @@ export const resolveNextWeatherState = (current: Weather, rolls: WeatherRolls): 
  * whose seed is untouched on a frame that did not search. A caller asks this
  * first and draws its two rolls only when the answer is yes.
  *
- * TOTAL, and a non-finite remainder expires immediately. That is the recoverable
- * direction: a corrupt countdown resolves itself on the next frame into a fresh
- * legal stretch, where the alternative — `NaN > 0`, which is `false`, read as
- * "not expired" — is weather frozen for the life of the world.
+ * Invalid state and frame delta values are reported so the stage can record the
+ * failed transition without publishing a fabricated countdown.
  */
-export const weatherExpires = (state: WeatherState, dt: number): boolean =>
-  !Number.isFinite(state.remainingSecs) || !(state.remainingSecs - (Number.isFinite(dt) ? dt : 0) > 0)
+export const weatherExpires = (
+  state: WeatherState,
+  dt: number,
+): Result.Result<boolean, WeatherInputFailure> => {
+  if (!isWeatherState(state)) return Result.fail(invalidWeatherInput('state'))
+  if (!Number.isFinite(dt) || dt < 0) return Result.fail(invalidWeatherInput('deltaSeconds'))
+  return Result.succeed(!(state.remainingSecs - dt > 0))
+}
 
 /**
  * One frame of weather.
@@ -256,37 +286,24 @@ export const weatherExpires = (state: WeatherState, dt: number): boolean =>
  * argument. What is left is a total function from a state and a delta to a
  * state, which is `../mob/creeper-fuse`'s shape exactly — and for the same
  * reason: the value belongs to whoever stores it, and the rule only says what it
- * becomes.
+ * becomes. Invalid persisted state and host frame input are returned as typed
+ * failures.
  *
  * The rolls are IGNORED when the stretch has not run out, so a caller that
  * cannot be bothered to check `weatherExpires` still gets the right answer; what
  * it loses is the seed it burned. The check is cheap and the stage does it.
  *
- * A NON-FINITE `dt` ADVANCES NOTHING rather than poisoning the countdown. The
- * frame's delta comes from mc-compose and is not this repository's to trust
- * (kernel's `DeltaTimeSecs` is a brand, not a refinement), and a
- * single `NaN` frame would otherwise make `remainingSecs` `NaN` for good — the
- * preview's finding F5 in a second place.
+ * State, frame delta and rolls are validated before publishing the next state.
  */
 export const advanceWeather = (
   state: WeatherState,
   dt: number,
   rolls: WeatherRolls,
-): WeatherState => {
-  if (weatherExpires(state, dt)) {
-    return resolveNextWeatherState(state.weather, rolls)
-  }
-
-  // The SAME non-finite guard `weatherExpires` applies, and it has to be applied
-  // twice rather than once: that function answers a question about `dt` and this
-  // one performs arithmetic with it, so a `dt` the predicate treated as zero
-  // would otherwise be subtracted as `NaN` here and the countdown would never
-  // recover. Sharing one clamp would be tidier and would put the guard one
-  // function further from the subtraction it protects.
-  return {
-    weather: state.weather,
-    remainingSecs: state.remainingSecs - (Number.isFinite(dt) ? dt : 0),
-  }
+): Result.Result<WeatherState, WeatherInputFailure> => {
+  const expired = weatherExpires(state, dt)
+  if (Result.isFailure(expired)) return Result.fail(expired.failure)
+  if (expired.success) return resolveNextWeatherState(state.weather, rolls)
+  return Result.succeed({ weather: state.weather, remainingSecs: state.remainingSecs - dt })
 }
 
 // ---------------------------------------------------------------------------

@@ -31,7 +31,11 @@ import {
   ENDER_PEARL_ENDERMITE_SPAWN_CHANCE,
   ENDER_PEARL_MAX_DISTANCE,
 } from '../src/domain/interactions/throw-ender-pearl'
-import { applyDamage as applyDamageResult, deathMessage, DEATH_MESSAGES } from '../src/domain/death-cause'
+import {
+  applyDamage as applyDamageResult,
+  deathMessage as deathMessageResult,
+  DEATH_MESSAGES,
+} from '../src/domain/death-cause'
 import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
@@ -65,6 +69,8 @@ import { itemStack, position, PositionAxis, StackCount, type BlockId, type Posit
 const ORIGIN = position(PositionAxis(10), PositionAxis(64), PositionAxis(10))
 const applyDamage = (...args: Parameters<typeof applyDamageResult>) =>
   Result.getOrThrow(applyDamageResult(...args))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) =>
+  Result.getOrThrow(deathMessageResult(...args))
 const PEARL_STACK = Result.getOrThrow(itemStack('ender_pearl', StackCount(1)))
 const poseAt = (feetPosition: Position): PlayerPose => ({ feetPosition, yawRadians: 0, pitchRadians: 0 })
 

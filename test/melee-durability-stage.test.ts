@@ -467,6 +467,39 @@ describe('gameplay melee durability stage', () => {
     }),
   )
 
+  it.effect('records an explicit undefined hit distance and skips only that melee request', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const { state, commit, stages } = yield* scene(initialStorage)
+      const request = { ...forgedMeleeRequest('undefined-hit-distance'), hitDistance: undefined } as MeleeAttackRequest
+      yield* requestMeleeAttack(state, request)
+      yield* requestMeleeAttack(state, {
+        requestId: 'valid-after-invalid',
+        origin: atPosition(80, 64, 80),
+        direction: atPosition(1, 0, 0),
+        reach: AttackRangeDistance(64),
+        damage: 999,
+        hitDistance: 64,
+      })
+
+      yield* runInteractions(stages)
+
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'Entities',
+        error: { _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' },
+      }])
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+      expect(yield* drainMeleeAttackResults(state)).toMatchObject([
+        { requestId: 'undefined-hit-distance', success: false },
+        { requestId: 'valid-after-invalid', success: true },
+      ])
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(19)
+      expect(yield* ownerStorage(commit)).toStrictEqual(initialStorage)
+    }),
+  )
+
   it.effect('does not consume attack cooldown for an invalid target damage state', () =>
     Effect.gen(function* () {
       const initialStorage = storageWith('iron_sword')

@@ -86,6 +86,7 @@ import {
   requestBlockBreak,
   requestBoneMeal,
   requestBlockPlacementCommand,
+  validateBlockPlacementCommand,
   requestBlockUse,
   requestBowShot,
   requestEnderPearlThrow,
@@ -2919,6 +2920,81 @@ describe('retrying item-use intents after owner revision conflicts', () => {
 })
 
 describe('registered block-use and placement requests in the interactions stage', () => {
+  it('requires an own request id and preserves the omitted-mode default', () => {
+    const base = {
+      positionKey: blockPositionKeyOf(blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))),
+      heldItem: 'stone' as const,
+    }
+    const omittedMode = { ...base, requestId: 'valid-placement' }
+    expect(validateBlockPlacementCommand(omittedMode)).toStrictEqual(Result.succeed(omittedMode))
+    expect(validateBlockPlacementCommand(base)).toMatchObject({
+      _tag: 'Failure', failure: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' },
+    })
+    expect(validateBlockPlacementCommand({ ...omittedMode, requestId: undefined })).toMatchObject({
+      _tag: 'Failure', failure: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' },
+    })
+    expect(validateBlockPlacementCommand({ ...omittedMode, mode: undefined })).toMatchObject({
+      _tag: 'Failure', failure: { _tag: 'InvalidBlockPlacementCommand', field: 'mode' },
+    })
+
+    FastCheck.assert(FastCheck.property(FastCheck.anything(), (requestId) => {
+      const result = validateBlockPlacementCommand({ ...base, requestId })
+      expect(Result.isFailure(result)).toBe(typeof requestId !== 'string')
+    }))
+    FastCheck.assert(FastCheck.property(FastCheck.anything(), (mode) => {
+      const result = validateBlockPlacementCommand({ ...omittedMode, mode })
+      expect(Result.isFailure(result)).toBe(mode !== 'survival' && mode !== 'creative')
+    }))
+  })
+
+  it('records malformed placement commands and processes the next valid request', async () => {
+    const target = blockPosition(BlockAxis(11), BlockAxis(64), BlockAxis(3))
+    const harness = await Effect.runPromise(makeHarness())
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: undefined,
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'placement-own-undefined-mode',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+      mode: undefined,
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'placement-invalid-mode',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+      mode: 'adventure',
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'placement-after-invalid-input',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+      mode: 'creative',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' } },
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' } },
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'mode' } },
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'mode' } },
+    ])
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toMatchObject([{
+      requestId: 'placement-after-invalid-input',
+      success: true,
+      outcome: { _tag: 'Placed' },
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(Option.getOrThrow(blockIdOf('stone')))
+    expect(harness.commitCalls()).toBe(1)
+  })
+
   it('reports dead-player refusals for placement, bow, and melee intents', async () => {
     const harness = await Effect.runPromise(makeHarness({
       vitals: { ...SPAWN_VITALS, healthPoints: EntityHealthPoints(0) },

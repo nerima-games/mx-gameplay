@@ -199,8 +199,12 @@ describe('vehicle collision lifecycle', () => {
     const cart = vehicle('minecart', { occupant: rider })
     const track = { kind: 'none' as const, shape: 'isolated' as const }
     const explicitUndefined = { collided: true, impactSpeed: undefined } as VehicleCollision
+    const destroyedWithUndefinedSpeed = { destroyed: true, impactSpeed: undefined } as VehicleCollision
 
     expect(stepMinecart(cart, track, explicitUndefined, 0.05)).toStrictEqual(Result.fail({
+      _tag: 'InvalidImpactSpeed',
+    }))
+    expect(stepMinecart(cart, track, destroyedWithUndefinedSpeed, 0.05)).toStrictEqual(Result.fail({
       _tag: 'InvalidImpactSpeed',
     }))
     expect(stepMinecart(cart, track, { collided: true, impactSpeed: Number.NaN }, 0.05)).toStrictEqual(Result.fail({
@@ -209,6 +213,13 @@ describe('vehicle collision lifecycle', () => {
     expect(stepMinecart(cart, track, { collided: true, impactSpeed: Number.POSITIVE_INFINITY }, 0.05)).toStrictEqual(Result.fail({
       _tag: 'InvalidImpactSpeed',
     }))
+    expect(stepBoat(vehicle('boat'), {
+      destroyed: true,
+      impactSpeed: Number.NaN,
+      throttle: 0,
+      steering: 0,
+      inWater: true,
+    }, 0.05)).toStrictEqual(Result.fail({ _tag: 'InvalidImpactSpeed' }))
   })
 
   it('propagates invalid minecart velocity as a typed motion failure even without a rail', () => {

@@ -8,7 +8,7 @@ import {
   propertyOfBlockId,
 } from '@nerima-games/mc-kernel'
 import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
-import { blockLoot } from '../src/domain/interactions/block-loot'
+import { blockLoot as resolveBlockLoot } from '../src/domain/interactions/block-loot'
 import { type requestBlockBreak } from '../src/stages/registration'
 import {
   advanceMiningProgress,
@@ -36,6 +36,7 @@ const DIRT = { position: atBlockPosition(1, 64, 3), blockId: registeredBlockId('
 const DIRT_AT_STONE_POSITION = { position: STONE.position, blockId: DIRT.blockId }
 const miningSpeed = (tool: Parameters<typeof effectiveMiningSpeed>[0], requirement: HarvestToolRequirement) =>
   Result.getOrThrow(effectiveMiningSpeed(tool, requirement))
+const blockLoot = (...args: Parameters<typeof resolveBlockLoot>) => Result.getOrThrow(resolveBlockLoot(...args))
 
 const completedPositionAcceptedByRequestBlockBreak: Parameters<typeof requestBlockBreak>[1] =
   STONE.position

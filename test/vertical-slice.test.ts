@@ -362,7 +362,7 @@ const withMiningDroppedItemsOwner = (
       owners: [
         ...registrations.filter((owner) => owner.ownerId !== playerStorageOwnerId),
         playerStorageOwnerRegistration(playerStorageOwnerId, playerStorage),
-        droppedItemOwnerRegistration(MINING_DROPPED_ITEMS_OWNER_ID, droppedItems),
+        Result.getOrThrow(droppedItemOwnerRegistration(MINING_DROPPED_ITEMS_OWNER_ID, droppedItems)),
       ],
       dimensions: [MINING_DIMENSION],
       chunkStores: { forDimension: () => store },

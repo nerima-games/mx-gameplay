@@ -81,6 +81,17 @@ describe('complete hostile despawn rule', () => {
     ).toStrictEqual({ _tag: 'Keep' })
   })
 
+  it('requires the distance key while preserving explicit undefined as no player', () => {
+    expect(despawnVerdictResult({ persistent: false } as unknown as DespawnCandidate)).toStrictEqual(Result.fail({
+      _tag: 'InvalidDespawnCandidate',
+      field: 'distanceToPlayerBlocks',
+    }))
+    expect(Result.isSuccess(despawnVerdictResult({
+      distanceToPlayerBlocks: undefined,
+      persistent: false,
+    }))).toBe(true)
+  })
+
   it('returns typed failures for invalid distances and malformed present rolls', () => {
     FastCheck.assert(FastCheck.property(
       FastCheck.double({ noNaN: false, noDefaultInfinity: false }),

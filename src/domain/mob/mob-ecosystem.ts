@@ -172,7 +172,7 @@ export const initialEcosystemMobState = (): EcosystemMobState => ({
 
 export const repairEcosystemMobState = (
   value: unknown,
-  fieldPresent = value !== undefined,
+  fieldPresent: boolean = value !== undefined,
 ): Result.Result<EcosystemMobState | undefined, MobStateRepairFailure> => {
   if (value === undefined) {
     return fieldPresent

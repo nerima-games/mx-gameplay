@@ -156,6 +156,9 @@ export type WorldInputFailure = Readonly<{
     | 'world'
     | 'world.blocks'
     | 'world.loaded'
+    | 'seed'
+    | 'spawnX'
+    | 'spawnZ'
     | 'spawnPose'
     | 'dimension'
     | 'inventory'
@@ -325,7 +328,7 @@ const makeWorldChunkSource = (
 
   return Result.succeed({ source, loaded })
 }
-export const makeInMemoryWorld = <S>(
+const makeInMemoryWorldImpl = <S>(
   options: InMemoryWorldOptions = {},
 ) => Effect.gen(function* () {
     const world = Object.hasOwn(options, 'world') ? options.world : EMPTY_WORLD
@@ -344,16 +347,36 @@ export const makeInMemoryWorld = <S>(
     return yield* makeWorldWithStore<S>(chunkStore, options)
   })
 
+export const makeInMemoryWorld: typeof makeInMemoryWorldImpl = makeInMemoryWorldImpl
+
 /** Stand up a deterministic generated world backed by mc-worldgen's real store. */
-export const makeGeneratedWorld = <S>(
+const makeGeneratedWorldImpl = <S>(
   options: GeneratedWorldOptions = {},
 ) => Effect.gen(function* () {
     const seedInput = Object.hasOwn(options, 'seed') ? options.seed : 8675309
     const spawnXInput = Object.hasOwn(options, 'spawnX') ? options.spawnX : 0.5
     const spawnZInput = Object.hasOwn(options, 'spawnZ') ? options.spawnZ : 0.5
-    const seed = yield* Effect.fromResult(NoiseSeed.result(seedInput))
-    const spawnX = yield* Effect.fromResult(PositionAxis.result(spawnXInput))
-    const spawnZ = yield* Effect.fromResult(PositionAxis.result(spawnZInput))
+    if (seedInput === undefined) return yield* Effect.fail(worldInputFailure('seed', 'undefined'))
+    if (typeof seedInput !== 'number' || !Number.isFinite(seedInput)) {
+      return yield* Effect.fail(worldInputFailure('seed', 'invalid'))
+    }
+    const seedResult = NoiseSeed.result(seedInput)
+    if (Result.isFailure(seedResult)) return yield* Effect.fail(worldInputFailure('seed', 'invalid'))
+    const seed = seedResult.success
+    if (spawnXInput === undefined) return yield* Effect.fail(worldInputFailure('spawnX', 'undefined'))
+    if (typeof spawnXInput !== 'number' || !Number.isFinite(spawnXInput)) {
+      return yield* Effect.fail(worldInputFailure('spawnX', 'invalid'))
+    }
+    const spawnXResult = PositionAxis.result(spawnXInput)
+    if (Result.isFailure(spawnXResult)) return yield* Effect.fail(worldInputFailure('spawnX', 'invalid'))
+    const spawnX = spawnXResult.success
+    if (spawnZInput === undefined) return yield* Effect.fail(worldInputFailure('spawnZ', 'undefined'))
+    if (typeof spawnZInput !== 'number' || !Number.isFinite(spawnZInput)) {
+      return yield* Effect.fail(worldInputFailure('spawnZ', 'invalid'))
+    }
+    const spawnZResult = PositionAxis.result(spawnZInput)
+    if (Result.isFailure(spawnZResult)) return yield* Effect.fail(worldInputFailure('spawnZ', 'invalid'))
+    const spawnZ = spawnZResult.success
     const blockX = yield* Effect.fromResult(BlockAxis.result(Math.floor(spawnX)))
     const blockZ = yield* Effect.fromResult(BlockAxis.result(Math.floor(spawnZ)))
     const spawnY = yield* Effect.fromResult(
@@ -397,6 +420,8 @@ export const makeGeneratedWorld = <S>(
 
     return { ...world, worldgenChunkStore: worldgenStore }
   })
+
+export const makeGeneratedWorld: typeof makeGeneratedWorldImpl = makeGeneratedWorldImpl
 
 /**
  * Is this cell something a body cannot pass through?

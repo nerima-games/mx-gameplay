@@ -75,6 +75,9 @@ export const resolveEnvironmentalContactDamage = (
   if (typeof state !== 'object' || state === null) {
     return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'state.lastDamageElapsedSecs' })
   }
+  if (!Object.hasOwn(state, 'lastDamageElapsedSecs')) {
+    return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'state.lastDamageElapsedSecs' })
+  }
   if (!Array.isArray(contacts)) {
     return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'contacts' })
   }

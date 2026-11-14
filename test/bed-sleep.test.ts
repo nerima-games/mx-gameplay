@@ -172,8 +172,9 @@ describe('multiplayer sleep roster', () => {
 
   it('sleepRatioFromPercentage defaults missing values and rejects malformed gamerule values', () => {
     expect(sleepRatioFromPercentage(null)).toEqual(Result.succeed(1))
-    expect(sleepRatioFromPercentage('')).toEqual(Result.succeed(1))
-    expect(sleepRatioFromPercentage('   ')).toEqual(Result.succeed(1))
+    expect(sleepRatioFromPercentage('')).toEqual(Result.fail('invalid-sleep-percentage'))
+    expect(sleepRatioFromPercentage('   ')).toEqual(Result.fail('invalid-sleep-percentage'))
+    expect(sleepRatioFromPercentage(undefined as never)).toEqual(Result.fail('invalid-sleep-percentage'))
     expect(sleepRatioFromPercentage('not a number')).toEqual(Result.fail('invalid-sleep-percentage'))
     expect(sleepRatioFromPercentage('50')).toEqual(Result.succeed(0.5))
     // Clamped at both ends.

@@ -1,8 +1,10 @@
-import { describe, it } from '@effect/vitest'
+import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import { Result } from 'effect'
 import {
   applyDamage as applyDamageResult,
+  deathMessage as deathMessageResult,
+  MAX_HEALTH_POINTS,
   type DeathCause,
   type Vitals,
 } from '../../src/domain/death-cause'
@@ -74,6 +76,22 @@ describe('player damage properties', () => {
       const result = applyDamageResult({ healthPoints: 20, lastDeathCause: undefined }, { amount, cause: 'fall' })
       return Result.isFailure(result) === (!Number.isFinite(amount) || amount < 0)
     }))
+    FastCheck.assert(FastCheck.property(anyNumber, (healthPoints) => {
+      const result = deathMessageResult({ healthPoints, lastDeathCause: undefined })
+      return Result.isFailure(result) === (
+        !Number.isFinite(healthPoints) || healthPoints < 0 || healthPoints > MAX_HEALTH_POINTS || healthPoints === 0
+      )
+    }))
+    for (const healthPoints of [
+      -Number.MIN_VALUE,
+      0,
+      Number.MIN_VALUE,
+      MAX_HEALTH_POINTS,
+      MAX_HEALTH_POINTS + Number.EPSILON * MAX_HEALTH_POINTS,
+    ]) {
+      const result = deathMessageResult({ healthPoints, lastDeathCause: undefined })
+      expect(Result.isFailure(result)).toBe(healthPoints === 0 || healthPoints > MAX_HEALTH_POINTS)
+    }
     FastCheck.assert(FastCheck.property(anyNumber, (simulationElapsedSecs) => {
       const result = resolveEnvironmentalContactDamageResult(
         INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,

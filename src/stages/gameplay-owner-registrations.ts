@@ -44,7 +44,7 @@ import {
   type ProjectileId,
 } from '@nerima-games/mc-kernel'
 import {
-  droppedItemOwnerRegistration,
+  DroppedItemOwnerSnapshotSchema,
   type DroppedItemOwnerSnapshot,
 } from '../domain/entities/dropped-item.js'
 import {
@@ -136,6 +136,11 @@ const isStrictDroppedItem = (value: unknown): boolean => {
   if (!isDroppedItemBehaviour(value) || !hasOnlyKeys(value, [
     '_tag', 'item', 'count', 'durability', 'eligibleFromFrame', 'customName', 'enchantments',
   ])) return false
+  if (
+    (Object.hasOwn(value, 'eligibleFromFrame') && value.eligibleFromFrame === undefined) ||
+    (Object.hasOwn(value, 'customName') && value.customName === undefined) ||
+    (Object.hasOwn(value, 'enchantments') && value.enchantments === undefined)
+  ) return false
   return value.enchantments === undefined || value.enchantments.every((enchantment) =>
     hasOnlyKeys(enchantment, ['id', 'level']),
   )
@@ -150,6 +155,8 @@ const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   if (value['_tag'] === 'HostileMob') {
     return isHostileMobSnapshot(value) &&
       hasOnlyKeys(value, ['_tag', 'behaviour', 'movement', 'ageTicks', 'persistent', 'named', 'tamed']) &&
+      !(Object.hasOwn(value, 'behaviour') && value['behaviour'] === undefined) &&
+      !(Object.hasOwn(value, 'movement') && value['movement'] === undefined) &&
       (value['behaviour'] === undefined ||
         isCreeperFuse(value['behaviour']) ||
         isEndermanFlinch(value['behaviour']) ||
@@ -177,6 +184,7 @@ export type GameplayEntityMetadataFailure = Readonly<{
     | 'entities'
     | 'resolvedMobProjectileIds'
     | 'pendingMobProjectileImpacts'
+    | 'behaviour'
     | 'dimension'
     | 'killCredit'
     | 'lastHitTick'
@@ -245,7 +253,7 @@ export const restoreGameplayEntityMetadata = (
       if (!isRecord(entity)) {
         return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field: 'entities' })
       }
-      for (const field of ['dimension', 'killCredit', 'lastHitTick'] as const) {
+      for (const field of ['behaviour', 'dimension', 'killCredit', 'lastHitTick'] as const) {
         if (Object.hasOwn(entity, field) && entity[field] === undefined) {
           return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field })
         }
@@ -402,10 +410,11 @@ const gameplayOwnerRegistrationValues = (
     schema: CropSnapshotSchema,
     initialState: ownerInitialValue(initial, 'crops', { crops: [] }),
   },
-  droppedItemOwnerRegistration(
-    GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
-    ownerInitialValue(initial, 'droppedItems', { items: [] }),
-  ),
+  {
+    ownerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+    schema: DroppedItemOwnerSnapshotSchema,
+    initialState: ownerInitialValue(initial, 'droppedItems', { items: [] }),
+  },
   vitalsOwnerRegistration(
     GAMEPLAY_VITALS_OWNER_ID,
     { vitals: ownerInitialValue(initial, 'vitals', SPAWN_VITALS) },

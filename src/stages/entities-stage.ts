@@ -920,22 +920,52 @@ const resolveMobProjectileImpactsOnce = (
       burning: impact.kind === BLAZE_KIND,
     }]
   })
-  const damagePlan = planMobDamageRoster(entitySnapshot.state, mobHits, tick)
-  for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(state, fault)
+  let damagePlan = planMobDamageRoster(entitySnapshot.state, mobHits, tick)
+  for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(context.state, fault)
   const casualtyDropsResult = rollCasualtyDrops(damagePlan.casualties, seed)
   if (Result.isFailure(casualtyDropsResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
-    })
+    if (damagePlan.casualties.length === 0) {
+      yield* recordGameplayStageFailure(context.state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
+      })
+    } else {
+      const affectedIds = new Set(damagePlan.casualties.map(({ id }) => id))
+      for (const casualty of damagePlan.casualties) {
+        yield* recordGameplayEntityStageFault(context.state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyDropsResult.failure,
+        })
+      }
+      damagePlan = planMobDamageRoster(
+        entitySnapshot.state,
+        mobHits.filter(({ id }) => !affectedIds.has(id)),
+        tick,
+      )
+    }
   }
-  const casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
+  let casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
   const casualtyExperienceResult = casualtyDrops === undefined
     ? undefined
     : rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
   if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
-    })
+    const affectedCasualties = damagePlan.casualties
+    if (affectedCasualties.length === 0) {
+      yield* recordGameplayStageFailure(context.state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
+      })
+    } else {
+      const affectedIds = new Set(affectedCasualties.map(({ id }) => id))
+      for (const casualty of affectedCasualties) {
+        yield* recordGameplayEntityStageFault(context.state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
+        })
+      }
+      damagePlan = planMobDamageRoster(
+        entitySnapshot.state,
+        mobHits.filter(({ id }) => !affectedIds.has(id)),
+        tick,
+      )
+      casualtyDrops = undefined
+    }
   }
   const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
     ? undefined
@@ -947,13 +977,12 @@ const resolveMobProjectileImpactsOnce = (
     dimension,
   )
   if (Result.isFailure(entityCandidateResult)) {
-    yield* recordGameplayStageFailure(state, {
+    yield* recordGameplayStageFailure(context.state, {
       _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidateResult.failure,
     })
+    return noChange
   }
-  const entityCandidate = Result.isFailure(entityCandidateResult)
-    ? entitySnapshot.state
-    : entityCandidateResult.success
+  const entityCandidate = entityCandidateResult.success
   const currentTick = Number(tick)
   const resolvedMobProjectileIds = new Set(
     [...resolved].filter((id) => projectileLaunchTick(String(id)) === currentTick),
@@ -1389,19 +1418,55 @@ const runTntSimulation = (
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
     for (const fault of mobBlast.faults) yield* recordGameplayEntityStageFault(state, fault)
     const lootResult = rollCasualtyDrops(mobBlast.casualties, seed)
+    let mobBlastRoster = mobBlast.roster
     if (Result.isFailure(lootResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: lootResult.failure,
-      })
+      if (mobBlast.casualties.length === 0) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: lootResult.failure,
+        })
+      } else {
+        const affectedIds = new Set(mobBlast.casualties.map(({ id: casualtyId }) => casualtyId))
+        for (const casualty of mobBlast.casualties) {
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: lootResult.failure,
+          })
+        }
+        const retained = new Map(mobBlast.roster.entities.map((entity) => [entity.id, entity]))
+        for (const entity of roster.entities) {
+          if (affectedIds.has(entity.id)) retained.set(entity.id, entity)
+        }
+        mobBlastRoster = {
+          ...mobBlast.roster,
+          entities: [...retained.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+        }
+      }
     }
-    const loot = Result.isFailure(lootResult) ? undefined : lootResult.success
+    let loot = Result.isFailure(lootResult) ? undefined : lootResult.success
     const casualtyExperienceResult = loot === undefined
       ? undefined
       : rollCasualtyExperience(mobBlast.casualties, loot.seed)
     if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
-      })
+      if (mobBlast.casualties.length === 0) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
+        })
+      } else {
+        const affectedIds = new Set(mobBlast.casualties.map(({ id: casualtyId }) => casualtyId))
+        for (const casualty of mobBlast.casualties) {
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
+          })
+        }
+        const retained = new Map(mobBlastRoster.entities.map((entity) => [entity.id, entity]))
+        for (const entity of roster.entities) {
+          if (affectedIds.has(entity.id)) retained.set(entity.id, entity)
+        }
+        mobBlastRoster = {
+          ...mobBlastRoster,
+          entities: [...retained.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+        }
+      }
+      loot = undefined
     }
     const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
       ? undefined
@@ -1508,10 +1573,10 @@ const runTntSimulation = (
     }
 
     const changes: ReplicatedOwnerCandidate[] = []
-    if (!Equal.equals(roster, mobBlast.roster)) {
+    if (!Equal.equals(roster, mobBlastRoster)) {
       changes.push({
         ownerId: Option.getOrThrow(Option.fromNullishOr(entityOwnerId)),
-        state: mobBlast.roster,
+        state: mobBlastRoster,
       })
     }
     if (playerCandidate !== undefined) changes.push({ ownerId: commit.playerOwnerId, state: playerCandidate })
@@ -1765,18 +1830,39 @@ const runMobSimulation = (
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
   const casualtyDropsResult = rollCasualtyDrops(mobCasualties, sweep.seed)
   if (Result.isFailure(casualtyDropsResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
-    })
+    if (mobCasualties.length === 0) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
+      })
+    } else {
+      for (const casualty of mobCasualties) {
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyDropsResult.failure,
+        })
+        const entity = tickRoster.entities.find(({ id }) => id === casualty.id)
+        if (entity !== undefined) faultedEntities.set(entity.id, entity)
+      }
+    }
   }
-  const casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
+  let casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
   const casualtyExperienceResult = casualtyDrops === undefined
     ? undefined
     : rollCasualtyExperience(mobCasualties, casualtyDrops.seed)
   if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
-    })
+    if (mobCasualties.length === 0) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
+      })
+    } else {
+      for (const casualty of mobCasualties) {
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
+        })
+        const entity = tickRoster.entities.find(({ id }) => id === casualty.id)
+        if (entity !== undefined) faultedEntities.set(entity.id, entity)
+      }
+      casualtyDrops = undefined
+    }
   }
   const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
     ? undefined
@@ -1796,7 +1882,7 @@ const runMobSimulation = (
     (passiveInitialSpawnPending || currentTick - lastPassiveSpawnTick >= PASSIVE_SPAWN_INTERVAL_TICKS)
   let hostileSearchCompleted = false
   let passiveSearchCompleted = false
-  if (hostileSearchDue && casualtyDrops !== undefined) {
+  if (hostileSearchDue) {
     const found = yield* Effect.result(searchSpawnCandidates(
       store,
       playerPosition,
@@ -1818,7 +1904,7 @@ const runMobSimulation = (
       hostileSearchCompleted = true
     }
   }
-  if (passiveSearchDue && casualtyDrops !== undefined) {
+  if (passiveSearchDue) {
     const found = yield* Effect.result(searchSpawnCandidates(
       store,
       playerPosition,

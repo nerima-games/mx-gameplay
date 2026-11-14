@@ -236,6 +236,15 @@ describe('gameplay replicated owner registrations', () => {
         field: 'resolvedMobProjectileIds',
       }))
 
+      const explicitUndefinedBehaviour = {
+        entities: [{ behaviour: undefined }],
+        nextSerial: previous.nextSerial,
+      } as unknown as typeof previous
+      expect(restoreGameplayEntityMetadata(explicitUndefinedBehaviour, previous, 'overworld')).toStrictEqual(Result.fail({
+        _tag: 'InvalidGameplayEntityMetadata',
+        field: 'behaviour',
+      }))
+
       expect(gameplayOwnerRegistrations({ playerStorage: undefined } as unknown as GameplayOwnerInitialState)).toStrictEqual(Result.fail({
         _tag: 'ExplicitUndefinedGameplayOwnerInitialState',
         field: 'playerStorage',

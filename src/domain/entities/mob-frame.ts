@@ -651,11 +651,7 @@ export const maxHealthOfKind = (kind: EntityKind): EntityHealthPoints => {
 export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
   if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return hostileMobSnapshot(initialEcosystemMobState())
   if (kind === ENDERMAN_KIND) return hostileMobSnapshot(STEADY_ENDERMAN)
-  if (kind === ZOMBIE_KIND) {
-    return behaviour === undefined
-      ? hostileMobSnapshot(undefined)
-      : { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' } }
-  }
+  if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
   if (kind === CREEPER_KIND) return hostileMobSnapshot(DORMANT_FUSE)
   return undefined
 }
@@ -1511,7 +1507,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           ? next
           : {
               ...snapshot,
-              behaviour: next,
+              ...(next === undefined ? {} : { behaviour: next }),
               ageTicks: snapshot.ageTicks + 1,
             }
         if (entity.kind === ZOMBIE_KIND) {

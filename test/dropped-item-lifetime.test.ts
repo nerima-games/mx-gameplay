@@ -22,10 +22,12 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   createDroppedItemLifetimeTracker,
+  droppedItemOwnerRegistration,
   droppedItemPickupOwnerRegistrations,
   pickupDroppedItems,
   pickupDroppedItemsCommitted,
   spawnDroppedItem,
+  type DroppedItemOwnerSnapshot,
 } from '../src/domain/entities/dropped-item'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -49,9 +51,9 @@ const COMMITTED_DROP = {
 const makePickupCoordinator = () =>
   makeWorldCommitCoordinator({
     world: WorldId('dropped-item-lifetime-tests'),
-    owners: droppedItemPickupOwnerRegistrations(PICKUP_OWNERS, emptyPlayerStorage(), {
+    owners: Result.getOrThrow(droppedItemPickupOwnerRegistrations(PICKUP_OWNERS, emptyPlayerStorage(), {
       items: [COMMITTED_DROP],
-    }),
+    })),
   })
 
 const makeTracker = (lifetimeSecs: number) =>
@@ -69,6 +71,22 @@ const restore = (
   dimension: string,
   entries: ReadonlyArray<{ readonly entityId: string; readonly elapsedSecs: number }>,
 ) => Result.getOrThrow(tracker.restore(dimension, entries))
+
+describe('dropped item owner registration defaults', () => {
+  it('defaults only an omitted initial state and types explicit undefined', () => {
+    const omitted = droppedItemOwnerRegistration(PICKUP_OWNERS.droppedItems)
+    expect(omitted.initialState).toStrictEqual({ items: [] })
+    expect(droppedItemOwnerRegistration(
+      PICKUP_OWNERS.droppedItems,
+      undefined as unknown as DroppedItemOwnerSnapshot,
+    )).toStrictEqual(Result.fail({ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' }))
+    expect(droppedItemPickupOwnerRegistrations(
+      PICKUP_OWNERS,
+      emptyPlayerStorage(),
+      undefined as unknown as DroppedItemOwnerSnapshot,
+    )).toStrictEqual(Result.fail({ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' }))
+  })
+})
 
 describe('createDroppedItemLifetimeTracker: scenarios', () => {
   it('tracks elapsed time per dimension and entity independently', () => {

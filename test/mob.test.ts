@@ -40,7 +40,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { AIR_BLOCK_ID, BlockId } from '@nerima-games/mc-kernel'
-import { applyDamage as applyDamageResult, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
+import {
+  applyDamage as applyDamageResult,
+  deathMessage as deathMessageResult,
+  fullHealth,
+  isDead,
+  MAX_HEALTH_POINTS,
+} from '../src/domain/death-cause'
 import { capabilityOfBlockId, DeltaTimeSecs, ENTITY_TYPES, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import {
   CREEPER_FUSE_SECS,
@@ -148,6 +154,7 @@ const lit = (burnedSecs: number): CreeperFuse => ({ _tag: 'Lit', burnedSecs })
 
 const applyDamage = (vitals: Parameters<typeof applyDamageResult>[0], damage: Parameters<typeof applyDamageResult>[1]) =>
   Result.getOrThrow(applyDamageResult(vitals, damage))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
 const explosionDamageAmount = (...args: Parameters<typeof explosionDamageAmountResult>) =>
   Result.getOrThrow(explosionDamageAmountResult(...args))
 const explosionDamageAt = (...args: Parameters<typeof explosionDamageAtResult>) =>

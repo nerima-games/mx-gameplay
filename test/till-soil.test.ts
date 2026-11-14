@@ -277,7 +277,10 @@ describe('tillSoil', () => {
     Effect.gen(function* () {
       const { port, written, context } = yield* makeWorld({ [keyOf(positionAbove(GROUND))]: 'air' })
 
-      expect((yield* tillSoil(port, HOE, GROUND, context))._tag).not.toBe('tilled')
+      expect(yield* tillSoil(port, HOE, GROUND, context)).toStrictEqual({
+        _tag: 'worldUnavailable',
+        cell: 'ground',
+      })
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
@@ -288,7 +291,10 @@ describe('tillSoil', () => {
       // the ground reads fine and only the cell above is not resident.
       const { port, written, context } = yield* makeWorld({ [keyOf(GROUND)]: 'dirt' })
 
-      expect((yield* tillSoil(port, HOE, GROUND, context))._tag).not.toBe('tilled')
+      expect(yield* tillSoil(port, HOE, GROUND, context)).toStrictEqual({
+        _tag: 'worldUnavailable',
+        cell: 'above',
+      })
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
@@ -302,6 +308,32 @@ describe('tillSoil', () => {
       expect(outcome).toStrictEqual({ _tag: 'invalidPosition' })
       expect(yield* Ref.get(reads)).toBe(0)
       expect(yield* Ref.get(written)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('propagates invalid and unregistered world block ids as typed data failures', () =>
+    Effect.gen(function* () {
+      const invalidPort: TillPort = {
+        blockAt: (position) => Effect.succeed(keyOf(position) === keyOf(GROUND) ? 65_536 : 0),
+      }
+      const invalid = yield* Effect.result(tillSoil(invalidPort, HOE, GROUND))
+      expect(invalid).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'TillWorldDataFailure', cell: 'ground', failure: { _tag: 'BrandError' } },
+      })
+
+      const unregisteredPort: TillPort = {
+        blockAt: (position) => Effect.succeed(keyOf(position) === keyOf(GROUND) ? 65_535 : 0),
+      }
+      const unregistered = yield* Effect.result(tillSoil(unregisteredPort, HOE, GROUND))
+      expect(unregistered).toMatchObject({
+        _tag: 'Failure',
+        failure: {
+          _tag: 'TillWorldDataFailure',
+          cell: 'ground',
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', blockId: 65_535 },
+        },
+      })
     }),
   )
 })

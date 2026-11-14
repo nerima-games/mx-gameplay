@@ -96,7 +96,7 @@ export const FIRE_FRAME_TICK_BUDGET = 4
 export const FIRE_WORK_BUDGET = 128
 /** A cell value used by the stage to distinguish an unloaded chunk from air. */
 export const FIRE_UNAVAILABLE_BLOCK = '__fire_chunk_unavailable__'
-export const FIRE_TICK_ACCUMULATOR_MAX_SECS = FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET
+export const FIRE_TICK_ACCUMULATOR_MAX_SECS: number = FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET
 
 const offsets = [[0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0], [0, 0, -1], [0, 0, 1]] as const
 const key = (p: FirePosition): string => `${p.x},${p.y},${p.z}`
@@ -115,34 +115,48 @@ const isPosition = (value: unknown): value is FirePosition =>
   isRecord(value) && Number.isFinite(value['x']) && Number.isFinite(value['y']) && Number.isFinite(value['z'])
 
 const validateLifecycleState = (state: FireLifecycleState): FireLifecycleFailure | undefined => {
-  if (!isRecord(state) || !Array.isArray(state.fires) || !Number.isFinite(state.seed)) {
-    return invalidFireInput(!isRecord(state) || !Array.isArray(state.fires) ? 'fires' : 'seed')
-  }
-  if (Object.hasOwn(state, 'burningActors') && state.burningActors === undefined) {
+  if (!isRecord(state)) return invalidFireInput('fires')
+  const fires = state['fires']
+  const seed = state['seed']
+  if (!Array.isArray(fires)) return invalidFireInput('fires')
+  if (typeof seed !== 'number' || !Number.isFinite(seed)) return invalidFireInput('seed')
+  if (Object.hasOwn(state, 'burningActors') && state['burningActors'] === undefined) {
     return invalidFireInput('burningActors')
   }
-  for (const fire of state.fires) {
-    if (
-      !isRecord(fire) || !isPosition(fire.position) ||
-      !Number.isSafeInteger(fire.ageTicks) || fire.ageTicks < 0 ||
-      (Object.hasOwn(fire, 'unloadedRetries')
-        ? !Number.isSafeInteger(fire.unloadedRetries) || fire.unloadedRetries < 0
-        : false)
-    ) {
-      return invalidFireInput(
-        !isRecord(fire) || !isPosition(fire.position) ? 'position' :
-          !Number.isSafeInteger(fire.ageTicks) || fire.ageTicks < 0 ? 'ageTicks' : 'unloadedRetries',
-      )
+  for (const fire of fires) {
+    if (!isRecord(fire)) return invalidFireInput('position')
+    const position = fire['position']
+    const ageTicks = fire['ageTicks']
+    const hasUnloadedRetries = Object.hasOwn(fire, 'unloadedRetries')
+    const unloadedRetries = fire['unloadedRetries']
+    if (!isPosition(position)) return invalidFireInput('position')
+    if (typeof ageTicks !== 'number' || !Number.isSafeInteger(ageTicks) || ageTicks < 0) {
+      return invalidFireInput('ageTicks')
+    }
+    if (hasUnloadedRetries && (
+      typeof unloadedRetries !== 'number' ||
+      !Number.isSafeInteger(unloadedRetries) ||
+      unloadedRetries < 0
+    )) {
+      return invalidFireInput('unloadedRetries')
     }
   }
-  if (state.burningActors !== undefined) {
-    if (!Array.isArray(state.burningActors)) return invalidFireInput('burningActors')
-    for (const actor of state.burningActors) {
+  const burningActors = state['burningActors']
+  if (burningActors !== undefined) {
+    if (!Array.isArray(burningActors)) return invalidFireInput('burningActors')
+    for (const actor of burningActors) {
+      if (!isRecord(actor)) return invalidFireInput('burningActor')
+      const id = actor['id']
+      const kind = actor['kind']
+      const position = actor['position']
+      const remainingTicks = actor['remainingTicks']
+      const damageCooldownTicks = actor['damageCooldownTicks']
       if (
-        !isRecord(actor) || typeof actor.id !== 'string' ||
-        (actor.kind !== 'player' && actor.kind !== 'entity') || !isPosition(actor.position) ||
-        !Number.isSafeInteger(actor.remainingTicks) || actor.remainingTicks <= 0 ||
-        !Number.isSafeInteger(actor.damageCooldownTicks) || actor.damageCooldownTicks < 0
+        typeof id !== 'string' ||
+        (kind !== 'player' && kind !== 'entity') ||
+        !isPosition(position) ||
+        typeof remainingTicks !== 'number' || !Number.isSafeInteger(remainingTicks) || remainingTicks <= 0 ||
+        typeof damageCooldownTicks !== 'number' || !Number.isSafeInteger(damageCooldownTicks) || damageCooldownTicks < 0
       ) return invalidFireInput('burningActor')
     }
   }
@@ -152,10 +166,13 @@ const validateLifecycleState = (state: FireLifecycleState): FireLifecycleFailure
 const validateFireCells = (cells: ReadonlyArray<FireCell>): FireLifecycleFailure | undefined => {
   if (!Array.isArray(cells)) return invalidFireInput('cells')
   for (const cell of cells) {
+    if (!isRecord(cell)) return invalidFireInput('cell')
+    const position = cell['position']
+    const block = cell['block']
     if (
-      !isRecord(cell) || !isPosition(cell.position) ||
-      (cell.block !== FIRE_UNAVAILABLE_BLOCK && !isBlockType(cell.block)) ||
-      (Object.hasOwn(cell, 'exposedToSky') && typeof cell.exposedToSky !== 'boolean')
+      !isPosition(position) ||
+      typeof block !== 'string' || (block !== FIRE_UNAVAILABLE_BLOCK && !isBlockType(block)) ||
+      (Object.hasOwn(cell, 'exposedToSky') && typeof cell['exposedToSky'] !== 'boolean')
     ) return invalidFireInput('cell')
   }
   return undefined
@@ -199,10 +216,11 @@ const actorInput = (
 ): ReadonlyArray<FireActorContact> => {
   const actors = new Map<string, FireActorContact>()
   for (const contact of contacted) {
-    const actor = Object.hasOwn(contact, 'id')
-      ? contact as FireActorContact
-      : { id: 'player', kind: 'player' as const, position: contact }
-    actors.set(actor.id, actor)
+    if ('id' in contact) {
+      actors.set(contact.id, contact)
+      continue
+    }
+    actors.set('player', { id: 'player', kind: 'player', position: contact })
   }
   return [...actors.values()].sort((a, b) => a.id.localeCompare(b.id))
 }

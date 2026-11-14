@@ -20,7 +20,7 @@
  * Every check answers a question of the form "if this were broken, what would I
  * see?". A measurement with no such answer is a number, not a check.
  */
-import { Brand, Effect, Ref } from 'effect'
+import { Brand, Effect, Ref, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockAxis,
@@ -94,7 +94,7 @@ import {
   placeableItemOf,
   type WorldSpec,
 } from './world'
-import { blockLoot } from '../../src/domain/interactions/block-loot'
+import { blockLoot, type BlockLootFailure } from '../../src/domain/interactions/block-loot'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
@@ -1068,6 +1068,7 @@ const spawnGate = Effect.sync((): Check => {
  * completely plausible on screen.
  */
 const lootTable = Effect.sync(() => {
+  const evaluated = Result.gen(function* () {
   const tiers: ReadonlyArray<HarvestTier> = HARVEST_TIERS
   const probed: ReadonlyArray<readonly [BlockId, string]> = [
     [BlockId(2), 'stone'],
@@ -1088,7 +1089,7 @@ const lootTable = Effect.sync(() => {
     for (const heldTier of tiers) {
       // NO_LUCK so the bonus lines and the fortune remainder stay out of the
       // deterministic half; both get their own rows below.
-      const loot = blockLoot(id, { heldTier }, [0.999, 0.999, 0.999, 0.999])
+      const loot = yield* blockLoot(id, { heldTier }, [0.999, 0.999, 0.999, 0.999])
       // A drop whose item is spelled the same as the block it came from is only
       // wrong when kernel's row says otherwise — sand really does yield sand.
       // The rows that must NOT self-drop are the two with an `item:` override.
@@ -1106,17 +1107,25 @@ const lootTable = Effect.sync(() => {
   lines.push('')
 
   // Silk touch and fortune, the two axes the tier grid cannot show.
-  const glowstone = (context: Parameters<typeof blockLoot>[1]): string => {
-    const loot = blockLoot(BlockId(15), context, [0, 0, 0, 0])
-    return loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' ') || '-'
-  }
-  lines.push(`  glowstone, bare hands            ${glowstone({})}`)
-  lines.push(`  glowstone, fortune I             ${glowstone({ fortuneLevel: 1 })}`)
-  lines.push(`  glowstone, fortune III           ${glowstone({ fortuneLevel: 3 })}`)
-  lines.push(`  glowstone, fortune III + silk    ${glowstone({ fortuneLevel: 3, silkTouch: true })}`)
-  lines.push(`  glass,     bare hands            ${blockLoot(BlockId(13), {}, []).length === 0 ? '-' : 'glass'}`)
-  lines.push(`  glass,     silk touch            ${blockLoot(BlockId(13), { silkTouch: true }, []).map((d) => d.item).join(' ')}`)
-  lines.push(`  oak_leaves, lucky stick roll     ${blockLoot(BlockId(10), {}, [0, 0, 0, 0]).map((d) => d.item).join(' ') || '-'}`)
+  const glowstone = (context: Parameters<typeof blockLoot>[1]): Result.Result<string, BlockLootFailure> =>
+    Result.map(
+      blockLoot(BlockId(15), context, [0, 0, 0, 0]),
+      (loot) => loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' ') || '-',
+    )
+  const glowstoneBare = yield* glowstone({})
+  const glowstoneFortuneI = yield* glowstone({ fortuneLevel: 1 })
+  const glowstoneFortuneIII = yield* glowstone({ fortuneLevel: 3 })
+  const glowstoneFortuneSilk = yield* glowstone({ fortuneLevel: 3, silkTouch: true })
+  lines.push(`  glowstone, bare hands            ${glowstoneBare}`)
+  lines.push(`  glowstone, fortune I             ${glowstoneFortuneI}`)
+  lines.push(`  glowstone, fortune III           ${glowstoneFortuneIII}`)
+  lines.push(`  glowstone, fortune III + silk    ${glowstoneFortuneSilk}`)
+  const glassBareHands = yield* blockLoot(BlockId(13), {}, [])
+  const glassSilkTouch = yield* blockLoot(BlockId(13), { silkTouch: true }, [])
+  const luckyLeaves = yield* blockLoot(BlockId(10), {}, [0, 0, 0, 0])
+  lines.push(`  glass,     bare hands            ${glassBareHands.length === 0 ? '-' : 'glass'}`)
+  lines.push(`  glass,     silk touch            ${glassSilkTouch.map((drop) => drop.item).join(' ')}`)
+  lines.push(`  oak_leaves, lucky stick roll     ${luckyLeaves.map((drop) => drop.item).join(' ') || '-'}`)
   lines.push('')
   lines.push('  Fortune and silk touch are MUTUALLY EXCLUSIVE, which the reference enforces at the')
   lines.push('  break site rather than at the enchanting table (interaction-break-handler.execute.ts:131).')
@@ -1127,6 +1136,20 @@ const lootTable = Effect.sync(() => {
     finding: selfDrops > 0,
     lines,
   } satisfies Check
+  })
+
+  return Result.isFailure(evaluated)
+    ? {
+        id: 'F-loot-registry',
+        title: 'block loot registry lookup failed',
+        finding: true,
+        lines: [
+          '  A typed kernel registry failure interrupted the loot table report.',
+          `  block=${String(evaluated.failure.block)} lookup=${evaluated.failure.lookup} ` +
+            `failure=${evaluated.failure.failure._tag}`,
+        ],
+      }
+    : evaluated.success
 })
 
 /**
