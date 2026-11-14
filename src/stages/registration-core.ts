@@ -4180,12 +4180,11 @@ const stepFireTick = (
       Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount)),
     )
     // Damage planning preserves the validated roster and adds only validated hit metadata.
-    const entityCandidateResult = Result.getOrThrow(restoreGameplayEntityMetadata(
+    const entityCandidate = Result.getOrThrow(restoreGameplayEntityMetadata(
       damagePlan.roster,
       entitySnapshotResult.success.state,
       playerState.pose.feetPosition.dimension,
     ))
-    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidateResult)
     const seed = yield* Ref.get(state.rollSeed)
     // The frame seed and generated casualties contain no external roll counts or overrides.
     const casualtyDrops = Result.getOrThrow(rollCasualtyDrops(damagePlan.casualties, seed))

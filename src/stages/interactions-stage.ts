@@ -349,12 +349,11 @@ const commitMobDamage = (
       tick,
     )
     // Damage planning preserves the validated roster and adds only validated hit metadata.
-    const rosterResult = Result.getOrThrow(restoreGameplayEntityMetadata(
+    const roster = Result.getOrThrow(restoreGameplayEntityMetadata(
       damage.roster,
       entitySnapshot.state,
       dimension,
     ))
-    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(rosterResult)
 
     const seed = yield* Ref.get(state.rollSeed)
     // The frame seed and generated casualties contain no external roll counts or overrides.
@@ -2073,7 +2072,7 @@ const processEnderPearlThrow = (
       ))
       changes.push({
         ownerId: entitiesOwnerId,
-        state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidate),
+        state: entityCandidate,
       })
     }
 
