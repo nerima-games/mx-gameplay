@@ -82,6 +82,8 @@ import {
   BlockAxis,
   BlockAddressSchema,
   BlockId,
+  BlockPositionSchema,
+  DimensionIdSchema,
   EntityIdSchema,
   blockIdOf,
   SimulationTickSchema,
@@ -622,10 +624,6 @@ type FirePlayerDamagePreparationFailure =
       expectedRevision: WorldWriteBatch['expectedWorldRevision']
       observedRevision: WorldWriteBatch['expectedWorldRevision']
     }>
-  | Readonly<{
-      _tag: 'ArmorPreparationFailed'
-      reason: 'invalid-damage' | 'invalid-armor'
-    }>
 const prepareFirePlayerDamage = (
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
@@ -647,11 +645,8 @@ const prepareFirePlayerDamage = (
   let storage = observed.success.state
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
-    const prepared = yield* Effect.result(Effect.fromResult(prepareArmorHit(storage.equipment, event.damage)))
-    if (Result.isFailure(prepared)) {
-      return Result.fail({ _tag: 'ArmorPreparationFailed', reason: prepared.failure })
-    }
-    const resolved = prepared.success
+    // Fire produces fixed positive damage; the owner snapshot validates equipment.
+    const resolved = Result.getOrThrow(prepareArmorHit(storage.equipment, event.damage))
     resolvedDamages.push({ ...event, damage: resolved.damage })
 
     for (const slot of resolved.wornSlots) {
@@ -1036,7 +1031,7 @@ const commitBlockEdits: (
   }>,
   expectedRevision: WorldWriteBatch['expectedWorldRevision'],
   expectedDimensionRevision: WorldWriteBatch['expectedDimensionRevision'],
-  edits: WorldWriteBatch['edits'],
+  edits: ReadonlyArray<Readonly<{ position: FirePosition; block: BlockId }>>,
 ) => Effect.Effect<GameplayBlockCommitResult> = (
   context,
   expectedRevision,
@@ -1187,17 +1182,8 @@ const runFluidPropagation = (
           continue
         }
 
-        const changePositionResult = blockPositionOfKey(change._tag === 'PlaceFluid' ? change.cell.key : change.key)
-        if (Result.isFailure(changePositionResult)) {
-          yield* recordGameplayEntityStageFault(state, {
-            _tag: 'GameplayRequestFault', source: 'Fluid', reason: 'InvalidBlockPositionKey',
-          })
-          continue
-        }
-        const changePosition = changePositionResult.success
-        /* v8 ignore start -- derived positions are adjacent neighbours of a validated finite input. */
-        if (!validFluidPosition(changePosition)) continue
-        /* v8 ignore stop */
+        // Transitions retain only the validated current cell or adjacent probe keys.
+        const changePosition = Result.getOrThrow(blockPositionOfKey(change._tag === 'PlaceFluid' ? change.cell.key : change.key))
 
         const block = change._tag === 'PlaceFluid'
           ? Option.getOrThrow(blockIdOf(change.cell.kind))
@@ -1210,31 +1196,29 @@ const runFluidPropagation = (
 
       if (pending.size > 0) {
         const operations = [...pending.values()]
-        const committed = yield* commitBlockEdits(
-          context,
-          expectedRevision,
+        const blockWrite: WorldWriteBatch = {
+          world: context.coordinator.worldId,
+          expectedWorldRevision: expectedRevision,
+          dimension: Schema.decodeUnknownSync(DimensionIdSchema)(context.dimension),
           expectedDimensionRevision,
-          operations.map(({ position: operationPosition, block }) => ({ position: operationPosition, block })),
-        )
+          edits: operations.map(({ position: operationPosition, block }) => ({ position: operationPosition, block })),
+        }
+        const committed = yield* Effect.result(context.coordinator.commit({
+          expectedRevision,
+          expectedDimensions: [{ dimension: context.dimension, expectedRevision: expectedDimensionRevision }],
+          changes: context.changes,
+          blockWrite,
+        }))
         if (Result.isFailure(committed)) {
-          if (committed.failure._tag === 'InvalidGameplayBlockWriteBatch') {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed',
-              operation: 'WorldCommit',
-              subject: 'Entities',
-              error: committed.failure,
-            })
-          } else {
-            const tag = committed.failure._tag
-            deferCurrent = deferCurrent || tag === 'WorldWriteChunkUnavailable' ||
-              tag === 'WorldWriteStale' || tag === 'WorldRevisionConflict' ||
-              tag === 'DimensionRevisionConflict' || tag === 'WorldCommitChunkStoreUnavailable'
-            if (!deferCurrent) {
-              for (const { change } of operations) {
-                if (change._tag === 'PlaceFluid') continue
-                cells.delete(change.key)
-                enqueueDependents(change.key)
-              }
+          const tag = committed.failure._tag
+          deferCurrent = deferCurrent || tag === 'WorldWriteChunkUnavailable' ||
+            tag === 'WorldWriteStale' || tag === 'WorldRevisionConflict' ||
+            tag === 'DimensionRevisionConflict' || tag === 'WorldCommitChunkStoreUnavailable'
+          if (!deferCurrent) {
+            for (const { change } of operations) {
+              if (change._tag === 'PlaceFluid') continue
+              cells.delete(change.key)
+              enqueueDependents(change.key)
             }
           }
         } else {
@@ -2707,11 +2691,20 @@ const stepPortalTravel = (
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const pose = playerState.pose
-    const cell = blockPosition(
-      Math.floor(pose.feetPosition.x),
-      Math.floor(pose.feetPosition.y),
-      Math.floor(pose.feetPosition.z),
-    )
+    const cellResult = Schema.decodeUnknownResult(BlockPositionSchema)({
+      x: Math.floor(pose.feetPosition.x),
+      y: Math.floor(pose.feetPosition.y),
+      z: Math.floor(pose.feetPosition.z),
+    })
+    if (Result.isFailure(cellResult)) {
+      yield* recordGameplayEntityWorldDataFault(state, 'Portal', {
+        _tag: 'EntityWorldInvalidCell',
+        reason: 'not-block-coordinate',
+        position: kernelPosition(pose.feetPosition.x, pose.feetPosition.y, pose.feetPosition.z),
+      })
+      return
+    }
+    const cell = cellResult.success
 
     const reading = yield* store.getBlock(cell)
     const blockId = reading._tag === 'Block' ? reading.block : undefined
@@ -3905,7 +3898,7 @@ export const requestFireExtinguish = (
       context,
       expectedRevision,
       expectedDimensionRevision,
-      [{ position: blockPosition(position.x, position.y, position.z), block: air.value }],
+      [{ position, block: air.value }],
     )
     if (Result.isFailure(committed)) {
       yield* recordGameplayStageFailure(state, {
@@ -4090,7 +4083,17 @@ const stepFireTick = (
     const cells: FireCell[] = []
     const faultyCellKeys = new Set<string>()
     for (const position of positions.values()) {
-      const worldPosition = blockPosition(position.x, position.y, position.z)
+      const cellResult = Schema.decodeUnknownResult(BlockPositionSchema)(position)
+      if (Result.isFailure(cellResult)) {
+        faultyCellKeys.add(firePositionKey(position))
+        yield* recordGameplayEntityWorldDataFault(state, 'Fire', {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: kernelPosition(PositionAxis(position.x), PositionAxis(position.y), PositionAxis(position.z)),
+        })
+        continue
+      }
+      const worldPosition = cellResult.success
       const reading = yield* store.getBlock(worldPosition)
       let block: string
       if (reading._tag === 'Block') {
@@ -4181,19 +4184,13 @@ const stepFireTick = (
       validEntityHits,
       Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount)),
     )
-    for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(state, fault)
-    const entityCandidateResult = restoreGameplayEntityMetadata(
+    // Damage planning preserves the validated roster and adds only validated hit metadata.
+    const entityCandidateResult = Result.getOrThrow(restoreGameplayEntityMetadata(
       damagePlan.roster,
       entitySnapshotResult.success.state,
       playerState.pose.feetPosition.dimension,
-    )
-    if (Result.isFailure(entityCandidateResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fire', error: entityCandidateResult.failure,
-      })
-      return false
-    }
-    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidateResult.success)
+    ))
+    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidateResult)
     const seed = yield* Ref.get(state.rollSeed)
     const casualties = Result.gen(function* () {
       const drops = yield* rollCasualtyDrops(damagePlan.casualties, seed)
@@ -4315,7 +4312,7 @@ const stepFireTick = (
         expectedRevision,
         expectedDimensionRevision,
         step.mutations.map((mutation) => ({
-          position: blockPosition(mutation.position.x, mutation.position.y, mutation.position.z),
+          position: mutation.position,
           block: mutation.block === 'air' ? airBlock : fireBlock,
         })),
       )

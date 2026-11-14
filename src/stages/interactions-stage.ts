@@ -213,7 +213,6 @@ const blockPositionForRequest = (
 const invalidBlockLootContextReason = (
   context: unknown,
 ): 'InvalidBlockLootContext' | 'InvalidBlockLootFortuneLevel' | undefined => {
-  if (context === undefined) return undefined
   if (typeof context !== 'object' || context === null || Array.isArray(context)) {
     return 'InvalidBlockLootContext'
   }
@@ -351,18 +350,13 @@ const commitMobDamage = (
       }],
       tick,
     )
-    const rosterResult = restoreGameplayEntityMetadata(
+    // Damage planning preserves the validated roster and adds only validated hit metadata.
+    const rosterResult = Result.getOrThrow(restoreGameplayEntityMetadata(
       damage.roster,
       entitySnapshot.state,
       dimension,
-    )
-    if (Result.isFailure(rosterResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: rosterResult.failure,
-      })
-      return false
-    }
-    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(rosterResult.success)
+    ))
+    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(rosterResult)
 
     const seed = yield* Ref.get(state.rollSeed)
     for (const fault of damage.faults) yield* recordGameplayEntityStageFault(state, fault)
@@ -584,19 +578,13 @@ const processBowShot = (
         return
       }
       if (!blocked) {
-        const amount = DamageAmount.result(bowDamage(
+        // Validated charge and safe integer Power keep bow damage finite and positive.
+        const amount = DamageAmount(bowDamage(
           bowCharge(request.chargeSecs),
           Object.hasOwn(request, 'powerLevel') && typeof request.powerLevel === 'number'
             ? { powerLevel: request.powerLevel }
             : {},
         ))
-        if (Result.isFailure(amount)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
-          })
-          yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-          return
-        }
         const pose = player.success.state.pose.feetPosition
         const direction = knockbackDirection(
           target.candidate.feetPosition.x - pose.x,
@@ -607,7 +595,7 @@ const processBowShot = (
             _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: direction.failure,
           })
         } else {
-          hit = { id: target.hit.id, damage: { amount: amount.success, cause: 'projectile' } }
+          hit = { id: target.hit.id, damage: { amount, cause: 'projectile' } }
           knockback = direction.success
         }
       }
@@ -1892,17 +1880,9 @@ const processPlacement = (
           }
         }
         for (const edit of planned.edits) {
-          const below = adjacentBlockPosition(edit.position, 'down')
-          if (Result.isFailure(below)) {
-            yield* recordGameplayRequestFault(
-              state,
-              'ItemUse',
-              command === undefined ? undefined : responseRequestId,
-              'NeighbourPositionOverflow',
-            )
-            continue
-          }
-          disturbed.push(blockPositionKeyOf(below.success))
+          // Successful placement edits are loaded world cells, so y - 1 is representable.
+          const below = Result.getOrThrow(adjacentBlockPosition(edit.position, 'down'))
+          disturbed.push(blockPositionKeyOf(below))
         }
         if (storageCandidate !== undefined) {
           yield* Ref.update(state.consumedItems, (items) => [...items, request.heldItem])
@@ -2106,21 +2086,16 @@ const processEnderPearlThrow = (
         })
         return
       }
-      const entityCandidate = restoreGameplayEntityMetadata(
+      // Pearl spawning constructs every new field from validated values.
+      const entityCandidate = Result.getOrThrow(restoreGameplayEntityMetadata(
         spawned.success.roster,
         entities.success.state,
         currentPose.feetPosition.dimension,
-      )
-      if (Result.isFailure(entityCandidate)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidate.failure,
-        })
-      } else {
-        changes.push({
-          ownerId: entitiesOwnerId,
-          state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidate.success),
-        })
-      }
+      ))
+      changes.push({
+        ownerId: entitiesOwnerId,
+        state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidate),
+      })
     }
 
     const outcome = Schema.decodeUnknownSync(EnderPearlOutcomeSchema)({ displacement, damage })
@@ -2479,14 +2454,12 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         ): Result.Result<
           Readonly<{ seed: number; drops: ReadonlyArray<DroppedItemSpawn> }>,
           FrameRollFailure | BlockLootFailure
-        > => {
-          const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
-          if (Result.isFailure(batch)) return Result.fail(batch.failure)
-          const loot = blockLoot(yielded, tool, batch.success.rolls)
-          if (Result.isFailure(loot)) return Result.fail(loot.failure)
-          return Result.succeed({
-            seed: batch.success.seed,
-            drops: loot.success.map((item) => ({
+        > => Result.gen(function* () {
+          const batch = yield* drawRolls(seed, BLOCK_LOOT_ROLLS)
+          const loot = yield* blockLoot(yielded, tool, batch.rolls)
+          return {
+            seed: batch.seed,
+            drops: loot.map((item) => ({
               ...item,
               at: {
                 x: PositionAxis(breakPosition.x),
@@ -2494,8 +2467,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 z: PositionAxis(breakPosition.z),
               },
             })),
-          })
-        }
+          }
+        })
 
         const batchHeldTool = yield* Ref.get(state.heldTool)
         for (const [index, positionKey] of breaks.entries()) {

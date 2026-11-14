@@ -20,6 +20,7 @@ import {
   drainFluidUpdates,
   drainGameplayEntityStageFaults,
   drainPortalTravels,
+  drainBlockUseResults,
   gameplayStages,
   makeGameplayFrameState,
   requestTargetedPrimaryAttack,
@@ -27,6 +28,7 @@ import {
   requestFoodUse,
   requestBowShot,
   requestBlockBreak,
+  requestBlockUse,
   validateBlockPlacementCommand,
 } from '../src/stages/registration'
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
@@ -92,6 +94,45 @@ const sameCell = (left: BlockPosition, right: BlockPosition): boolean =>
 const unknownBlockId = BlockId(65_535)
 
 describe('registration-core typed world faults', () => {
+  it.effect('records an unrepresentable player grid position once and continues unrelated requests', () =>
+    Effect.gen(function* () {
+      const playerPose = { ...SPAWN_POSE, feetPosition: { ...SPAWN_POSE.feetPosition, x: PositionAxis(Number.MAX_VALUE) } }
+      const harness = yield* makeHarness(world([]), { playerPose })
+      const interactions = stageFor(harness, GAMEPLAY_STAGE_IDS.interactions)
+      yield* requestBlockUse(harness.state, 'after-portal-fault', blockPosition(0, 64, 0))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const invalidPosition = { x: playerPose.feetPosition.x, y: playerPose.feetPosition.y, z: playerPose.feetPosition.z }
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'EntityWorldDataFault', source: 'Portal', target: { _tag: 'Position', position: invalidPosition },
+        failure: { _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: invalidPosition },
+      }])
+      expect(yield* drainBlockUseResults(harness.state)).toMatchObject([{ requestId: 'after-portal-fault', success: false }])
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
+      expect(yield* harness.commit.coordinator.revision).toBe(0)
+    }),
+  )
+
+  for (const cell of [blockPosition(0, Number.MIN_SAFE_INTEGER, 0), blockPosition(Number.MAX_SAFE_INTEGER, 64, 0)]) {
+    it.effect(`records fluid neighbor overflow at ${cell.x},${cell.y},${cell.z} and still processes later work`, () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(world([]))
+        const invalidNeighbour: FluidWorkItem = { key: blockPositionKeyOf(cell), kind: 'water' }
+        const later: FluidWorkItem = { key: blockPositionKeyOf(blockPosition(1, 64, 1)), kind: 'water' }
+        yield* Ref.set(harness.state.fluidFrontier, [invalidNeighbour, later])
+        yield* stageFor(harness, GAMEPLAY_STAGE_IDS.fluids).run(DeltaTimeSecs(0.016)).pipe(Effect.provide(FrameServicesLayer))
+        expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+          _tag: 'FluidNeighbourPositionFault', cell, reason: 'coordinate-overflow',
+        }])
+        expect(yield* drainFluidUpdates(harness.state)).toStrictEqual([invalidNeighbour, later])
+        expect(yield* Ref.get(harness.state.fluidFrontier)).toContainEqual({
+          ...invalidNeighbour, level: 0, source: true, falling: false, deferred: 1,
+        })
+        expect(yield* harness.commit.coordinator.revision).toBe(0)
+      }),
+    )
+  }
+
   it.effect('records distinct reasons once across fault families and preserves deduplication after draining', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState

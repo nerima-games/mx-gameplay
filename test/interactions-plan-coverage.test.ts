@@ -1336,6 +1336,46 @@ describe('registered Fishing plans in the interactions stage', () => {
 })
 
 describe('interaction input and world boundaries', () => {
+  it('records a bow knockback offset overflow when the host origin differs from the player pose', async () => {
+    const target = {
+      ...combatTarget('bow-offset-overflow'),
+      feetPosition: position(PositionAxis(Number.MAX_VALUE), PositionAxis(64 - BOW_TARGET_CENTER_Y_OFFSET), PositionAxis(0)),
+    }
+    const playerPose = {
+      ...meleePlayerPose,
+      feetPosition: { ...meleePlayerPose.feetPosition, x: PositionAxis(-Number.MAX_VALUE) },
+    }
+    const harness = await Effect.runPromise(makeHarness({ playerPose: meleePlayerPose, entities: { entities: [target], nextSerial: EntitySerial(1) } }))
+    const before = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
+    let playerReads = 0
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...harness.coordinator,
+      snapshot: (ownerId, schema) => Effect.gen(function* () {
+        if (ownerId === GAMEPLAY_PLAYER_OWNER_ID && ++playerReads === 2) {
+          yield* harness.baseCoordinator.commit({
+            expectedRevision: yield* harness.baseCoordinator.revision,
+            expectedDimensions: [],
+            changes: [{ ownerId, state: { pose: playerPose } }],
+          }).pipe(Effect.orDie)
+        }
+        return yield* harness.coordinator.snapshot(ownerId, schema)
+      }),
+    }
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-offset-overflow', {
+      origin: position(target.feetPosition.x, PositionAxis(target.feetPosition.y + BOW_TARGET_CENTER_Y_OFFSET), target.feetPosition.z),
+      dirX: 0, dirY: 1, dirZ: 0, chargeSecs: BOW_FULL_CHARGE_SECS, inventory: { mode: 'creative', slotIndex: 0 },
+    }))
+    await Effect.runPromise(harness.interactionsWithCoordinator(coordinator).run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: 'invalid-offset',
+    }])
+    const after = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
+    expect(after.state).toStrictEqual(before.state)
+    expect(after.revision).toBe(before.revision + 1)
+    expect(await Effect.runPromise(Ref.get(harness.state.bowKnockbacks))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('rejects malformed queued positions independently and continues with a valid request', async () => {
     const harness = await Effect.runPromise(makeHarness())
     const invalidKey = 'not-a-cell' as ReturnType<typeof blockPositionKeyOf>
@@ -1349,6 +1389,7 @@ describe('interaction input and world boundaries', () => {
     await Effect.runPromise(Ref.set(harness.state.pendingItemUses, requests))
     await Effect.runPromise(Ref.set(harness.state.pendingPlacements, [{ positionKey: invalidKey, heldItem: 'stone' }]))
     await Effect.runPromise(Ref.set(harness.state.pendingBreaks, [invalidKey]))
+    await Effect.runPromise(Ref.set(harness.state.pendingBlockUses, [{ requestId: 'bad-block-use', positionKey: invalidKey }]))
     await Effect.runPromise(requestBoneMeal(harness.state, 'valid-non-crop', blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))))
     await harness.run()
 
@@ -1360,6 +1401,7 @@ describe('interaction input and world boundaries', () => {
       })
     }
     expect(faults).toContainEqual({ _tag: 'GameplayRequestFault', source: 'ItemUse', reason: 'InvalidBlockPositionKey' })
+    expect(faults).toContainEqual({ _tag: 'GameplayRequestFault', source: 'BlockUse', requestId: 'bad-block-use', reason: 'InvalidBlockPositionKey' })
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
       requestId: 'valid-non-crop', success: false, outcome: { _tag: 'notCrop' },
     }])
@@ -1381,14 +1423,15 @@ describe('interaction input and world boundaries', () => {
   })
 
   for (const [name, tool] of [
-    ['null', null], ['primitive', 0], ['prototype', Object.create({ tool: 'pickaxe' })], ['fortune', { fortuneLevel: undefined }],
+    ['undefined', undefined], ['null', null], ['primitive', 0], ['prototype', Object.create({ tool: 'pickaxe' })], ['fortune', { fortuneLevel: undefined }],
   ] as const) {
     it(`records a malformed ${name} mining context without mining`, async () => {
       const cell = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
       const stone = Option.getOrThrow(blockIdOf('stone'))
       const harness = await Effect.runPromise(makeHarness({ blocks: [[cell, stone]] }))
       await Effect.runPromise(Ref.set(harness.state.heldTool, tool as NonNullable<Parameters<typeof requestBlockBreak>[2]>))
-      await Effect.runPromise(Ref.set(harness.state.pendingBreaks, [blockPositionKeyOf(cell)]))
+      if (name === 'undefined') await Effect.runPromise(requestBlockBreak(harness.state, cell))
+      else await Effect.runPromise(Ref.set(harness.state.pendingBreaks, [blockPositionKeyOf(cell)]))
       await harness.run()
       expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([{
         _tag: 'GameplayRequestFault', source: 'Mining',
@@ -1428,6 +1471,43 @@ describe('interaction input and world boundaries', () => {
       outcome: { _tag: 'cropOwnerMismatch', block: 'potato_crop', registeredCrop: undefined },
     }])
     expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('keeps a lethal melee hit retryable when its reward seed is corrupted', async () => {
+    const target = combatTarget('corrupted-melee-reward-target', 1)
+    const harness = await Effect.runPromise(makeHarness({
+      entities: { entities: [target], nextSerial: EntitySerial(1) }, playerPose: meleePlayerPose,
+    }))
+    const before = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, Number.NaN))
+    await Effect.runPromise(requestMeleeAttack(harness.state, {
+      requestId: 'corrupted-melee-reward', origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      direction: position(PositionAxis(0), PositionAxis(0), PositionAxis(1)), reach: AttackRangeDistance(3), damage: 4,
+    }))
+    await harness.run()
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: { field: 'seed' },
+    }])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))).toStrictEqual(before)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingMeleeAttacks))).toMatchObject([{ requestId: 'corrupted-melee-reward' }])
+    expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a corrupted mining roll seed before committing or consuming any block drops', async () => {
+    const cell = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({ blocks: [[cell, stone]] }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, Number.NaN))
+    await Effect.runPromise(requestBlockBreak(harness.state, cell))
+    await harness.run()
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Mining', error: { field: 'seed' },
+    }])
+    expect(await Effect.runPromise(harness.store.api.getBlock(cell))).toStrictEqual({ _tag: 'Block', block: stone })
+    expect(harness.commitCalls()).toBe(0)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(0)
   })
 
   it('records a corrupted fishing roll seed without consuming the rod or publishing a result', async () => {
