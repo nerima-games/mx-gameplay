@@ -63,7 +63,7 @@ export type SurvivalActivityInputFailure = {
 
 type QueuedSurvivalActivity = {
   readonly sequence: number
-  readonly input: SurvivalActivityInput
+  readonly exhaustion: number
 }
 
 type PendingSurvivalActivities = {
@@ -165,15 +165,6 @@ export const exhaustionForSurvivalActivity = (
   return Result.succeed(magnitude * rate)
 }
 
-const exhaustionForActivities = (
-  inputs: ReadonlyArray<SurvivalActivityInput>,
-): Result.Result<number, SurvivalActivityInputFailure> => {
-  return Result.map(
-    Result.all(inputs.map(exhaustionForSurvivalActivity)),
-    (exhaustions) => exhaustions.reduce((total, amount) => total + amount, 0),
-  )
-}
-
 const STARVATION_HEALTH_FLOOR: Readonly<Record<SurvivalDifficulty, number>> = {
   peaceful: 20,
   easy: 10,
@@ -253,17 +244,17 @@ export function makeSurvivalHungerRuntime(
       : yield* Schema.decodeUnknownEffect(SurvivalHungerStateSchema)(initialInput[0])
     const vitals = yield* makeInMemoryVitals(initial.vitals)
     const difficulty = yield* Ref.make<SurvivalDifficulty>(initial.difficulty)
-    const pending = yield* Ref.make<ReadonlyArray<SurvivalActivityInput>>([])
+    const pending = yield* Ref.make<ReadonlyArray<number>>([])
 
     const tick = (dt: DeltaTimeSecs): Effect.Effect<SurvivalHungerTickOutcome, SurvivalHungerError> =>
       Effect.gen(function* () {
         const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(dt))
         const currentDifficulty = yield* Ref.get(difficulty)
-        const inputs = yield* Ref.getAndSet(pending, [])
+        const exhaustions = yield* Ref.getAndSet(pending, [])
         const before = yield* vitals.snapshot
         const exhaustionAdded = currentDifficulty === 'peaceful' || before.healthPoints <= 0
           ? 0
-          : yield* Effect.fromResult(exhaustionForActivities(inputs))
+          : exhaustions.reduce((total, amount) => total + amount, 0)
 
         if (exhaustionAdded > 0) yield* vitals.addExhaustion(exhaustionAdded)
         const food = yield* runFoodTicks(vitals, currentDifficulty, elapsed)
@@ -280,7 +271,7 @@ export function makeSurvivalHungerRuntime(
     return {
       submit: (input) => Effect.flatMap(
         Effect.fromResult(exhaustionForSurvivalActivity(input)),
-        () => Ref.update(pending, (inputs) => [...inputs, { ...input }]),
+        (exhaustion) => Ref.update(pending, (exhaustions) => [...exhaustions, exhaustion]),
       ),
       addExhaustion: (amount) => vitals.addExhaustion(amount),
       tick,
@@ -411,11 +402,10 @@ export function makeReplicatedSurvivalHungerRuntime(
         const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(dt))
         const currentDifficulty = yield* Ref.get(difficulty)
         const batch = (yield* Ref.get(pending)).queue
-        const activities = batch.map((entry) => entry.input)
         const outcome = yield* transact((before) => Effect.gen(function* () {
           const exhaustionAdded = currentDifficulty === 'peaceful' || before.healthPoints <= 0
             ? 0
-            : yield* Effect.fromResult(exhaustionForActivities(activities))
+            : batch.reduce((total, entry) => total + entry.exhaustion, 0)
           const exhausted = exhaustionAdded > 0
             ? addVitalsExhaustion(
                 before,
@@ -449,9 +439,9 @@ export function makeReplicatedSurvivalHungerRuntime(
     return {
       submit: (input) => Effect.flatMap(
         Effect.fromResult(exhaustionForSurvivalActivity(input)),
-        () => Ref.update(pending, (current) => ({
+        (exhaustion) => Ref.update(pending, (current) => ({
           nextSequence: current.nextSequence + 1,
-          queue: [...current.queue, { sequence: current.nextSequence, input: { ...input } }],
+          queue: [...current.queue, { sequence: current.nextSequence, exhaustion }],
         })),
       ),
       addExhaustion: (amount) => transact((vitals) => Effect.gen(function* () {

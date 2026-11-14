@@ -135,6 +135,25 @@ describe('survival hunger', () => {
   )
 
   for (const kind of ['standalone', 'replicated'] as const) {
+    it.effect(`${kind} queues validated exhaustion amounts before deferred submissions run`, () =>
+      Effect.gen(function* () {
+        const runtime = kind === 'standalone'
+          ? yield* makeSurvivalHungerRuntime(initial('normal'))
+          : (yield* makeReplicatedRuntime()).runtime
+        const sprint = { _tag: 'sprint' as const, distance: 10 }
+        const submission = runtime.submit(sprint)
+        sprint.distance = Number.NaN
+        yield* submission
+        yield* runtime.submit({ _tag: 'attack', count: 5 })
+        expect(yield* Effect.flip(runtime.submit({ _tag: 'sprint', distance: Number.NaN }))).toStrictEqual({
+          _tag: 'SurvivalActivityInputFailure', field: 'distance',
+        })
+
+        expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(1.5)
+        expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
+      }),
+    )
+
     it.effect(`${kind} rejects invalid difficulty updates and restores without changing state or pending activity`, () =>
       Effect.gen(function* () {
         for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
