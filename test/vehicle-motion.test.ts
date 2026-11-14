@@ -137,10 +137,10 @@ describe('boat motion', () => {
     }
   })
 
-  it('preserves zero time and clamps finite negative and large delta times', () => {
+  it('preserves zero time and caps large positive delta times', () => {
     const boat = vehicle('boat', { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
     const control = { throttle: 0, steering: 0, inWater: true }
-    for (const dt of [-1, 0]) {
+    for (const dt of [-0, 0]) {
       expect(transitionOrThrow(stepBoat(boat, control, dt)).vehicle).toStrictEqual(boat)
     }
     expect(transitionOrThrow(stepBoat(boat, control, 1)).vehicle.velocity.x).toBeCloseTo(0.81)
@@ -199,7 +199,7 @@ describe('minecart motion', () => {
   it('preserves zero time and caps finite powered acceleration at one tenth of a second', () => {
     const cart = vehicle('minecart')
     const track = { kind: 'powered', shape: 'isolated', powered: true } as const
-    for (const dt of [-1, 0]) {
+    for (const dt of [-0, 0]) {
       const result = transitionOrThrow(stepMinecart(cart, track, {}, dt)).vehicle
       expect(Math.hypot(result.velocity.x, result.velocity.y, result.velocity.z)).toBe(0)
     }
@@ -219,9 +219,9 @@ describe('vehicle collision lifecycle', () => {
     }))
   })
 
-  it.each(['boat', 'minecart'] as const)('rejects non-finite delta time for %s even when destroyed', (type) => {
+  it.each(['boat', 'minecart'] as const)('rejects negative or non-finite delta time for %s even when destroyed', (type) => {
     const moving = vehicle(type, { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
-    for (const dt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    for (const dt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -Number.MAX_VALUE, -1, -Number.MIN_VALUE]) {
       for (const destroyed of [false, true]) {
         const result = type === 'boat'
           ? stepBoat(moving, { throttle: 0, steering: 0, inWater: true, destroyed }, dt)

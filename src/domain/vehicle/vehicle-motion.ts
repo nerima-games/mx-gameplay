@@ -123,14 +123,14 @@ export const stepBoat = (
   dt: number,
 ): Result.Result<VehicleTransition, VehicleMotionFailure> => {
   if (vehicle.type !== 'boat') return Result.succeed({ vehicle })
-  if (!Number.isFinite(dt)) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
+  if (!Number.isFinite(dt) || dt < 0) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
   if (!Number.isFinite(control.throttle)) {
     return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
   }
   if (!Number.isFinite(control.steering)) {
     return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
   }
-  const elapsed = clamp(dt, 0, 0.1)
+  const elapsed = Math.min(dt, 0.1)
   const steering = vehicle.occupant === undefined ? 0 : clamp(control.steering, -1, 1)
   const throttle = vehicle.occupant === undefined ? 0 : clamp(control.throttle, -1, 1)
   const yawRadians = AngleRadians(vehicle.yawRadians + steering * BOAT_TURN_RATE * elapsed)
@@ -153,8 +153,8 @@ export const stepMinecart = (
   dt: number,
 ): Result.Result<VehicleTransition, VehicleMotionFailure> => {
   if (vehicle.type !== 'minecart') return Result.succeed({ vehicle })
-  if (!Number.isFinite(dt)) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
-  const elapsed = clamp(dt, 0, 0.1)
+  if (!Number.isFinite(dt) || dt < 0) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
+  const elapsed = Math.min(dt, 0.1)
   const projected = projectMinecartVelocity(
     track.kind === 'none' ? 'isolated' : track.shape,
     vehicle.velocity.x,
