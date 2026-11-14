@@ -366,26 +366,21 @@ const commitMobDamage = (
 
     const seed = yield* Ref.get(state.rollSeed)
     for (const fault of damage.faults) yield* recordGameplayEntityStageFault(state, fault)
-    const dropsResult = damage.casualties.length === 0
+    const casualtyResult = damage.casualties.length === 0
       ? undefined
-      : rollCasualtyDrops(damage.casualties, seed)
-    if (dropsResult !== undefined && Result.isFailure(dropsResult)) {
+      : Result.gen(function* () {
+          const drops = yield* rollCasualtyDrops(damage.casualties, seed)
+          const experience = yield* rollCasualtyExperience(damage.casualties, drops.seed)
+          return { drops, experience }
+        })
+    if (casualtyResult !== undefined && Result.isFailure(casualtyResult)) {
       yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: dropsResult.failure,
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyResult.failure,
       })
       return false
     }
-    const drops = dropsResult === undefined ? undefined : dropsResult.success
-    const experienceResult = drops === undefined
-      ? undefined
-      : rollCasualtyExperience(damage.casualties, drops.seed)
-    if (experienceResult !== undefined && Result.isFailure(experienceResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: experienceResult.failure,
-      })
-      return false
-    }
-    const casualtyExperience = experienceResult === undefined ? undefined : experienceResult.success
+    const drops = casualtyResult === undefined ? undefined : casualtyResult.success.drops
+    const casualtyExperience = casualtyResult === undefined ? undefined : casualtyResult.success.experience
     const nextRollSeed = casualtyExperience?.seed ?? drops?.seed
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
@@ -835,14 +830,6 @@ const processMeleeAttack = (
     const targetDamageStates = yield* Ref.get(state.meleeTargetDamageStates)
     const initialPreparation = prepareMeleeAttack(intent, preparationInput)
     if (Result.isFailure(initialPreparation)) {
-      if (
-        typeof initialPreparation.failure === 'object' && initialPreparation.failure !== null &&
-        initialPreparation.failure._tag === 'InvalidMeleeTargetInput'
-      ) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: initialPreparation.failure,
-        })
-      }
       yield* recordFailure()
       return
     }
@@ -851,14 +838,6 @@ const processMeleeAttack = (
       ? initialPreparation
       : prepareMeleeAttack(intent, { ...preparationInput, targetDamageState: previousTargetDamageState })
     if (Result.isFailure(preparation)) {
-      if (
-        typeof preparation.failure === 'object' && preparation.failure !== null &&
-        preparation.failure._tag === 'InvalidMeleeTargetInput'
-      ) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: preparation.failure,
-        })
-      }
       if (preparation.failure === 'target-invulnerable') {
         yield* Ref.set(state.meleeLastAttackTick, tick)
       }
@@ -1170,21 +1149,16 @@ const processFishingItemUse = (
     } else {
         const tick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
         const seed = yield* Ref.get(state.rollSeed)
-        const batch = drawRolls(seed, 1)
-        if (Result.isFailure(batch)) {
+        const sampled = Result.flatMap(drawRolls(seed, 1), (batch) =>
+          Result.map(rollAt(batch, 0), (roll) => ({ seed: batch.seed, roll })),
+        )
+        if (Result.isFailure(sampled)) {
           yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: batch.failure,
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: sampled.failure,
           })
           return
         }
-        const roll = rollAt(batch.success, 0)
-        if (Result.isFailure(roll)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: roll.failure,
-          })
-          return
-        }
-        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(roll.success)
+        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(sampled.success.roll)
         const intent = {
           actor: request.actor,
           tick,
@@ -1245,7 +1219,7 @@ const processFishingItemUse = (
           }
           plans.push(storagePlan)
         }
-        nextSeed = batch.success.seed
+        nextSeed = sampled.success.seed
     }
 
     if (removeBobber !== undefined) {
@@ -1994,21 +1968,16 @@ const processEnderPearlThrow = (
     if (displacement === undefined) return
 
     const seed = yield* Ref.get(state.rollSeed)
-    const roll = drawRolls(seed, 1)
-    if (Result.isFailure(roll)) {
+    const sampled = Result.flatMap(drawRolls(seed, 1), (batch) =>
+      Result.map(rollAt(batch, 0), (roll) => ({ seed: batch.seed, roll })),
+    )
+    if (Result.isFailure(sampled)) {
       yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: roll.failure,
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: sampled.failure,
       })
       return
     }
-    const pearlRoll = rollAt(roll.success, 0)
-    if (Result.isFailure(pearlRoll)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: pearlRoll.failure,
-      })
-      return
-    }
-    const spawnEndermite = shouldSpawnEndermite(pearlRoll.success)
+    const spawnEndermite = shouldSpawnEndermite(sampled.success.roll)
     const entitiesOwnerId = spawnEndermite ? context.entitiesOwnerId : undefined
     if (spawnEndermite && entitiesOwnerId === undefined) {
       yield* unsupported('OwnerRegistrationUnavailable')
@@ -2167,7 +2136,7 @@ const processEnderPearlThrow = (
       yield* Ref.update(state.pendingPearlThrows, (pending) => [request, ...pending])
       return
     }
-    yield* Ref.set(state.rollSeed, roll.success.seed)
+    yield* Ref.set(state.rollSeed, sampled.success.seed)
     yield* Ref.update(state.enderPearlOutcomes, (outcomes) => [...outcomes, outcome])
   })
 

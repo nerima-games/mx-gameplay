@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Result, Schema } from 'effect'
-import { ProjectileIdSchema, WorldIdSchema } from '@nerima-games/mc-kernel'
+import { ProjectileIdSchema, SimulationTickSchema, WorldIdSchema } from '@nerima-games/mc-kernel'
 import {
   EntityId,
   EntityKind,
@@ -26,6 +26,63 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 
 describe('gameplay replicated owner registrations', () => {
+  it('rejects malformed registration roots and owner snapshots with typed failures', () => {
+    const invalidRoots: ReadonlyArray<unknown> = [undefined, null, [], { extra: true }]
+    for (const initial of invalidRoots) {
+      expect(gameplayOwnerRegistrations(initial as GameplayOwnerInitialState)).toMatchObject({
+        _tag: 'Failure', failure: { field: 'initial' },
+      })
+    }
+    for (const initial of [{ playerPose: null }, { playerPose: { feetPosition: null } }, { crops: null }]) {
+      expect(gameplayOwnerRegistrations(initial as unknown as GameplayOwnerInitialState)).toMatchObject({
+        _tag: 'Failure', failure: { _tag: 'InvalidGameplayOwnerRegistration' },
+      })
+    }
+    expect(gameplayOwnerRegistrations({ entities: { entities: [], nextSerial: -1 } } as unknown as GameplayOwnerInitialState))
+      .toMatchObject({ _tag: 'Failure', failure: { _tag: 'InvalidGameplayEntityRoster' } })
+  })
+
+  it('rejects malformed roster containers and explicitly undefined optional entity metadata', () => {
+    const empty = { entities: [], nextSerial: EntitySerial(0) }
+    type Roster = Parameters<typeof restoreGameplayEntityMetadata>[0]
+    for (const value of [null, { entities: null }, { entities: [null] }]) {
+      expect(restoreGameplayEntityMetadata(value as unknown as Roster, empty, 'overworld')).toStrictEqual(Result.fail({
+        _tag: 'InvalidGameplayEntityMetadata', field: 'entities',
+      }))
+    }
+    for (const field of ['dimension', 'killCredit', 'lastHitTick'] as const) {
+      expect(restoreGameplayEntityMetadata({ entities: [{ [field]: undefined }], nextSerial: EntitySerial(0) } as unknown as Roster, empty, 'overworld'))
+        .toStrictEqual(Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field }))
+    }
+    expect(restoreGameplayEntityMetadata({ entities: [{ id: 'invalid' }], nextSerial: EntitySerial(0) } as unknown as Roster, empty, 'overworld'))
+      .toMatchObject({ _tag: 'Failure', failure: { _tag: 'InvalidGameplayEntityRoster' } })
+  })
+
+  it('preserves prior entity metadata for legacy snapshots and honors explicit replacement metadata', () => {
+    const prior = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+      entities: [{
+        id: 'legacy-metadata', kind: 'wolf', feetPosition: { x: 0, y: 64, z: 0 },
+        healthPoints: 8, dimension: 'nether', behaviour: undefined, killCredit: 'player', lastHitTick: 4,
+      }],
+      nextSerial: 1,
+    })
+    const first = prior.entities[0]!
+    const { dimension: _dimension, killCredit: _killCredit, lastHitTick: _lastHitTick, ...legacy } = first
+    const restored = Result.getOrThrow(restoreGameplayEntityMetadata({ entities: [legacy], nextSerial: prior.nextSerial }, prior, 'overworld'))
+    expect(restored.entities[0]).toMatchObject({ dimension: 'nether', killCredit: 'player', lastHitTick: 4 })
+    const replacement = { ...legacy, dimension: 'end' as const, killCredit: 'player-triggered-tnt' as const, lastHitTick: Schema.decodeUnknownSync(SimulationTickSchema)(9) }
+    const replaced = Result.getOrThrow(restoreGameplayEntityMetadata({ entities: [replacement], nextSerial: prior.nextSerial }, prior, 'overworld'))
+    expect(replaced.entities[0]).toMatchObject({ dimension: 'end', killCredit: 'player-triggered-tnt', lastHitTick: 9 })
+  })
+
+  it('rejects explicitly undefined dropped item metadata instead of treating it as absent', () => {
+    for (const field of ['eligibleFromFrame', 'customName', 'enchantments'] as const) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(GameplayMobBehaviourSchema)({
+        _tag: 'DroppedItem', item: 'stone', count: 1, durability: null, [field]: undefined,
+      }))).toBe(true)
+    }
+  })
+
   it.effect('publishes unique gameplay owners including projectile and TNT state', () =>
     Effect.sync(() => {
       const ownerIds = GAMEPLAY_OWNER_REGISTRATIONS.map((owner) => owner.ownerId)

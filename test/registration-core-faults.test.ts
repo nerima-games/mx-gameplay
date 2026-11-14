@@ -1,8 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
 import { CHUNK_HEIGHT, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import { PlayerServiceSnapshotSchema, makeTimeService } from '@nerima-games/mc-sim'
+import { PlayerServiceSnapshotSchema, SPAWN_VITALS, makeTimeService } from '@nerima-games/mc-sim'
 import {
   BlockId,
+  BlockAxis,
   DeltaTimeSecs,
   EntityHealthPoints,
   EntityId,
@@ -14,7 +15,7 @@ import {
   position,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
-import { Effect, Option, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
   drainFluidUpdates,
   drainGameplayEntityStageFaults,
@@ -23,11 +24,22 @@ import {
   makeGameplayFrameState,
   requestTargetedPrimaryAttack,
   resolveTargetedPrimaryAttack,
+  requestFoodUse,
+  requestBowShot,
+  requestBlockBreak,
+  validateBlockPlacementCommand,
 } from '../src/stages/registration'
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
-import { recordGameplayEntityStageFault, type TargetedPrimaryAttackOptions } from '../src/stages/registration-core'
+import {
+  recordGameplayEntityStageFault,
+  recordGameplayRequestFault,
+  recordGameplayEntityWorldDataFault,
+  rollCasualtyExperience,
+  type EntityStageFault,
+  type TargetedPrimaryAttackOptions,
+} from '../src/stages/registration-core'
 import type { GameplayOwnerInitialState } from '../src/stages/gameplay-owner-registrations'
 import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -80,6 +92,99 @@ const sameCell = (left: BlockPosition, right: BlockPosition): boolean =>
 const unknownBlockId = BlockId(65_535)
 
 describe('registration-core typed world faults', () => {
+  it.effect('records distinct reasons once across fault families and preserves deduplication after draining', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const entityId = EntityId('fault-families')
+      const cell = blockPosition(0, 64, 0)
+      const invalidAxisFailure = Result.getOrThrow(Result.flip(BlockAxis.result(Number.NaN)))
+      const faults: ReadonlyArray<EntityStageFault> = [
+        { _tag: 'FluidNeighbourPositionFault', cell, reason: 'coordinate-overflow' },
+        { _tag: 'FluidNeighbourPositionFault', cell, reason: 'unknown-face' },
+        { _tag: 'MobFrameRuleFault', entityId, failure: { _tag: 'InvalidFrameRollInput', field: 'seed' } },
+        { _tag: 'MobFrameRuleFault', entityId, failure: { _tag: 'InvalidFrameRollInput', field: 'count' } },
+        { _tag: 'MobRosterDamageFault', entityId, failure: { _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' } },
+        { _tag: 'MobRosterDamageFault', entityId, failure: { _tag: 'InvalidDamageApplicationInput', field: 'damage.cause' } },
+        {
+          _tag: 'EntityWorldDataFault', source: 'ItemUse', target: { _tag: 'Cell', cell },
+          failure: { _tag: 'EntityWorldRegistryFailure', cell, failure: invalidAxisFailure },
+        },
+      ]
+      for (const fault of faults) {
+        yield* recordGameplayEntityStageFault(state, fault)
+        yield* recordGameplayEntityStageFault(state, fault)
+      }
+      yield* recordGameplayRequestFault(state, 'Fluid')
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([
+        ...faults, { _tag: 'GameplayRequestFault', source: 'Fluid', reason: 'InvalidBlockPositionKey' },
+      ])
+      for (const fault of faults) yield* recordGameplayEntityStageFault(state, fault)
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records an invalid world position without inventing an entity identifier', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const failure = {
+        _tag: 'EntityWorldInvalidCell' as const, reason: 'not-block-coordinate' as const,
+        position: position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0)),
+      }
+      yield* recordGameplayEntityWorldDataFault(state, 'MobMovement', failure)
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([{
+        _tag: 'EntityWorldDataFault', source: 'MobMovement', target: { _tag: 'Position', position: failure.position }, failure,
+      }])
+    }),
+  )
+
+  it.effect('rejects a mining context with a custom prototype before queueing', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const malformed = Object.create({ fortuneLevel: 1 }) as NonNullable<Parameters<typeof requestBlockBreak>[2]>
+      yield* requestBlockBreak(state, blockPosition(0, 64, 0), malformed)
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+      expect(yield* drainGameplayEntityStageFaults(state)).toMatchObject([{
+        _tag: 'GameplayRequestFault', source: 'Mining', reason: 'InvalidBlockLootContext',
+      }])
+    }),
+  )
+
+  it.effect('keeps an invalid food roll seed out of the request inbox', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      yield* Ref.set(state.rollSeed, Number.NaN)
+      yield* requestFoodUse(state, 'invalid-food-seed', 'potato', SPAWN_VITALS)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { field: 'seed' },
+      }])
+      expect(Number.isNaN(yield* Ref.get(state.rollSeed))).toBe(true)
+    }),
+  )
+
+  it('rejects invalid XP seeds even for an empty casualty batch and malformed placement roots', () => {
+    expect(rollCasualtyExperience([], Number.NaN)).toMatchObject({ _tag: 'Failure', failure: { field: 'seed' } })
+    for (const command of [null, undefined, false]) {
+      expect(validateBlockPlacementCommand(command)).toStrictEqual(Result.fail({
+        _tag: 'InvalidBlockPlacementCommand', field: 'requestId',
+      }))
+    }
+  })
+
+  it.effect('refuses an invalid legacy bow release before queueing', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      yield* requestBowShot(state, {
+        origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)), dirX: 0, dirY: 0, dirZ: 1,
+        chargeSecs: -1, inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      expect(yield* Ref.get(state.pendingBowShots)).toStrictEqual([])
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([{
+        _tag: 'GameplayRequestFault', source: 'ItemUse', reason: 'InvalidBowChargeSecs',
+      }])
+    }),
+  )
+
   for (const field of ['blockReach', 'meleeReach', 'meleeDamage'] as const) {
     for (const value of [undefined, null]) {
       it.effect(`rejects explicitly ${String(value)} ${field} without enqueuing a primary attack`, () =>

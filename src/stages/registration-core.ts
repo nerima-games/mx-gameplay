@@ -508,12 +508,10 @@ type CasualtyExperienceRoll =
 const rollCasualtyExperience = (
   casualties: ReadonlyArray<MobCasualty>,
   seed: number,
-): Result.Result<CasualtyExperienceRoll, FrameRollFailure> => {
+): Result.Result<CasualtyExperienceRoll, FrameRollFailure> => Result.gen(function* () {
   if (casualties.length === 0) {
-    const empty = drawRolls(seed, 0)
-    return Result.isFailure(empty)
-      ? Result.fail(empty.failure)
-      : Result.succeed({ _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed: empty.success.seed })
+    const empty = yield* drawRolls(seed, 0)
+    return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed: empty.seed }
   }
 
   let current = seed
@@ -541,22 +539,19 @@ const rollCasualtyExperience = (
     const equipmentRollCount = equipmentBonus !== undefined && equipmentBonus.min < equipmentBonus.max
       ? Math.max(0, equipmentCount - existingEquipmentRolls.length)
       : 0
-    const batch = drawRolls(current, baseRollCount + equipmentRollCount)
-    if (Result.isFailure(batch)) return Result.fail(batch.failure)
-    current = batch.success.seed
+    const batch = yield* drawRolls(current, baseRollCount + equipmentRollCount)
+    current = batch.seed
 
     let cursor = 0
     let experienceRoll = casualty.experienceRoll
     if (experienceRoll === undefined && baseRollCount > 0) {
-      const roll = rollAt(batch.success, cursor++)
-      if (Result.isFailure(roll)) return Result.fail(roll.failure)
-      experienceRoll = makeMobExperienceRoll(roll.success)
+      const roll = yield* rollAt(batch, cursor++)
+      experienceRoll = makeMobExperienceRoll(roll)
     }
     const equipmentXpRolls = [...existingEquipmentRolls]
     for (let index = 0; index < equipmentRollCount; index += 1) {
-      const roll = rollAt(batch.success, cursor++)
-      if (Result.isFailure(roll)) return Result.fail(roll.failure)
-      equipmentXpRolls.push(makeMobExperienceRoll(roll.success))
+      const roll = yield* rollAt(batch, cursor++)
+      equipmentXpRolls.push(makeMobExperienceRoll(roll))
     }
 
     const rolledCasualty = {
@@ -574,10 +569,10 @@ const rollCasualtyExperience = (
       experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
     }
   }
-  return Result.succeed(issues.length === 0
+  return issues.length === 0
     ? { _tag: 'Resolved', experience, seed: current }
-    : { _tag: 'Unsupported', experience, seed: current, issues })
-}
+    : { _tag: 'Unsupported', experience, seed: current, issues }
+})
 
 /**
  * Historically a lift from `domain/chunk-store-port.ts`'s local, unbranded
@@ -2389,11 +2384,11 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
     }
     case 'MobFrameRuleFault':
       return gameplayEntityStageFaultKey(
-        `entity:${String(fault.entityId)}:${fault.failure._tag}:${'field' in fault.failure ? fault.failure.field : ''}`,
+        `entity:${String(fault.entityId)}:${fault.failure._tag}:${fault.failure.field}`,
       )
     case 'MobRosterDamageFault':
       return gameplayEntityStageFaultKey(
-        `entity:${String(fault.entityId)}:${fault.failure._tag}:${'field' in fault.failure ? fault.failure.field : ''}`,
+        `entity:${String(fault.entityId)}:${fault.failure._tag}:${fault.failure.field}`,
       )
     /* v8 ignore start */
     default: {
@@ -3266,28 +3261,23 @@ export const requestFoodUse = (
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const seed = yield* Ref.get(state.rollSeed)
-    const batch = drawRolls(seed, 1)
-    if (Result.isFailure(batch)) {
+    const sampled = Result.flatMap(drawRolls(seed, 1), (batch) =>
+      Result.map(rollAt(batch, 0), (effectRoll) => ({ seed: batch.seed, effectRoll })),
+    )
+    if (Result.isFailure(sampled)) {
       yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: batch.failure,
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: sampled.failure,
       })
       return
     }
-    const effectRoll = rollAt(batch.success, 0)
-    if (Result.isFailure(effectRoll)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: effectRoll.failure,
-      })
-      return
-    }
-    yield* Ref.set(state.rollSeed, batch.success.seed)
+    yield* Ref.set(state.rollSeed, sampled.success.seed)
 
     const request: FarmingItemUseRequest = {
       action: 'EatFood',
       requestId,
       heldItem,
       vitals,
-      effectRoll: effectRoll.success,
+      effectRoll: sampled.success.effectRoll,
     }
     yield* Ref.update(state.pendingItemUses, (pending) => [...pending, request])
   })
@@ -4205,22 +4195,18 @@ const stepFireTick = (
     }
     const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidateResult.success)
     const seed = yield* Ref.get(state.rollSeed)
-    const casualtyDropsResult = rollCasualtyDrops(damagePlan.casualties, seed)
-    if (Result.isFailure(casualtyDropsResult)) {
+    const casualties = Result.gen(function* () {
+      const drops = yield* rollCasualtyDrops(damagePlan.casualties, seed)
+      const experience = yield* rollCasualtyExperience(damagePlan.casualties, drops.seed)
+      return { drops, experience }
+    })
+    if (Result.isFailure(casualties)) {
       yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: casualtyDropsResult.failure,
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: casualties.failure,
       })
       return false
     }
-    const casualtyDrops = casualtyDropsResult.success
-    const casualtyExperienceResult = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
-    if (Result.isFailure(casualtyExperienceResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: casualtyExperienceResult.failure,
-      })
-      return false
-    }
-    const casualtyExperience = casualtyExperienceResult.success
+    const { drops: casualtyDrops, experience: casualtyExperience } = casualties.success
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {

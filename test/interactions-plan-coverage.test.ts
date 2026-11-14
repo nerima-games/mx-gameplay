@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Brand, Effect, Option, Ref, Result, Schema, Stream } from 'effect'
 import * as FastCheck from 'fast-check'
+import { CHUNK_HEIGHT } from '@nerima-games/mc-worldgen'
 import {
   AngleRadians,
   AttackRangeDistance,
@@ -110,6 +111,7 @@ import {
   insertBrewingIngredient,
   useBrewingPotion,
   type GameplayFrameState,
+  type ItemUseRequest,
 } from '../src/stages/registration.js'
 import {
   GAMEPLAY_BREWING_OWNER_ID,
@@ -1330,6 +1332,131 @@ describe('registered Fishing plans in the interactions stage', () => {
       _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: { _tag: 'ReplicatedOwnerUnknown' },
     }])
     expect(harness.commitCalls()).toBe(0)
+  })
+})
+
+describe('interaction input and world boundaries', () => {
+  it('rejects malformed queued positions independently and continues with a valid request', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    const invalidKey = 'not-a-cell' as ReturnType<typeof blockPositionKeyOf>
+    const requests: ReadonlyArray<ItemUseRequest> = [
+      { action: 'TillSoil', requestId: 'bad-till', positionKey: invalidKey, heldItem: 'iron_hoe' },
+      { action: 'PlantPotato', requestId: 'bad-plant', positionKey: invalidKey, heldItem: 'potato' },
+      { action: 'HarvestPotato', requestId: 'bad-harvest', positionKey: invalidKey, roll: 0.5 },
+      { action: 'UseBucket', requestId: 'bad-bucket', positionKey: invalidKey, heldItem: 'bucket', activeDimension: DIMENSION, targetDimension: DIMENSION },
+      { requestId: 'bad-ignition', positionKey: invalidKey, heldItem: 'flint_and_steel' },
+    ]
+    await Effect.runPromise(Ref.set(harness.state.pendingItemUses, requests))
+    await Effect.runPromise(Ref.set(harness.state.pendingPlacements, [{ positionKey: invalidKey, heldItem: 'stone' }]))
+    await Effect.runPromise(Ref.set(harness.state.pendingBreaks, [invalidKey]))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'valid-non-crop', blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))))
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    for (const request of requests) {
+      expect(faults).toContainEqual({
+        _tag: 'GameplayRequestFault', source: request.requestId === 'bad-ignition' ? 'Tnt' : 'ItemUse',
+        requestId: request.requestId, reason: 'InvalidBlockPositionKey',
+      })
+    }
+    expect(faults).toContainEqual({ _tag: 'GameplayRequestFault', source: 'ItemUse', reason: 'InvalidBlockPositionKey' })
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      requestId: 'valid-non-crop', success: false, outcome: { _tag: 'notCrop' },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+  })
+
+  it('rejects an invalid correlated placement command injected into the public queue', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    const command = { requestId: 'malformed-placement', positionKey: blockPositionKeyOf(blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))), heldItem: 'stone' as const }
+    Object.defineProperty(command, 'requestId', { value: undefined, enumerable: true })
+    await Effect.runPromise(Ref.set(harness.state.pendingPlacements, [command]))
+    await harness.run()
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' },
+    }])
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  for (const [name, tool] of [
+    ['null', null], ['primitive', 0], ['prototype', Object.create({ tool: 'pickaxe' })], ['fortune', { fortuneLevel: undefined }],
+  ] as const) {
+    it(`records a malformed ${name} mining context without mining`, async () => {
+      const cell = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      const harness = await Effect.runPromise(makeHarness({ blocks: [[cell, stone]] }))
+      await Effect.runPromise(Ref.set(harness.state.heldTool, tool as NonNullable<Parameters<typeof requestBlockBreak>[2]>))
+      await Effect.runPromise(Ref.set(harness.state.pendingBreaks, [blockPositionKeyOf(cell)]))
+      await harness.run()
+      expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([{
+        _tag: 'GameplayRequestFault', source: 'Mining',
+        reason: name === 'fortune' ? 'InvalidBlockLootFortuneLevel' : 'InvalidBlockLootContext',
+      }])
+      expect(await Effect.runPromise(harness.store.api.getBlock(cell))).toStrictEqual({ _tag: 'Block', block: stone })
+      expect(harness.commitCalls()).toBe(0)
+    })
+  }
+
+  for (const [action, y] of [
+    ['TillSoil', -1], ['TillSoil', CHUNK_HEIGHT - 1], ['PlantPotato', -1], ['PlantPotato', CHUNK_HEIGHT - 1], ['HarvestPotato', -1],
+  ] as const) {
+    it(`refuses ${action} at world boundary ${y} without committing`, async () => {
+      const harness = await Effect.runPromise(makeHarness())
+      const cell = blockPosition(BlockAxis(0), BlockAxis(y), BlockAxis(0))
+      if (action === 'TillSoil') await Effect.runPromise(requestSoilTill(harness.state, 'world-boundary', cell, 'iron_hoe'))
+      else if (action === 'PlantPotato') await Effect.runPromise(requestPotatoPlanting(harness.state, 'world-boundary', cell))
+      else await Effect.runPromise(requestPotatoHarvest(harness.state, 'world-boundary', cell, 0.5))
+      await harness.run()
+      expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+        requestId: 'world-boundary', success: false, outcome: { _tag: 'OutOfWorld' },
+      }])
+      expect(harness.commitCalls()).toBe(0)
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    })
+  }
+
+  it('reports a registered crop mismatch when a crop block has no corresponding owner entry', async () => {
+    const cell = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const crop = Option.getOrThrow(blockIdOf('potato_crop'))
+    const harness = await Effect.runPromise(makeHarness({ blocks: [[cell, crop]] }))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'missing-crop-owner-entry', cell, 0.5))
+    await harness.run()
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      requestId: 'missing-crop-owner-entry', success: false,
+      outcome: { _tag: 'cropOwnerMismatch', block: 'potato_crop', registeredCrop: undefined },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a corrupted fishing roll seed without consuming the rod or publishing a result', async () => {
+    const harness = await Effect.runPromise(makeHarness({ fishing: fishingStateWithRod('bite'), projectiles: projectileStateWithBobber() }))
+    const before = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_FISHING_OWNER_ID, FishingStateSchema))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, Number.NaN))
+    await Effect.runPromise(requestFishingReel(harness.state, 'corrupt-fishing-seed', FISHER))
+    await harness.run()
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: { field: 'seed' },
+    }])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_FISHING_OWNER_ID, FishingStateSchema))).toStrictEqual(before)
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a corrupted pearl roll seed without moving owners or spending inventory', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, Number.NaN))
+    await Effect.runPromise(requestEnderPearlThrow(harness.state, {
+      requestId: 'corrupt-pearl-seed', dirX: 1, dirY: 0, dirZ: 0, hitDistance: 2,
+      inventory: { mode: 'creative', slotIndex: 0 },
+    }))
+    await harness.run()
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { field: 'seed' },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(0)
   })
 })
 
