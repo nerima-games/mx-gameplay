@@ -925,23 +925,15 @@ const resolveMobProjectileImpactsOnce = (
     }]
   })
   const damagePlan = planMobDamageRoster(entitySnapshot.state, mobHits, tick)
-  for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(context.state, fault)
   // The frame seed and generated casualties contain no external roll counts or overrides.
   const casualtyDrops = Result.getOrThrow(rollCasualtyDrops(damagePlan.casualties, seed))
   const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed))
   const nextRewardSeed = casualtyExperience.seed
-  const entityCandidateResult = restoreGameplayEntityMetadata(
+  const entityCandidate = Result.getOrThrow(restoreGameplayEntityMetadata(
     damagePlan.roster,
     entitySnapshot.state,
     dimension,
-  )
-  if (Result.isFailure(entityCandidateResult)) {
-    yield* recordGameplayStageFailure(context.state, {
-      _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidateResult.failure,
-    })
-    return noChange
-  }
-  const entityCandidate = entityCandidateResult.success
+  ))
   const currentTick = Number(tick)
   const resolvedMobProjectileIds = new Set(
     [...resolved].filter((id) => projectileLaunchTick(String(id)) === currentTick),
@@ -1375,7 +1367,6 @@ const runTntSimulation = (
     })
     const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
-    for (const fault of mobBlast.faults) yield* recordGameplayEntityStageFault(state, fault)
     const mobBlastRoster = mobBlast.roster
     const loot = Result.getOrThrow(rollCasualtyDrops(mobBlast.casualties, seed))
     const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(mobBlast.casualties, loot.seed))
@@ -1723,11 +1714,6 @@ const runMobSimulation = (
     return [{ id: entity.id, damage: { amount: 1, cause: 'on_fire' }, burning: true }]
   })
   const undeadBurning = planMobDamageRoster(blastRoster, undeadBurnHits, stageTick)
-  const undeadBurnFaultEntityIds = new Set(undeadBurning.faults.map(({ entityId }) => entityId))
-  for (const fault of undeadBurning.faults) yield* recordGameplayEntityStageFault(state, fault)
-  for (const entity of tickRoster.entities) {
-    if (undeadBurnFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
-  }
   const mobCasualties = [...blast.casualties, ...undeadBurning.casualties]
   const offeredAttempts = yield* Ref.get(state.spawnAttempts)
   const difficulty = (yield* state.survivalHunger.snapshot).difficulty
@@ -1742,68 +1728,50 @@ const runMobSimulation = (
   let nextRollSeed = casualtyExperience.seed
   const passiveInitialSpawnPending = yield* Ref.get(state.passiveInitialSpawnPending)
   const lastPassiveSpawnTick = yield* Ref.get(state.lastPassiveSpawnTick)
-  const hostileWindow = hostileSpawnsAllowed(timeOfDay)
-  if (Result.isFailure(hostileWindow)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: hostileWindow.failure,
-    })
-  }
-  const passiveSearchDue = Result.isSuccess(hostileWindow) &&
-    dimension === 'overworld' && !hostileWindow.success &&
+  const hostileWindow = Result.getOrThrow(hostileSpawnsAllowed(timeOfDay))
+  const passiveSearchDue = dimension === 'overworld' && !hostileWindow &&
     (passiveInitialSpawnPending || currentTick - lastPassiveSpawnTick >= PASSIVE_SPAWN_INTERVAL_TICKS)
   let hostileSearchCompleted = false
   let passiveSearchCompleted = false
   if (hostileSearchDue) {
-    const found = yield* Effect.result(searchSpawnCandidates(
+    const found = yield* searchSpawnCandidates(
       store,
       playerPosition,
       timeOfDay,
       RandomSeed(nextRollSeed),
       dimension,
       'hostile',
-    ))
-    if (Result.isFailure(found)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: found.failure,
-      })
-    } else {
-      for (const fault of found.success.faults ?? []) {
-        yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
-      }
-      for (const failure of found.success.worldFaults) {
-        yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
-      }
-      searchedAttempts = found.success.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
-      nextRollSeed = found.success.seed
-      hostileSearchCompleted = true
+    )
+    for (const fault of found.faults ?? []) {
+      yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
     }
+    for (const failure of found.worldFaults) {
+      yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
+    }
+    searchedAttempts = found.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
+    nextRollSeed = found.seed
+    hostileSearchCompleted = true
   }
   if (passiveSearchDue) {
-    const found = yield* Effect.result(searchSpawnCandidates(
+    const found = yield* searchSpawnCandidates(
       store,
       playerPosition,
       timeOfDay,
       RandomSeed(nextRollSeed),
       dimension,
       'passive',
-    ))
-    if (Result.isFailure(found)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: found.failure,
-      })
-    } else {
-      for (const fault of found.success.faults ?? []) {
-        yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
-      }
-      for (const failure of found.success.worldFaults) {
-        yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
-      }
-      nextRollSeed = found.success.seed
-      searchedAttempts = searchedAttempts.length === 0
-        ? found.success.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)
-        : [...searchedAttempts, ...found.success.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)]
-      passiveSearchCompleted = true
+    )
+    for (const fault of found.faults ?? []) {
+      yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
     }
+    for (const failure of found.worldFaults) {
+      yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
+    }
+    nextRollSeed = found.seed
+    searchedAttempts = searchedAttempts.length === 0
+      ? found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)
+      : [...searchedAttempts, ...found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)]
+    passiveSearchCompleted = true
   }
   const attempts = offeredAttempts.length === 0
     ? searchedAttempts
@@ -1839,13 +1807,7 @@ const runMobSimulation = (
       _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: contactResult.failure,
     })
   }
-  const playerBlastsResult = resolvePlayerBlastDamage(activeBlastEvents, playerPosition, difficulty)
-  const playerBlasts = Result.isFailure(playerBlastsResult) ? [] : playerBlastsResult.success
-  if (Result.isFailure(playerBlastsResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: playerBlastsResult.failure,
-    })
-  }
+  const playerBlasts = Result.getOrThrow(resolvePlayerBlastDamage(activeBlastEvents, playerPosition, difficulty))
   type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
   type HostileDamageInput = Readonly<{
     event: HostileDamageEvent
@@ -2086,7 +2048,7 @@ const runMobSimulation = (
   const expectedDimensions = edits.length === 0
     ? []
     : [{ dimension, expectedRevision: dimensionRevision }]
-  const entityCandidateResult = restoreGameplayEntityMetadata(
+  const entityCandidate = Result.getOrThrow(restoreGameplayEntityMetadata(
     {
       ...spawnedRoster,
       entities: [
@@ -2097,14 +2059,7 @@ const runMobSimulation = (
     },
     entitySnapshot.state,
     playerSnapshot.state.pose.feetPosition.dimension,
-  )
-  if (Result.isFailure(entityCandidateResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidateResult.failure,
-    })
-    return
-  }
-  const entityCandidate = entityCandidateResult.success
+  ))
   const changes: ReplicatedOwnerCandidate[] = []
   if (!Equal.equals(entitySnapshot.state, entityCandidate)) {
     changes.push({

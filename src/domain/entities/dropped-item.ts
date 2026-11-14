@@ -681,11 +681,8 @@ export const planDroppedItemPickup = (
     }
 
     const radius = Object.hasOwn(input, 'radius')
-      ? request.radius
+      ? request.radius!
       : DROPPED_ITEM_PICKUP_RADIUS
-    if (radius === undefined) {
-      return yield* Effect.fail({ _tag: 'InvalidDroppedItemPickupRadius' } satisfies DroppedItemPickupRadiusFailure)
-    }
     const radiusSquared = radius * radius
     let storage = playerStorage
     const nextItems: Array<DroppedItemOwnerSnapshot['items'][number]> = []

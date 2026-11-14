@@ -283,7 +283,7 @@ export type SpawnVerdict =
 
 export type HostileSpawnInputFailure = DayNightInputFailure | Readonly<{
   _tag: 'InvalidSpawnCandidate'
-  field: 'dimension' | 'distanceToPlayerBlocksXZ' | 'blockLight' | 'skyLight'
+  field: 'dimension' | 'distanceToPlayerBlocksXZ' | 'blockLight' | 'skyLight' | 'feetPosition'
 }>
 
 const REFUSED = (reason: SpawnRefusal): SpawnVerdict => ({ _tag: 'Refused', reason })

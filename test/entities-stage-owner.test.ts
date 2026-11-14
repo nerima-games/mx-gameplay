@@ -91,6 +91,7 @@ import { entityStageFaultForMobMovement, makeEntitiesStage } from '../src/stages
 import { nextRoll as nextRollResult } from '../src/domain/frame-rolls.js'
 import {
   CREEPER_KIND,
+  PRIMED_TNT_KIND,
   initialBehaviourOfKind,
   hostileMobSnapshot,
   type MobBehaviour,
@@ -100,6 +101,7 @@ import {
   repairMobBehaviour,
   rollCasualtyDrops as rollCasualtyDropsResult,
 } from '../src/domain/entities/mob-frame.js'
+import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt.js'
 import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND, SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import { COW_KIND } from '../src/domain/mob/mob-ecosystem.js'
@@ -5143,4 +5145,79 @@ describe('entities stage owner-backed MobSimulation', () => {
       { request, outcome: { _tag: 'Failed', error: { _tag: 'ExperienceOrbUnavailable', reason: 'missing-orb', orb: orbId } } },
     ])
   })
+})
+
+describe('entities stage arithmetic fault boundaries', () => {
+  it('preserves an overflowing-distance mob while a neighbouring zombie advances', async () => {
+    const distant: MobEntity = {
+      id: EntityId('fault:distance-overflow'), kind: EntityKind('unruled'),
+      feetPosition: position(PositionAxis(Number.MAX_VALUE), PositionAxis(Number.MAX_VALUE), PositionAxis(0)),
+      healthPoints: EntityHealthPoints(20), behaviour: undefined,
+    }
+    const zombie = zombieAt(1, 64)
+    const harness = await Effect.runPromise(makeHarness({
+      entities: [distant, zombie],
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0))
+    const after = (await Effect.runPromise(strictRoster(harness.coordinator))).state.entities
+    expect(after.find(({ id }) => id === distant.id)?.feetPosition).toStrictEqual(distant.feetPosition)
+    expect(after.find(({ id }) => id === distant.id)?.healthPoints).toBe(20)
+    expect(after.find(({ id }) => id === zombie.id)?.behaviour).toMatchObject({ _tag: 'HostileMob', ageTicks: 1 })
+    expect((await Effect.runPromise(Ref.get(harness.state.entityStageFaults))).pending).toContainEqual({
+      _tag: 'MobFrameRuleFault', entityId: distant.id,
+      failure: { _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' },
+    })
+  })
+
+  it('records blast-distance overflow for a legacy TNT roster entry while committing the creeper detonation', async () => {
+    const creeper: MobEntity = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
+    }
+    const distant: MobEntity = {
+      id: EntityId('fault:blast-distance-overflow'), kind: PRIMED_TNT_KIND,
+      feetPosition: position(PositionAxis(Number.MAX_VALUE), PositionAxis(64), PositionAxis(Number.MAX_VALUE)),
+      healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entities: [creeper, distant],
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const after = (await Effect.runPromise(strictRoster(harness.coordinator))).state.entities
+    expect(after.map(({ id }) => id)).toStrictEqual([distant.id])
+    expect(after[0]?.healthPoints).toBe(20)
+    expect(after[0]?.feetPosition).toStrictEqual(distant.feetPosition)
+    expect((await Effect.runPromise(Ref.get(harness.state.entityStageFaults))).pending).toContainEqual({
+      _tag: 'MobRosterDamageFault', entityId: distant.id,
+      failure: { _tag: 'InvalidExplosionInput', field: 'distanceToCentre' },
+    })
+    expect(harness.commits()).toBe(1)
+  })
+
+  it('records a malformed offered spawn position before committing its roster candidate', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+    await Effect.runPromise(requestMobSpawn(harness.state, {
+      candidate: {
+        groundBlock: STONE, footBlock: AIR_BLOCK_ID, headBlock: AIR_BLOCK_ID,
+        blockLight: 0, skyLight: SkyLightLevel(0), biome: 'PLAINS', timeOfDay: 0.9,
+        distanceToPlayerBlocksXZ: 30,
+      },
+      kind: CREEPER_KIND,
+      feetPosition: { x: Number.NaN, y: 64, z: 0 } as Parameters<typeof requestMobSpawn>[1]['feetPosition'],
+    }))
+    await harness.run(makeDeltaTimeSecs(0))
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(before)
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toContainEqual({
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities',
+      error: { _tag: 'InvalidSpawnCandidate', field: 'feetPosition' },
+    })
+  })
+
 })

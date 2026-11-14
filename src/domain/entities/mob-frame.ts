@@ -865,12 +865,10 @@ const repairHostileInner = (
   if (kind === CREEPER_KIND) return repairCreeperFuse(behaviour, fieldPresent)
   if (kind === ENDERMAN_KIND) return repairEndermanFlinch(behaviour, fieldPresent)
   if (kind === ZOMBIE_KIND) return repairEcosystemMobState(behaviour, fieldPresent)
-  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
-    const ecosystem = repairEcosystemMobState(behaviour, fieldPresent)
-    if (Result.isFailure(ecosystem)) return ecosystem
-    return Result.succeed(ecosystem.success ?? migrateLegacyMissingEcosystemMobState())
-  }
-  return Result.succeed(undefined)
+  // The caller admits only hostile or ecosystem kinds; the three special hostiles returned above.
+  return Result.map(repairEcosystemMobState(behaviour, fieldPresent), (ecosystem) =>
+    ecosystem ?? migrateLegacyMissingEcosystemMobState(),
+  )
 }
 
 const migrateLegacyMissingEcosystemMobState = (): EcosystemMobState => initialEcosystemMobState()
@@ -1507,12 +1505,12 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
 
         const behaviour = innerBehaviour(entity.behaviour)
         const storedBehaviour = (
-          next: HostileMobSnapshot['behaviour'],
+          next: Exclude<HostileMobSnapshot['behaviour'], undefined>,
         ): MobBehaviour => snapshot === undefined
           ? next
           : {
               ...snapshot,
-              ...(next === undefined ? {} : { behaviour: next }),
+              behaviour: next,
               ageTicks: snapshot.ageTicks + 1,
             }
         if (entity.kind === ZOMBIE_KIND) {
@@ -2864,6 +2862,12 @@ export type MobSpawnOutcome =
   /** The cell said yes and the world is full. A different answer from a refusal, and a different fix. */
   | { readonly _tag: 'AtCapacity'; readonly population: number }
 
+const validSpawnFeet = (feet: unknown): feet is Position =>
+  typeof feet === 'object' && feet !== null
+  && 'x' in feet && typeof feet.x === 'number' && Number.isFinite(feet.x)
+  && 'y' in feet && typeof feet.y === 'number' && Number.isFinite(feet.y)
+  && 'z' in feet && typeof feet.z === 'number' && Number.isFinite(feet.z)
+
 /**
  * Apply the spawn rule to each candidate, and the population cap to each that
  * passes.
@@ -2888,6 +2892,9 @@ export const applySpawnAttempts = (
     const outcomes: Array<MobSpawnOutcome> = []
 
     for (const attempt of attempts) {
+      if (!validSpawnFeet(attempt.feetPosition)) {
+        return yield* Effect.fail({ _tag: 'InvalidSpawnCandidate' as const, field: 'feetPosition' as const })
+      }
       const verdict = canMobSpawnAt(attempt.kind, attempt.candidate)
       if (verdict._tag === 'InvalidSpawnCandidate' || verdict._tag === 'InvalidDayNightInput') {
         return yield* Effect.fail(verdict)
@@ -2936,6 +2943,9 @@ export const planSpawnAttemptsOnRoster = (
   const outcomes: Array<MobSpawnOutcome> = []
 
   for (const attempt of attempts) {
+    if (!validSpawnFeet(attempt.feetPosition)) {
+      return Result.fail({ _tag: 'InvalidSpawnCandidate', field: 'feetPosition' })
+    }
     const verdict = canMobSpawnAt(attempt.kind, attempt.candidate)
     if (verdict._tag === 'InvalidSpawnCandidate' || verdict._tag === 'InvalidDayNightInput') {
       return Result.fail(verdict)

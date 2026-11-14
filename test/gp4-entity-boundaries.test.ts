@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Result } from 'effect'
 import {
-  EntityHealthPoints, EntitySerial, InterpolationFraction, RandomSeed, SimulationTick,
+  AIR_BLOCK_ID, DeltaTimeSecs, EntityHealthPoints, EntitySerial, InterpolationFraction, RandomSeed, SimulationTick,
   type EntityHealthPoints as HealthPoints, type PositionAxis,
 } from '@nerima-games/mc-kernel'
 import {
@@ -14,10 +14,10 @@ import {
   type DroppedItemOwnerSnapshot, type DroppedItemSpawn, type PlayerSlotMetadata,
 } from '../src/domain/entities/dropped-item'
 import {
-  CREEPER_KIND, planMobBlastRoster, planMobDamageRoster, planMobExplosionRoster,
+  CREEPER_KIND, planMobBlastRoster, planMobDamageRoster, planMobExplosionRoster, planSpawnAttemptsOnRoster,
   repairMobBehaviour, rollCasualtyDrops, applySpawnAttempts,
-  resolveBowHits, resolveBlasts,
-  type MobBehaviour, type MobRoster,
+  resolveBowHits, resolveBlasts, sweepMobs, hostileMobSnapshot, ENDERMAN_KIND, STRUCK_ENDERMAN,
+  type MobBehaviour, type MobRoster, type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { searchSpawnCandidates } from '../src/domain/entities/mob-spawn-search'
@@ -40,6 +40,38 @@ const roster = (healthPoints: number): MobRoster => ({
 })
 
 describe('entity input boundaries', () => {
+  it.effect('rejects malformed spawn feet before either public planner can normalize or mutate them', () =>
+    Effect.gen(function* () {
+      const manager = yield* makeEntityManagerDouble<MobBehaviour>()
+      const initial: MobRoster = { entities: [], nextSerial: EntitySerial(0) }
+      const attempt: MobSpawnAttempt = {
+        kind: CREEPER_KIND, feetPosition: at,
+        candidate: { groundBlock: STONE, footBlock: AIR_BLOCK_ID, headBlock: AIR_BLOCK_ID,
+          blockLight: 0, skyLight: SkyLightLevel(0), biome: 'PLAINS', timeOfDay: 0.9, distanceToPlayerBlocksXZ: 30 },
+      }
+      const invalid: unknown[] = [null, undefined, 1, 'position', {},
+        { y: 64, z: 0 }, { x: 0, z: 0 }, { x: 0, y: 64 }]
+      for (const axis of ['x', 'y', 'z']) {
+        for (const value of [undefined, '0', Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+          invalid.push({ ...at, [axis]: value })
+        }
+      }
+      const failure = { _tag: 'InvalidSpawnCandidate', field: 'feetPosition' }
+      for (const feet of invalid) {
+        const offered = { ...attempt, feetPosition: feet as typeof at }
+        expect(planSpawnAttemptsOnRoster(initial, [offered])).toStrictEqual(Result.fail(failure))
+        expect(yield* Effect.flip(applySpawnAttempts(manager.api, [offered]))).toStrictEqual(failure)
+        expect(yield* manager.api.count).toBe(0)
+        expect(initial.entities).toStrictEqual([])
+      }
+      const finite = { ...attempt, feetPosition: fixturePosition(Number.MAX_VALUE, 64, -Number.MAX_VALUE) }
+      const planned = Result.getOrThrow(planSpawnAttemptsOnRoster(initial, [finite]))
+      expect(planned.roster.entities[0]?.feetPosition).toStrictEqual(finite.feetPosition)
+      expect(yield* applySpawnAttempts(manager.api, [finite])).toMatchObject([{ _tag: 'Spawned' }])
+      expect((yield* manager.api.entities)[0]?.feetPosition).toStrictEqual(finite.feetPosition)
+    }),
+  )
+
   it('rejects malformed dropped-owner initial state in direct and paired registrations', () => {
     const malformed = { items: [null] } as unknown as DroppedItemOwnerSnapshot
     expect(droppedItemOwnerRegistration(owners.droppedItems, malformed)).toMatchObject({
@@ -54,7 +86,7 @@ describe('entity input boundaries', () => {
   it.effect('rejects malformed present drop names and enchantments before mutating the roster', () =>
     Effect.gen(function* () {
       const manager = yield* makeEntityManagerDouble<MobBehaviour>()
-      for (const patch of [{ customName: 7 }, { enchantments: [null] }]) {
+      for (const patch of [{ customName: 7 }, { customName: '   ' }, { enchantments: [null] }]) {
         const input = { item: 'stone', count: 1, at, ...patch } as unknown as DroppedItemSpawn
         expect(yield* Effect.flip(spawnDroppedItem(manager.api, input))).toMatchObject({ _tag: 'SchemaError' })
       }
@@ -134,6 +166,11 @@ describe('entity input boundaries', () => {
     const damage = planMobDamageRoster(invalidHealth, [{ id: entity.id, damage: { amount: 1, cause: 'projectile' } }], SimulationTick(0))
     expect(damage.roster).toBe(invalidHealth)
     expect(damage.faults).toMatchObject([{ entityId: entity.id, failure: { field: 'vitals.healthPoints' } }])
+    const invalidHealthBlast = planMobBlastRoster(invalidHealth, [{
+      ...invalidBlast, explosion: { source: 'creeper', power: 3 },
+    }], SimulationTick(0))
+    expect(invalidHealthBlast.roster).toBe(invalidHealth)
+    expect(invalidHealthBlast.faults).toMatchObject([{ entityId: entity.id, failure: { field: 'vitals.healthPoints' } }])
   })
 
   it.effect('returns an invalid seed without spawning, searching or fabricating casualty drops', () =>
@@ -188,4 +225,28 @@ describe('entity input boundaries', () => {
     expect(malformed.faults).toMatchObject([{ entityId: entity.id, failure: { field: 'damage.cause' } }])
     expect(malformed.roster.entities[0]?.healthPoints).toBe(20)
   })
+
+  it.effect('records invalid compatibility-sweep seed for aged hostiles and struck endermen', () =>
+    Effect.gen(function* () {
+      const aged = {
+        ...entity, feetPosition: fixturePosition(50, 64, 0),
+        behaviour: hostileMobSnapshot(DORMANT_FUSE, { ageTicks: 1000 }),
+      }
+      const enderman = { ...entity, kind: ENDERMAN_KIND, behaviour: STRUCK_ENDERMAN }
+      const managers = yield* Effect.all([
+        makeEntityManagerDouble<MobBehaviour>({ entities: [aged], nextSerial: EntitySerial(1) }),
+        makeEntityManagerDouble<MobBehaviour>({ entities: [enderman], nextSerial: EntitySerial(1) }),
+      ])
+      for (const manager of managers) {
+        const before = yield* manager.api.entities
+        const result = yield* sweepMobs(manager.api, { target: at, dt: DeltaTimeSecs(0.05) }, Number.NaN)
+        expect(result.faults).toStrictEqual([{
+          _tag: 'MobFrameRuleFault', entityId: entity.id, failure: { _tag: 'InvalidFrameRollInput', field: 'seed' },
+        }])
+        expect(result.blasts).toStrictEqual([])
+        expect(result.teleports).toStrictEqual([])
+        expect(yield* manager.api.entities).toStrictEqual(before)
+      }
+    }),
+  )
 })
