@@ -135,7 +135,7 @@ import { MOB_MOVEMENT_POLICIES } from '../src/domain/mob/mob-ecosystem.js'
 import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item.js'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
 import { makeVillager, type VillagerTradeState } from '../src/domain/villager-trade.js'
-import { BOW_FULL_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
+import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot.js'
 import { placeBlock } from '../src/domain/interactions/place-block.js'
 import { cactusSidesObjection } from '../src/domain/interactions/place-cactus-sides.js'
@@ -6082,5 +6082,273 @@ describe('schema-valid interaction edge paths', () => {
     expect(await Effect.runPromise(harvesting.store.blockAt(harvestPosition))).toBe(potatoCrop)
     expect(mining.commitCalls()).toBe(0)
     expect(harvesting.commitCalls()).toBe(0)
+  })
+
+  it('faults invalid crop rolls at registration and stage while harvesting boundary rolls', async () => {
+    const boundaryLow = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
+    const boundaryHigh = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const invalidNegative = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
+    const invalidOne = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const invalidNaN = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const injectedInvalid = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+    const cropState = (position: BlockPosition) => ({
+      dimension: DIMENSION,
+      position,
+      crop: 'potato_crop' as const,
+      growthSecs: POTATO_MATURITY_SECS,
+    })
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [boundaryLow, boundaryHigh, invalidNegative, invalidOne, invalidNaN, injectedInvalid]
+        .map((position) => [position, potatoCrop] as const),
+      crops: { crops: [boundaryLow, boundaryHigh, invalidNegative, invalidOne, invalidNaN, injectedInvalid].map(cropState) },
+      playerStorage: playerStorageWithItem('potato', 1),
+    }))
+
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-low-boundary', boundaryLow, 0))
+    await Effect.runPromise(requestPotatoHarvest(
+      harness.state,
+      'crop-roll-high-boundary',
+      boundaryHigh,
+      1 - Number.EPSILON,
+    ))
+    await Effect.runPromise(requestPotatoHarvest(
+      harness.state,
+      'crop-roll-negative-outside',
+      invalidNegative,
+      -Number.EPSILON,
+    ))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-one-outside', invalidOne, 1))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-nan', invalidNaN, Number.NaN))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-nan', invalidNaN, Number.NaN))
+    await Effect.runPromise(Ref.update(harness.state.pendingItemUses, (pending) => [
+      ...pending,
+      {
+        action: 'HarvestPotato' as const,
+        requestId: 'crop-roll-stage-injected',
+        positionKey: blockPositionKeyOf(injectedInvalid),
+        roll: Number.POSITIVE_INFINITY,
+      },
+    ]))
+
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual(
+      expect.arrayContaining([
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-negative-outside', reason: 'InvalidCropRoll' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-one-outside', reason: 'InvalidCropRoll' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-nan', reason: 'InvalidCropRoll' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-stage-injected', reason: 'InvalidCropRoll' },
+      ]),
+    )
+    expect(faults.filter((fault) =>
+      fault._tag === 'GameplayRequestFault' && fault.requestId === 'crop-roll-nan',
+    )).toHaveLength(1)
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
+      {
+        action: 'HarvestPotato',
+        requestId: 'crop-roll-low-boundary',
+        success: true,
+        outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 2 }] },
+      },
+      {
+        action: 'HarvestPotato',
+        requestId: 'crop-roll-high-boundary',
+        success: true,
+        outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 5 }] },
+      },
+    ])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_CROPS_OWNER_ID,
+      CropSnapshotSchema,
+    ))).state.crops.map(({ position }) => position)).toStrictEqual([
+      invalidNegative,
+      invalidOne,
+      invalidNaN,
+      injectedInvalid,
+    ])
+    expect(harness.commitCalls()).toBe(2)
+  })
+
+  it('faults invalid mining loot contexts and continues with valid and unrelated breaks', async () => {
+    const invalidUndefined = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const invalidNaN = blockPosition(BlockAxis(7), BlockAxis(64), BlockAxis(1))
+    const invalidNegative = blockPosition(BlockAxis(8), BlockAxis(64), BlockAxis(1))
+    const invalidFraction = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(1))
+    const invalidUnsafe = blockPosition(BlockAxis(10), BlockAxis(64), BlockAxis(1))
+    const invalidShape = blockPosition(BlockAxis(11), BlockAxis(64), BlockAxis(1))
+    const validBoundary = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
+    const validUpper = blockPosition(BlockAxis(13), BlockAxis(64), BlockAxis(1))
+    const injectedInvalid = blockPosition(BlockAxis(14), BlockAxis(64), BlockAxis(1))
+    const dirt = Option.getOrThrow(blockIdOf('dirt'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [
+        invalidUndefined,
+        invalidNaN,
+        invalidNegative,
+        invalidFraction,
+        invalidUnsafe,
+        invalidShape,
+        validBoundary,
+        validUpper,
+        injectedInvalid,
+      ]
+        .map((position) => [position, dirt] as const),
+    }))
+    const explicitUndefinedFortune = {}
+    Object.defineProperty(explicitUndefinedFortune, 'fortuneLevel', { value: undefined, enumerable: true })
+
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUndefined, explicitUndefinedFortune))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUndefined, explicitUndefinedFortune))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidNaN, { fortuneLevel: Number.NaN }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidNegative, { fortuneLevel: -1 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidFraction, { fortuneLevel: 1.5 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUnsafe, {
+      fortuneLevel: Number.MAX_SAFE_INTEGER + 1,
+    }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidShape, null as never))
+    await Effect.runPromise(requestBlockBreak(harness.state, validBoundary, { fortuneLevel: 0 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, validUpper, {
+      fortuneLevel: Number.MAX_SAFE_INTEGER,
+    }))
+
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks))).toStrictEqual([
+      blockPositionKeyOf(validBoundary),
+      blockPositionKeyOf(validUpper),
+    ])
+
+    await Effect.runPromise(Ref.set(harness.state.heldTool, { fortuneLevel: 1.5 }))
+    await Effect.runPromise(Ref.update(harness.state.pendingBreaks, (pending) => [
+      ...pending,
+      blockPositionKeyOf(injectedInvalid),
+    ]))
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual(
+      expect.arrayContaining([
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(invalidUndefined),
+          reason: 'InvalidBlockLootFortuneLevel',
+        },
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(invalidNaN),
+          reason: 'InvalidBlockLootFortuneLevel',
+        },
+        ...[invalidNegative, invalidFraction, invalidUnsafe].map((position) => ({
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(position),
+          reason: 'InvalidBlockLootFortuneLevel',
+        })),
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(invalidShape),
+          reason: 'InvalidBlockLootContext',
+        },
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(injectedInvalid),
+          reason: 'InvalidBlockLootFortuneLevel',
+        },
+      ]),
+    )
+    expect(faults.filter((fault) =>
+      fault._tag === 'GameplayRequestFault' && fault.requestId === blockPositionKeyOf(invalidUndefined),
+    )).toHaveLength(1)
+    expect(await Effect.runPromise(harness.store.blockAt(validBoundary))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(validUpper))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(invalidUndefined))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidNaN))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidNegative))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidFraction))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidUnsafe))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidShape))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(injectedInvalid))).toBe(dirt)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(2)
+  })
+
+  it('faults invalid bow charge and Power requests at registration and stage', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    const shot = {
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      dirX: 0,
+      dirY: 0,
+      dirZ: 1,
+      inventory: { mode: 'creative' as const, slotIndex: 0 },
+    }
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-charge-nan', {
+      ...shot,
+      chargeSecs: Number.NaN,
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-charge-nan', {
+      ...shot,
+      chargeSecs: Number.NaN,
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-charge-negative', {
+      ...shot,
+      chargeSecs: -Number.EPSILON,
+    }))
+    const explicitUndefinedPower = { ...shot, chargeSecs: BOW_MIN_CHARGE_SECS }
+    Object.defineProperty(explicitUndefinedPower, 'powerLevel', { value: undefined, enumerable: true })
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-power-undefined', explicitUndefinedPower))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-power-fraction', {
+      ...shot,
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+      powerLevel: 1.5,
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-valid-boundary', {
+      ...shot,
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+      powerLevel: 0,
+    }))
+
+    const stageInvalidCharge = {
+      ...shot,
+      requestId: 'bow-charge-stage-injected',
+      chargeSecs: Number.POSITIVE_INFINITY,
+    }
+    const stageInvalidPower = {
+      ...shot,
+      requestId: 'bow-power-stage-injected',
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+    }
+    Object.defineProperty(stageInvalidPower, 'powerLevel', { value: undefined, enumerable: true })
+    await Effect.runPromise(Ref.update(harness.state.pendingBowShots, (pending) => [
+      ...pending,
+      stageInvalidCharge,
+      stageInvalidPower,
+    ]))
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual(
+      expect.arrayContaining([
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-nan', reason: 'InvalidBowChargeSecs' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-negative', reason: 'InvalidBowChargeSecs' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-undefined', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-fraction', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-stage-injected', reason: 'InvalidBowChargeSecs' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-stage-injected', reason: 'InvalidBowPowerLevel' },
+      ]),
+    )
+    expect(faults.filter((fault) =>
+      fault._tag === 'GameplayRequestFault' && fault.requestId === 'bow-charge-nan',
+    )).toHaveLength(1)
+    expect(await Effect.runPromise(drainBowShotResults(harness.state))).toStrictEqual([{
+      requestId: 'bow-valid-boundary',
+      success: true,
+      outcome: 'Fired',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBowShots))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
   })
 })

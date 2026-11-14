@@ -226,6 +226,24 @@ const blockPositionForRequest = (
   return result.success
 })
 
+const invalidBlockLootContextReason = (
+  context: unknown,
+): 'InvalidBlockLootContext' | 'InvalidBlockLootFortuneLevel' | undefined => {
+  if (context === undefined) return undefined
+  if (typeof context !== 'object' || context === null || Array.isArray(context)) {
+    return 'InvalidBlockLootContext'
+  }
+  const prototype = Object.getPrototypeOf(context)
+  if (prototype !== Object.prototype && prototype !== null) return 'InvalidBlockLootContext'
+  if (Object.hasOwn(context, 'fortuneLevel')) {
+    const fortuneLevel = (context as Record<string, unknown>).fortuneLevel
+    if (typeof fortuneLevel !== 'number' || !Number.isSafeInteger(fortuneLevel) || fortuneLevel < 0) {
+      return 'InvalidBlockLootFortuneLevel'
+    }
+  }
+  return undefined
+}
+
 const cropAt = (
   snapshot: CropSnapshot,
   dimension: string,
@@ -472,6 +490,15 @@ const processBowShot = (
   playerDead: boolean,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
+    if (!Number.isFinite(request.chargeSecs) || request.chargeSecs < 0) {
+      yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'InvalidBowChargeSecs')
+      return
+    }
+    if (Object.hasOwn(request, 'powerLevel') &&
+      (typeof request.powerLevel !== 'number' || !Number.isSafeInteger(request.powerLevel) || request.powerLevel < 0)) {
+      yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'InvalidBowPowerLevel')
+      return
+    }
     const result = (outcome: 'Fired' | 'Undercharged' | 'DuplicateRequest' | 'PlayerDead' | 'InventoryUnavailable') => {
       if (request.requestId === undefined) return Effect.void
       const entry: import('./registration-core.js').BowShotResult = outcome === 'Fired'
@@ -580,7 +607,9 @@ const processBowShot = (
       if (!blocked) {
         const amount = DamageAmount.result(bowDamage(
           bowCharge(request.chargeSecs),
-          request.powerLevel === undefined ? {} : { powerLevel: request.powerLevel },
+          Object.hasOwn(request, 'powerLevel') && typeof request.powerLevel === 'number'
+            ? { powerLevel: request.powerLevel }
+            : {},
         ))
         if (Result.isFailure(amount)) {
           yield* recordGameplayStageFailure(state, {
@@ -2442,9 +2471,21 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
 
         const batchHeldTool = yield* Ref.get(state.heldTool)
         for (const [index, positionKey] of breaks.entries()) {
-          if (playerDead) continue
           const request = snapshots.get(index)
-          const tool = request?.lootContext ?? batchHeldTool
+          const tool = request !== undefined && request.lootContext !== undefined
+            ? request.lootContext
+            : batchHeldTool
+          const invalidLootContext = invalidBlockLootContextReason(tool)
+          if (invalidLootContext !== undefined) {
+            yield* recordGameplayRequestFault(
+              state,
+              'Mining',
+              request === undefined ? positionKey : String(request.requestId),
+              invalidLootContext,
+            )
+            continue
+          }
+          if (playerDead) continue
           const breakPosition = yield* blockPositionForRequest(
             state, positionKey, 'Mining', request === undefined ? undefined : String(request.requestId),
           )
@@ -2618,6 +2659,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         // frame gets the sequence they asked for. The other order asks
         // `detectNetherPortal` about a ring that is one block short.
         itemUseRequests: for (const [itemUseIndex, request] of itemUses.entries()) {
+          if (
+            'action' in request &&
+            request.action === 'HarvestPotato' &&
+            (!Number.isFinite(request.roll) || request.roll < 0 || request.roll >= 1)
+          ) {
+            yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'InvalidCropRoll')
+            continue itemUseRequests
+          }
           if (playerDead && (!('action' in request) || request.action !== 'AdvanceFurnace')) {
             itemUseResults.push({
               requestId: request.requestId,

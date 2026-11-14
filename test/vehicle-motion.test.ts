@@ -88,6 +88,32 @@ describe('boat motion', () => {
     expect(result.velocity.z).toBeLessThan(0)
   })
 
+  it('accepts finite control boundaries and clamps finite excursions', () => {
+    const boat = vehicle('boat', { occupant: rider })
+    const minimum = transitionOrThrow(stepBoat(boat, { throttle: -1, steering: -1, inWater: true }, 0.1)).vehicle
+    const maximum = transitionOrThrow(stepBoat(boat, { throttle: 1, steering: 1, inWater: true }, 0.1)).vehicle
+    const beyond = transitionOrThrow(stepBoat(boat, { throttle: 2, steering: 2, inWater: true }, 0.1)).vehicle
+
+    expect(minimum.yawRadians).toBeCloseTo(-0.18)
+    expect(maximum.yawRadians).toBeCloseTo(0.18)
+    expect(beyond.yawRadians).toBe(maximum.yawRadians)
+    expect(beyond.velocity).toStrictEqual(maximum.velocity)
+  })
+
+  it('returns a typed failure for each non-finite boat control', () => {
+    const boat = vehicle('boat', { occupant: rider })
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(stepBoat(boat, { throttle: value, steering: 0, inWater: true }, 0.1)).toStrictEqual(Result.fail({
+        _tag: 'InvalidBoatControl',
+        field: 'throttle',
+      }))
+      expect(stepBoat(boat, { throttle: 0, steering: value, inWater: true }, 0.1)).toStrictEqual(Result.fail({
+        _tag: 'InvalidBoatControl',
+        field: 'steering',
+      }))
+    }
+  })
+
   it('ignores controls without a rider and applies stronger resistance out of water', () => {
     const moving = vehicle('boat', { velocity: { x: 4, y: 0, z: 0 } })
     const water = transitionOrThrow(stepBoat(moving, { throttle: 1, steering: 1, inWater: true }, 0.1)).vehicle

@@ -29,10 +29,6 @@ import { blockPosition } from '../support/coordinate-fixtures'
 const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
 const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
-const resolveNextWeatherState = (
-  current: Parameters<typeof resolveNextWeatherStateResult>[0],
-  rolls: Parameters<typeof resolveNextWeatherStateResult>[1],
-) => Result.getOrThrow(resolveNextWeatherStateResult(current, rolls))
 
 const positionKey = (id: number) => blockPositionKeyOf(blockPosition(0, id, 0))
 
@@ -142,10 +138,23 @@ describe('environment state properties', () => {
         fc.double({ min: 0, max: 1 }),
         fc.double({ min: 0, max: 1 }),
         (current, transitionRoll, durationRoll) => {
-          const next = resolveNextWeatherState(current, {
+          const nextResult = resolveNextWeatherStateResult(current, {
             transition: transitionRoll,
             duration: durationRoll,
           })
+          const invalidField = !Number.isFinite(transitionRoll)
+            ? 'transition'
+            : !Number.isFinite(durationRoll)
+              ? 'duration'
+              : undefined
+          if (invalidField !== undefined) {
+            expect(nextResult).toStrictEqual(Result.fail({
+              _tag: 'InvalidWeatherInput',
+              field: invalidField,
+            }))
+            return
+          }
+          const next = Result.getOrThrow(nextResult)
           const range = WEATHER_DURATION_RANGES[next.weather]
 
           expect(next.weather).not.toBe(current)

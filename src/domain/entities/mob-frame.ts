@@ -785,7 +785,12 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
       : hostileMobSnapshot(flinch.success)
   }
 
-  if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
+  if (kind === ZOMBIE_KIND) {
+    const inner = repairHostileInner(kind, behaviour, behaviour !== undefined)
+    return Result.isFailure(inner)
+      ? { _tag: 'MobBehaviourRepairFault', failure: inner.failure }
+      : hostileMobSnapshot(inner.success)
+  }
 
   if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
     const ecosystem = repairEcosystemMobState(behaviour, behaviour !== undefined)

@@ -896,7 +896,6 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     Effect.sync(() => {
       const malformed = {
         _tag: 'HostileMob',
-        behaviour: undefined,
         movement: { body: 'invalid' },
         ageTicks: 12,
         persistent: true,

@@ -134,9 +134,11 @@ import {
 } from '../src/domain/mob/shulker-shell'
 import {
   DESPAWN_DISTANCE_BLOCKS,
-  despawnVerdict,
+  despawnVerdict as despawnVerdictResult,
   type DespawnCandidate,
 } from '../src/domain/mob/hostile-despawn'
+
+const despawnVerdict = (candidate: DespawnCandidate) => Result.getOrThrow(despawnVerdictResult(candidate))
 
 /** Block ids, from kernel's registry. The RULES never name one; a test may. */
 const STONE: BlockId = BlockId(2)
@@ -1692,35 +1694,23 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
     }),
   )
 
-  it.effect('ORDER: a persistent mob whose position is not a number is swept anyway', () =>
+  it.effect('malformed despawn measurements are typed faults before persistence exemptions', () =>
     Effect.sync(() => {
-      // entity-manager-utils.ts checks finiteness at :59 and the exemption at
-      // :66 — in that order, so the exemption never protects a broken entity.
-      // The order is the whole content of this test: an exemption from a
-      // distance rule is not an exemption from being a number.
-      //
-      // The finiteness half HAS an oracle (test/mob/entity-manager-utils.test.ts
-      // :272-285 covers a NaN position, an infinite position and a non-finite
-      // velocity, all three answering "despawn"). The EXEMPTION has none, and
-      // the interaction between them has none either — which is exactly why the
-      // order is worth a test rather than a comment.
-      expect(despawnVerdict({ distanceToPlayerBlocks: Number.NaN, persistent: true })).toStrictEqual({
-        _tag: 'Despawn',
-        reason: 'unmeasurable',
-      })
-      expect(
-        despawnVerdict({ distanceToPlayerBlocks: Number.POSITIVE_INFINITY, persistent: false }),
-      ).toStrictEqual({ _tag: 'Despawn', reason: 'unmeasurable' })
+      // Present malformed measurements fail before the persistence exemption;
+      // only an omitted distance is treated as an unavailable measurement.
+      expect(despawnVerdictResult({ distanceToPlayerBlocks: Number.NaN, persistent: true })).toStrictEqual(
+        Result.fail({ _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' }),
+      )
+      expect(despawnVerdictResult({
+        distanceToPlayerBlocks: Number.POSITIVE_INFINITY,
+        persistent: false,
+      })).toStrictEqual(Result.fail({ _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' }))
     }),
   )
 
-  it.effect('the spawn rule and the sweep fail in OPPOSITE directions, which is one decision', () =>
+  it.effect('spawn and despawn rules return typed failures for malformed measurements', () =>
     Effect.sync(() => {
-      // A broken measurement REFUSES a spawn and CAUSES a despawn. Both answers
-      // remove a mob, so no unmeasurable number can ever be the reason a
-      // population grows. Asserted together because separately each looks like
-      // an arbitrary choice about `NaN`.
-      const refused = canHostileSpawnAt({
+      const invalidSpawn = canHostileSpawnAt({
         groundBlock: STONE,
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
@@ -1730,11 +1720,10 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
         timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,
       })
-      expect(refused).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
-      expect(despawnVerdict(candidate({ distanceToPlayerBlocks: Number.NaN }))).toStrictEqual({
-        _tag: 'Despawn',
-        reason: 'unmeasurable',
-      })
+      expect(invalidSpawn).toStrictEqual({ _tag: 'InvalidSpawnCandidate', field: 'blockLight' })
+      expect(despawnVerdictResult(candidate({ distanceToPlayerBlocks: Number.NaN }))).toStrictEqual(
+        Result.fail({ _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' }),
+      )
     }),
   )
 

@@ -17,6 +17,7 @@ export type VehicleTransition = Readonly<{
 
 export type VehicleMotionFailure =
   | Readonly<{ _tag: 'InvalidImpactSpeed' }>
+  | Readonly<{ _tag: 'InvalidBoatControl'; field: 'controls' | 'throttle' | 'steering' }>
   | RailShapeFailure
 
 export type VehicleCollision = Readonly<{
@@ -47,9 +48,9 @@ export const MINECART_CLIMB_SPEED = 2
 export const COLLISION_EXIT_SPEED = 6
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
-  Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : 0))
+  Math.min(maximum, Math.max(minimum, value))
 
-const safeDt = (dt: number): number => clamp(dt, 0, 0.1)
+const safeDt = (dt: number): number => Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 0
 
 const speed = (vehicle: Vehicle): number =>
   Math.hypot(vehicle.velocity.x, vehicle.velocity.y, vehicle.velocity.z)
@@ -123,6 +124,12 @@ export const stepBoat = (
   dt: number,
 ): Result.Result<VehicleTransition, VehicleMotionFailure> => {
   if (vehicle.type !== 'boat') return Result.succeed({ vehicle })
+  if (!Number.isFinite(control.throttle)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
+  }
+  if (!Number.isFinite(control.steering)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
+  }
   const elapsed = safeDt(dt)
   const steering = vehicle.occupant === undefined ? 0 : clamp(control.steering, -1, 1)
   const throttle = vehicle.occupant === undefined ? 0 : clamp(control.throttle, -1, 1)

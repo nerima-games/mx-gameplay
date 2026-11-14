@@ -36,7 +36,6 @@ import {
   makeReplicatedSurvivalHungerRuntime,
   starvationHealthFloor,
   type SurvivalDifficulty,
-  type SurvivalActivityInputFailure,
 } from '../src/domain/survival-hunger'
 import {
   ExperienceOrbVitalsOwnerSnapshotSchema,

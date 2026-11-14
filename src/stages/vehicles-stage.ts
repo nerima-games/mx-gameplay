@@ -4,6 +4,7 @@ import {
   UPSTREAM_STAGE_IDS,
   advanceVehicles,
   recordGameplayEntityWorldDataFault,
+  recordGameplayRequestFault,
   recordGameplayStageFailure,
 } from './registration-core.js'
 import type {
@@ -22,6 +23,13 @@ export const makeVehiclesStage = (context: GameplayStageContext): StageRegistrat
       } else if (failure._tag === 'VehicleWorldUnavailable') {
         // The next frame retries unloaded chunks; an out-of-world position has no vehicle transition.
         continue
+      } else if (failure._tag === 'VehicleMotionFailure' && failure.failure._tag === 'InvalidBoatControl') {
+        const reason = failure.failure.field === 'controls'
+          ? 'InvalidVehicleControlShape'
+          : failure.failure.field === 'throttle'
+            ? 'InvalidVehicleThrottle'
+            : 'InvalidVehicleSteering'
+        yield* recordGameplayRequestFault(context.state, 'VehicleMovement', String(failure.vehicleId), reason)
       } else {
         yield* recordGameplayStageFailure(context.state, {
           _tag: 'Failed',

@@ -722,6 +722,7 @@ describe('fire lifecycle stage integration', () => {
             kind: CREEPER_KIND,
             feetPosition: positionOfBlock(position),
             healthPoints: EntityHealthPoints(healthPoints),
+            behaviour: undefined,
           }],
           nextSerial: EntitySerial(1),
         }
@@ -772,6 +773,7 @@ describe('fire lifecycle stage integration', () => {
           kind: CREEPER_KIND,
           feetPosition: positionOfBlock(position),
           healthPoints: EntityHealthPoints(2),
+          behaviour: undefined,
         }],
         nextSerial: EntitySerial(1),
       }
@@ -1993,6 +1995,7 @@ describe('stage behaviour', () => {
             kind: EntityKind('creeper'),
             feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10 ),
             healthPoints: EntityHealthPoints(20),
+            behaviour: undefined,
           },
         ],
         nextSerial: EntitySerial(1),
@@ -2037,6 +2040,7 @@ describe('stage behaviour', () => {
           kind: EntityKind('creeper'),
           feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10),
           healthPoints: EntityHealthPoints(20),
+          behaviour: undefined,
         }],
         nextSerial: EntitySerial(1),
       }
@@ -2079,6 +2083,7 @@ describe('stage behaviour', () => {
             kind: EntityKind('creeper'),
             feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 20),
             healthPoints: EntityHealthPoints(20),
+            behaviour: undefined,
           },
         ],
         nextSerial: EntitySerial(1),
@@ -4255,6 +4260,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         killCredit: 'player',
         lastHitTick: Schema.decodeUnknownSync(SimulationTickSchema)(0),
         healthPoints: EntityHealthPoints(1),
+        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([

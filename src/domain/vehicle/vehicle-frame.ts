@@ -56,6 +56,34 @@ const isBlock = (reading: BlockReading): reading is Extract<BlockReading, { read
 const blockAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): BlockReading | undefined =>
   readings.get(blockKey(position))
 
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const boatControls = (
+  environment: VehicleFrameEnvironment,
+  vehicle: Vehicle,
+): Result.Result<VehicleControlInput, VehicleMotionFailure> => {
+  if (environment.controlsForVehicle === undefined) {
+    return Object.hasOwn(environment, 'controlsForVehicle')
+      ? Result.fail({ _tag: 'InvalidBoatControl', field: 'controls' })
+      : Result.succeed({ throttle: 0, steering: 0 })
+  }
+
+  const controls: unknown = environment.controlsForVehicle(vehicle)
+  if (!isRecord(controls)) return Result.fail({ _tag: 'InvalidBoatControl', field: 'controls' })
+
+  const throttle = Object.hasOwn(controls, 'throttle') ? controls.throttle : undefined
+  if (typeof throttle !== 'number' || !Number.isFinite(throttle)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
+  }
+  const steering = Object.hasOwn(controls, 'steering') ? controls.steering : undefined
+  if (typeof steering !== 'number' || !Number.isFinite(steering)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
+  }
+
+  return Result.succeed({ throttle, steering })
+}
+
 const railKindAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): 'none' | 'normal' | 'powered' => {
   const reading = blockAt(readings, position)
   if (reading === undefined || !isBlock(reading)) return 'none'
@@ -177,8 +205,10 @@ const stepVehicle = (
       : vehicleNeighbourhood
   }
   const readings = vehicleNeighbourhood.readings
-  const controls = environment.controlsForVehicle?.(vehicle) ?? { throttle: 0, steering: 0 }
   if (vehicle.type === 'boat') {
+    const controlsResult = boatControls(environment, vehicle)
+    if (Result.isFailure(controlsResult)) return { _tag: 'MotionFailure', failure: controlsResult.failure }
+    const controls = controlsResult.success
     const transitionResult = stepBoat(vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,

@@ -29,7 +29,9 @@ const makeTargetedWorld = (block: number, loaded: boolean = true) =>
     const world = yield* makeInMemoryWorld({
       world: {
         blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
-        loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
+        loaded: loaded
+          ? [chunkKey(chunkOf(TARGET)), chunkKey(chunkOf(BEHIND_TARGET))]
+          : [],
       },
       spawnPose: SPAWN_POSE,
     })

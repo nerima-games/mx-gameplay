@@ -93,12 +93,13 @@ const makeHarness = (
   const inventory = yield* makeInventoryDouble(emptySlots())
   const player = yield* makePlayerServiceDouble()
   const time = yield* makeTimeService()
+  const { entities: persistedEntities, ...ownerFields } = ownerInitial
   const commit = withCommit
     ? yield* makeGameplayCommitServices(store.api, inventory.api, {
         playerPose: SPAWN_POSE,
-        ...ownerInitial,
-        ...(ownerInitial.entities === undefined ? {} : {
-          entities: ownerInitial.entities as unknown as GameplayOwnerEntities,
+        ...ownerFields,
+        ...(persistedEntities === undefined ? {} : {
+          entities: persistedEntities as unknown as GameplayOwnerEntities,
         }),
       })
     : undefined

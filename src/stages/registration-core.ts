@@ -2272,9 +2272,19 @@ export type EntityStageFault =
     }>
   | Readonly<{
       _tag: 'GameplayRequestFault'
-      source: 'Mining' | 'BlockUse' | 'ItemUse' | 'Tnt' | 'Fluid'
+      source: 'Mining' | 'BlockUse' | 'ItemUse' | 'Tnt' | 'Fluid' | 'VehicleMovement'
       requestId?: string
-      reason: 'InvalidBlockPositionKey' | 'NeighbourPositionOverflow'
+      reason:
+        | 'InvalidBlockPositionKey'
+        | 'NeighbourPositionOverflow'
+        | 'InvalidCropRoll'
+        | 'InvalidBlockLootContext'
+        | 'InvalidBlockLootFortuneLevel'
+        | 'InvalidBowChargeSecs'
+        | 'InvalidBowPowerLevel'
+        | 'InvalidVehicleControlShape'
+        | 'InvalidVehicleThrottle'
+        | 'InvalidVehicleSteering'
     }>
   | Readonly<{
       _tag: 'FluidNeighbourPositionFault'
@@ -2838,6 +2848,24 @@ const stepPortalTravel = (
     }
   })
 
+const invalidBlockLootContextReason = (
+  context: unknown,
+): 'InvalidBlockLootContext' | 'InvalidBlockLootFortuneLevel' | undefined => {
+  if (context === undefined) return undefined
+  if (typeof context !== 'object' || context === null || Array.isArray(context)) {
+    return 'InvalidBlockLootContext'
+  }
+  const prototype = Object.getPrototypeOf(context)
+  if (prototype !== Object.prototype && prototype !== null) return 'InvalidBlockLootContext'
+  if (Object.hasOwn(context, 'fortuneLevel')) {
+    const fortuneLevel = (context as Record<string, unknown>).fortuneLevel
+    if (typeof fortuneLevel !== 'number' || !Number.isSafeInteger(fortuneLevel) || fortuneLevel < 0) {
+      return 'InvalidBlockLootFortuneLevel'
+    }
+  }
+  return undefined
+}
+
 /**
  * Ask for a block to be broken on the next frame.
  *
@@ -2860,6 +2888,15 @@ export const requestBlockBreak = (
   context?: BlockBreakRequestContext,
 ): Effect.Effect<void> =>
   Effect.suspend(() => {
+    const invalidLootContext = invalidBlockLootContextReason(lootContext)
+    if (invalidLootContext !== undefined) {
+      return recordGameplayRequestFault(
+        state,
+        'Mining',
+        blockPositionKeyOf(toKernelPosition(position)),
+        invalidLootContext,
+      )
+    }
     const queue = breakRequestQueueFor(state)
     return queue.mutex.withPermits(1)(
       Effect.uninterruptible(
@@ -3170,6 +3207,9 @@ export const requestPotatoHarvest = (
   position: BlockPosition,
   roll: number,
 ): Effect.Effect<void> => {
+  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) {
+    return recordGameplayRequestFault(state, 'ItemUse', requestId, 'InvalidCropRoll')
+  }
   const request: FarmingItemUseRequest = {
     action: 'HarvestPotato',
     requestId,
@@ -3298,15 +3338,36 @@ export function requestBowShot(
   correlatedRequest?: Omit<BowShotRequest, 'requestId'>,
 ): Effect.Effect<void> {
   if (typeof requestOrId !== 'string') {
-    return Ref.update(state.pendingBowShots, (pending) => [...pending, requestOrId])
+    const reason = invalidBowShotInputReason(requestOrId)
+    if (reason !== undefined) {
+      return recordGameplayRequestFault(state, 'ItemUse', requestOrId.requestId, reason)
+    }
+    return Ref.update(state.pendingBowShots, (pending) => [...pending, { ...requestOrId }])
   }
   if (correlatedRequest === undefined) {
     return Effect.die(new Error('requestBowShot: a correlated request requires shot geometry'))
   }
 
   const request: BowShotRequest = { ...correlatedRequest, requestId: requestOrId }
+  const reason = invalidBowShotInputReason(request)
+  if (reason !== undefined) {
+    return recordGameplayRequestFault(state, 'ItemUse', request.requestId, reason)
+  }
 
   return Ref.update(state.pendingBowShots, (pending) => [...pending, request])
+}
+
+const invalidBowShotInputReason = (
+  request: BowShotRequest,
+): 'InvalidBowChargeSecs' | 'InvalidBowPowerLevel' | undefined => {
+  if (!Number.isFinite(request.chargeSecs) || request.chargeSecs < 0) {
+    return 'InvalidBowChargeSecs'
+  }
+  if (Object.hasOwn(request, 'powerLevel') &&
+    (typeof request.powerLevel !== 'number' || !Number.isSafeInteger(request.powerLevel) || request.powerLevel < 0)) {
+    return 'InvalidBowPowerLevel'
+  }
+  return undefined
 }
 
 /** Atomically drain completed bow releases exactly once, preserving request order. */

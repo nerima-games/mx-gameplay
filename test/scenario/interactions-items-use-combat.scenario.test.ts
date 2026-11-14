@@ -75,16 +75,18 @@ const makeSlice = (
             behaviour: 'behaviour' in entity ? entity.behaviour : undefined,
           })),
         }
+    const { entities: persistedEntities, ...ownerFields } = ownerInitial
+    const commitInitial: GameplayOwnerInitialState = {
+      ...ownerFields,
+      ...(persistedEntities === undefined ? {} : {
+        entities: persistedEntities as unknown as GameplayEntitiesInput,
+      }),
+    }
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(runtimeEntities)
     const inventory = yield* makeInventoryDouble(initialSlots)
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
-    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
-      ...ownerInitial,
-      ...(ownerInitial.entities === undefined ? {} : {
-        entities: ownerInitial.entities as unknown as GameplayEntitiesInput,
-      }),
-    })
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, commitInitial)
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator: commit.coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
