@@ -371,14 +371,25 @@ describe('mob ecosystem', () => {
     expect(step.jumping).toBe(true)
   })
 
-  it('does not divide by zero when a hostile mob is already standing on its target', () => {
-    // Below skeleton attack range (distance 0 < 6), so it falls through to the
-    // default chase movement with target === self: `move`'s zero-length guard
-    // must return `self` unchanged rather than computing 0/0.
-    const step = stepEcosystemMob(SKELETON_KIND, initialEcosystemMobState(), position(3), position(3), 0.05)
+  it('sets a finite eight-block spacing goal when a skeleton is already on its target', () => {
+    const self = position(3, 4)
+    const step = stepEcosystemMob(SKELETON_KIND, initialEcosystemMobState(), self, self, 0.05)
+    const goal = step.state.movementGoal
 
-    expect(step.feetPosition).toEqual(position(3))
+    expect(goal).toBeDefined()
+    if (goal === undefined) {
+      expect(goal).toBeDefined()
+      return
+    }
+
+    expect(Number.isFinite(goal.x)).toBe(true)
+    expect(Number.isFinite(goal.y)).toBe(true)
+    expect(Number.isFinite(goal.z)).toBe(true)
+    expect(goal.y).toBe(self.y)
+    expect(Math.hypot(goal.x - self.x, goal.z - self.z)).toBeCloseTo(8, 10)
+    expect(step.feetPosition).toEqual(self)
     expect(step.jumping).toBe(false)
+    expect(step.attack).toBeUndefined()
   })
 })
 
