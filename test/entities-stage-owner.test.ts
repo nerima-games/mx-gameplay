@@ -775,6 +775,34 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
   })
 
+  it('records an invalid player target as a position when no block cell can be selected', async () => {
+    const target = position(PositionAxis(unsafeMovementX), PositionAxis(64), PositionAxis(0))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: spiderAtUnsafeMovementX(),
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: target,
+      },
+    }))
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+
+    expect(exit._tag).toBe('Success')
+    expect(faults).toContainEqual({
+      _tag: 'EntityWorldDataFault',
+      source: 'MobMovement',
+      target: { _tag: 'Position', position: target },
+      failure: { _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: target },
+    })
+    expect(faults).toContainEqual(expect.objectContaining({
+      _tag: 'MobMovementExecutionFault',
+      entityId: EntityId('test:spider'),
+    }))
+  })
+
   it('commits the registered entity owner exactly once across generated frame deltas', async () => {
     await fc.assert(
       fc.asyncProperty(fc.integer({ min: 1, max: 10 }), async (ticks) => {
@@ -2507,6 +2535,46 @@ describe('entities stage owner-backed MobSimulation', () => {
 
     expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).not.toBe(passiveSeed)
     expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+  })
+
+  it('records passive spawn world faults and advances its cadence without retrying early', async () => {
+    const loadedChunks = Array.from({ length: 7 * 7 }, (_, index) => {
+      const cx = Math.floor(index / 7) - 3
+      const cz = index % 7 - 3
+      return `${cx},${cz}`
+    })
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      loadedChunks,
+      shortChunkBuffer: true,
+    }))
+    await Effect.runPromise(harness.state.survivalHunger.setDifficulty('peaceful'))
+    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.5)))
+    const seedBefore = await Effect.runPromise(Ref.get(harness.state.rollSeed))
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    const spawnFault = faults.find((fault) => fault._tag === 'EntityWorldDataFault')
+
+    expect(exit._tag).toBe('Success')
+    expect(spawnFault).toBeDefined()
+    if (spawnFault === undefined || spawnFault._tag !== 'EntityWorldDataFault' ||
+      spawnFault.failure._tag !== 'EntityWorldCorruptBuffer') {
+      throw new Error('passive spawn search did not record a corrupt world cell')
+    }
+    expect(spawnFault.source).toBe('MobSpawnSearch')
+    expect(spawnFault.target).toStrictEqual({ _tag: 'Cell', cell: spawnFault.failure.cell })
+    expect(spawnFault.failure.length).toBe(1)
+    expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).not.toBe(seedBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.passiveInitialSpawnPending))).toBe(false)
+    expect(await Effect.runPromise(Ref.get(harness.state.lastPassiveSpawnTick))).toBe(1)
+
+    await harness.run(makeDeltaTimeSecs(0))
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.lastPassiveSpawnTick))).toBe(1)
   })
 
   it('commits casualty drops and XP with a passive spawn in the same simulation tick', async () => {
