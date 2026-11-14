@@ -1235,30 +1235,6 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(longDelta.contactTicks).toStrictEqual([SimulationTick(0), SimulationTick(0)])
   })
 
-  it('skips contact damage when its stored tick is ahead while allowing entity movement', async () => {
-    const harness = await Effect.runPromise(makeHarness({ entity: zombieAt(1, 64) }))
-    const previousCooldowns = new Map([[EntityId('test:zombie'), SimulationTick(10)]])
-    await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, previousCooldowns))
-    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(9)))
-    const vitalsBefore = await Effect.runPromise(harness.coordinator.snapshot(
-      GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema,
-    ))
-
-    const exit = await Effect.runPromiseExit(
-      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
-    )
-
-    expect(exit._tag).toBe('Success')
-    await expectEntityStagePlanBuildFailure(harness.state, 'invalid-tick-order')
-    expect(harness.commits()).toBe(1)
-    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([GAMEPLAY_ENTITIES_OWNER_ID])
-    expect((await Effect.runPromise(harness.coordinator.snapshot(
-      GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema,
-    ))).state).toStrictEqual(vitalsBefore.state)
-    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
-    expect(await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).toStrictEqual(previousCooldowns)
-  })
-
   it('keeps dead-player vitals unchanged while recording a valid mob-contact hit', async () => {
     const playerPose = {
       ...INITIAL_PLAYER_POSE,

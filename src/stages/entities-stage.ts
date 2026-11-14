@@ -1792,21 +1792,15 @@ const runMobSimulation = (
   const spawnedRoster = Result.isFailure(spawned) ? undeadBurning.roster : spawned.success.roster
 
   const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
-  const contactResult = resolveHostileContacts(
+  // Survival validates difficulty, and the tick above is decoded. Cooldowns start
+  // empty, store only current ticks, and have no restore path; the counter only advances.
+  const contact = Result.getOrThrow(resolveHostileContacts(
     spawnedRoster.entities,
     playerPosition,
     damageTick,
     yield* Ref.get(state.hostileContactCooldowns),
     difficulty,
-  )
-  const contact = Result.isFailure(contactResult)
-    ? { damages: [], cooldowns: yield* Ref.get(state.hostileContactCooldowns) }
-    : contactResult.success
-  if (Result.isFailure(contactResult)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: contactResult.failure,
-    })
-  }
+  ))
   const playerBlasts = Result.getOrThrow(resolvePlayerBlastDamage(activeBlastEvents, playerPosition, difficulty))
   type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
   type HostileDamageInput = Readonly<{
