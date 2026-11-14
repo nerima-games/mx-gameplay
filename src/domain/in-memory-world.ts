@@ -51,6 +51,9 @@ import {
   TimeService,
   makeTimeService,
   type InventoryServiceApi,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
   type Slot,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
@@ -67,10 +70,16 @@ import {
   makeChunkStore,
   surfaceHeightAt,
   type Chunk,
+  type ChunkStoreError,
   type ChunkSource,
   type ChunkStoreApi,
 } from '@nerima-games/mc-worldgen'
-import { entityManagerTag, type EntityManager, type EntityManagerApi } from '@nerima-games/mc-sim'
+import {
+  entityManagerTag,
+  type EntityManager,
+  type EntityManagerApi,
+  type EntitySerialExhausted,
+} from '@nerima-games/mc-sim'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 
 import { makeInMemoryEntityManager } from './in-memory-entity-manager.js'
@@ -328,9 +337,17 @@ const makeWorldChunkSource = (
 
   return Result.succeed({ source, loaded })
 }
-const makeInMemoryWorldImpl = <S>(
+export const makeInMemoryWorld = <S>(
   options: InMemoryWorldOptions = {},
-) => Effect.gen(function* () {
+): Effect.Effect<
+  InMemoryWorld<S>,
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+  | ChunkStoreError
+> => Effect.gen(function* () {
     const world = Object.hasOwn(options, 'world') ? options.world : EMPTY_WORLD
     if (world === undefined) return yield* Effect.fail(worldInputFailure('world', 'undefined'))
     if (!isWorldContents(world)) return yield* Effect.fail(worldInputFailure('world', 'invalid'))
@@ -347,12 +364,17 @@ const makeInMemoryWorldImpl = <S>(
     return yield* makeWorldWithStore<S>(chunkStore, options)
   })
 
-export const makeInMemoryWorld: typeof makeInMemoryWorldImpl = makeInMemoryWorldImpl
-
 /** Stand up a deterministic generated world backed by mc-worldgen's real store. */
-const makeGeneratedWorldImpl = <S>(
+export const makeGeneratedWorld = <S>(
   options: GeneratedWorldOptions = {},
-) => Effect.gen(function* () {
+): Effect.Effect<
+  GeneratedWorld<S>,
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+> => Effect.gen(function* () {
     const seedInput = Object.hasOwn(options, 'seed') ? options.seed : 8675309
     const spawnXInput = Object.hasOwn(options, 'spawnX') ? options.spawnX : 0.5
     const spawnZInput = Object.hasOwn(options, 'spawnZ') ? options.spawnZ : 0.5
@@ -420,8 +442,6 @@ const makeGeneratedWorldImpl = <S>(
 
     return { ...world, worldgenChunkStore: worldgenStore }
   })
-
-export const makeGeneratedWorld: typeof makeGeneratedWorldImpl = makeGeneratedWorldImpl
 
 /**
  * Is this cell something a body cannot pass through?

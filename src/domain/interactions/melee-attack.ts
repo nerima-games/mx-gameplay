@@ -398,8 +398,8 @@ export const prepareMeleeAttack = (
     return Result.fail('invalid-authoritative-state')
   }
   const knockback = knockbackDirection(
-    match.entity.feetPosition.x - pose.feetPosition.x,
-    match.entity.feetPosition.z - pose.feetPosition.z,
+    match.success.entity.feetPosition.x - pose.feetPosition.x,
+    match.success.entity.feetPosition.z - pose.feetPosition.z,
   )
   if (Result.isFailure(knockback)) return Result.fail('invalid-authoritative-state')
   return Result.succeed({

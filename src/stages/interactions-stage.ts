@@ -58,6 +58,8 @@ import {
 } from '@nerima-games/mc-sim'
 import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
+import type { FrameRollFailure } from '../domain/frame-rolls.js'
+import type { BlockLootFailure } from '../domain/interactions/block-loot.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
 import { ignitePortal } from '../domain/interactions/ignite-portal.js'
@@ -2417,7 +2419,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           yielded: BlockId,
           tool: BlockLootContext,
           breakPosition: BlockPosition,
-        ) => {
+        ): Result.Result<
+          Readonly<{ seed: number; drops: ReadonlyArray<DroppedItemSpawn> }>,
+          FrameRollFailure | BlockLootFailure
+        > => {
           const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
           if (Result.isFailure(batch)) return Result.fail(batch.failure)
           const loot = blockLoot(yielded, tool, batch.success.rolls)
