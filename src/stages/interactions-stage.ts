@@ -359,7 +359,6 @@ const commitMobDamage = (
     const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(rosterResult)
 
     const seed = yield* Ref.get(state.rollSeed)
-    for (const fault of damage.faults) yield* recordGameplayEntityStageFault(state, fault)
     const casualtyResult = damage.casualties.length === 0
       ? undefined
       : Result.gen(function* () {
