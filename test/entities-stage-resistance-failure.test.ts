@@ -19,10 +19,9 @@ import {
   makeTntService,
   makeWorldCommitCoordinator,
   TNT_REPLICATED_OWNER_ID,
-  type MobBehaviour,
   type PlayerPose,
 } from '@nerima-games/mc-sim'
-import { CREEPER_KIND, hostileMobSnapshot, type MobEntity } from '../src/domain/entities/mob-frame.js'
+import { CREEPER_KIND, hostileMobSnapshot, type MobBehaviour, type MobEntity } from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import { makeGameplayFrameState, type GameplayStageContext } from '../src/stages/registration-core.js'
 import { drainGameplayEntityStageFaults } from '../src/stages/registration.js'
