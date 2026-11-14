@@ -33,7 +33,12 @@ import {
   hostileSpawnsAllowed as hostileSpawnsAllowedResult,
   isNight as isNightResult,
 } from '../src/domain/day-night'
-import { applyDamage as applyDamageResult, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
+import {
+  applyDamage as applyDamageResult,
+  deathMessage as deathMessageResult,
+  fullHealth,
+  isDead,
+} from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
 import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
 
@@ -46,6 +51,7 @@ const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfD
 const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
 const applyDamage = (...args: Parameters<typeof applyDamageResult>) => Result.getOrThrow(applyDamageResult(...args))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
 
 describe('F5 — invalid damage is a typed failure', () => {
   it.effect('rejects every non-finite damage amount', () =>

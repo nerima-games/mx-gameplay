@@ -365,6 +365,7 @@ import {
   blockLoot,
   NO_TOOL,
   type BlockLootContext,
+  type BlockLootFailure,
 } from '../domain/interactions/block-loot.js'
 import type { PlaceOutcome } from '../domain/interactions/place-block.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
@@ -411,6 +412,7 @@ import {
   meleeTarget,
   meleeTargetBeforeBlock,
   type MeleeAttackRequest,
+  type MeleeTargetInputFailure,
   type MeleeAttackResult as ResolvedMeleeAttackResult,
 } from '../domain/interactions/melee-attack.js'
 import {
@@ -443,6 +445,7 @@ import {
   LOWEST_WEATHER_ROLLS,
   weatherExpires,
   WEATHER_TRANSITION_ROLLS,
+  type WeatherInputFailure,
   type WeatherState,
 } from '../domain/weather.js'
 import {
@@ -458,6 +461,7 @@ import {
 } from './ender-dragon-encounter-stage.js'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
+import type { VehicleMotionFailure } from '../domain/vehicle/vehicle-motion.js'
 
 const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
 const NO_MOB_EXPERIENCE: ReadonlyArray<never> = []
@@ -589,7 +593,9 @@ const toKernelPosition = (position: BlockPosition): BlockPosition => position
 const blockPosition = (x: number, y: number, z: number): BlockPosition =>
   kernelBlockPosition(BlockAxis(x + 0), BlockAxis(y + 0), BlockAxis(z + 0))
 
-export const blockPositionForKey = (key: BlockPositionKey) => blockPositionOfKey(key)
+export const blockPositionForKey = (
+  key: BlockPositionKey,
+): ReturnType<typeof blockPositionOfKey> => blockPositionOfKey(key)
 
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
@@ -1017,9 +1023,14 @@ const maximumFluidLevel = (kind: FluidCell['kind'], dimension: Dimension): numbe
     ? DEFAULT_FLUID_HORIZONTAL_RANGE.water
     : DEFAULT_FLUID_HORIZONTAL_RANGE.lava[dimension]
 
+type GameplayBlockWriteBatchFailure = Readonly<{
+  _tag: 'InvalidGameplayBlockWriteBatch'
+  error: Schema.SchemaError
+}>
+
 type GameplayBlockCommitResult = Result.Result<
   ReplicatedWorldDelta<ReplicatedOwnerChange>,
-  WorldCommitCoordinatorError
+  WorldCommitCoordinatorError | GameplayBlockWriteBatchFailure
 >
 
 const commitBlockEdits: (
@@ -1037,19 +1048,21 @@ const commitBlockEdits: (
   expectedDimensionRevision,
   edits,
 ) => Effect.gen(function* () {
-    // All fields come from the validated coordinator revisions and fluid edits built above.
-    const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+    const blockWrite = yield* Effect.result(Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
       world: context.coordinator.worldId,
       expectedWorldRevision: expectedRevision,
       dimension: context.dimension,
       expectedDimensionRevision,
       edits,
-    }).pipe(Effect.orDie)
+    }))
+    if (Result.isFailure(blockWrite)) {
+      return Result.fail({ _tag: 'InvalidGameplayBlockWriteBatch', error: blockWrite.failure })
+    }
     return yield* Effect.result(context.coordinator.commit({
       expectedRevision,
       expectedDimensions: [{ dimension: context.dimension, expectedRevision: expectedDimensionRevision }],
       changes: context.changes,
-      blockWrite,
+      blockWrite: blockWrite.success,
     }))
   })
 
@@ -1209,15 +1222,24 @@ const runFluidPropagation = (
           operations.map(({ position: operationPosition, block }) => ({ position: operationPosition, block })),
         )
         if (Result.isFailure(committed)) {
-          const tag = committed.failure._tag
-          deferCurrent = deferCurrent || tag === 'WorldWriteChunkUnavailable' ||
-            tag === 'WorldWriteStale' || tag === 'WorldRevisionConflict' ||
-            tag === 'DimensionRevisionConflict' || tag === 'WorldCommitChunkStoreUnavailable'
-          if (!deferCurrent) {
-            for (const { change } of operations) {
-              if (change._tag === 'PlaceFluid') continue
-              cells.delete(change.key)
-              enqueueDependents(change.key)
+          if (committed.failure._tag === 'InvalidGameplayBlockWriteBatch') {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed',
+              operation: 'WorldCommit',
+              subject: 'Entities',
+              error: committed.failure,
+            })
+          } else {
+            const tag = committed.failure._tag
+            deferCurrent = deferCurrent || tag === 'WorldWriteChunkUnavailable' ||
+              tag === 'WorldWriteStale' || tag === 'WorldRevisionConflict' ||
+              tag === 'DimensionRevisionConflict' || tag === 'WorldCommitChunkStoreUnavailable'
+            if (!deferCurrent) {
+              for (const { change } of operations) {
+                if (change._tag === 'PlaceFluid') continue
+                cells.delete(change.key)
+                enqueueDependents(change.key)
+              }
             }
           }
         } else {
@@ -1427,6 +1449,27 @@ export type BlockPlacementMode = 'survival' | 'creative'
 export type BlockPlacementCommand = PlacementRequest & {
   readonly requestId: BlockPlacementRequestId
   readonly mode?: BlockPlacementMode
+}
+
+export type BlockPlacementCommandFailure = Readonly<{
+  _tag: 'InvalidBlockPlacementCommand'
+  field: 'requestId' | 'mode'
+}>
+
+export const validateBlockPlacementCommand = (
+  command: unknown,
+): Result.Result<BlockPlacementCommand, BlockPlacementCommandFailure> => {
+  if (typeof command !== 'object' || command === null) {
+    return Result.fail({ _tag: 'InvalidBlockPlacementCommand', field: 'requestId' })
+  }
+  const candidate = command as Record<string, unknown>
+  if (!Object.hasOwn(candidate, 'requestId') || typeof candidate['requestId'] !== 'string') {
+    return Result.fail({ _tag: 'InvalidBlockPlacementCommand', field: 'requestId' })
+  }
+  if (Object.hasOwn(candidate, 'mode') && candidate['mode'] !== 'survival' && candidate['mode'] !== 'creative') {
+    return Result.fail({ _tag: 'InvalidBlockPlacementCommand', field: 'mode' })
+  }
+  return Result.succeed(candidate as BlockPlacementCommand)
 }
 
 export type BlockPlacementCommandOutcome =
@@ -2192,6 +2235,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | FishingServiceError
     | BrewingServiceError
     | VehicleOperationError
+    | VehicleMotionFailure
     | PrimedTntValidationFailure
     | DamageAtResult
     | FrameRollFailure
@@ -2204,7 +2248,12 @@ export type GameplayStageOperationFailure = Readonly<{
     | KnockbackPreparationError
     | MobSpawnSearchFailure
     | HostileContactResolutionError
+    | WeatherInputFailure
+    | GameplayBlockWriteBatchFailure
     | GameplayEntityMetadataFailure
+    | BlockLootFailure
+    | BlockPlacementCommandFailure
+    | MeleeTargetInputFailure
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
     | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: EntitiesStageFailureTag }>
 }>
@@ -2980,8 +3029,16 @@ export const requestBlockPlacement = (
 export const requestBlockPlacementCommand = (
   state: GameplayFrameState,
   command: BlockPlacementCommand,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingPlacements, (pending) => [...pending, command])
+): Effect.Effect<void> => Effect.gen(function* () {
+  const validated = validateBlockPlacementCommand(command)
+  if (Result.isFailure(validated)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: validated.failure,
+    })
+    return
+  }
+  yield* Ref.update(state.pendingPlacements, (pending) => [...pending, validated.success])
+})
 
 /** Atomically drain correlated placement answers exactly once. */
 export const drainBlockPlacementResults = (
@@ -3376,9 +3433,10 @@ const resolveTargetedPrimaryAttackWithSnapshots = (
       request,
       Option.isSome(blockTarget) ? blockTarget.value.distance : undefined,
     )
+    const target = yield* Effect.fromResult(meleeHit)
 
-    const resolution: TargetedPrimaryAttackResolution = meleeHit !== undefined
-      ? { _tag: 'Melee', target: meleeHit, request }
+    const resolution: TargetedPrimaryAttackResolution = target !== undefined
+      ? { _tag: 'Melee', target, request }
       : Option.isSome(blockTarget)
         ? { _tag: 'Block', target: blockTarget.value }
         : { _tag: 'None' }
@@ -3391,7 +3449,7 @@ export const resolveTargetedPrimaryAttack = (
   options: TargetedPrimaryAttackOptions = {},
 ): Effect.Effect<
   TargetedPrimaryAttackResolution,
-  CameraPoseError | RangeError | BlockTargetInputError | WorldCommitCoordinatorError | Schema.SchemaError
+  CameraPoseError | RangeError | BlockTargetInputError | MeleeTargetInputFailure | WorldCommitCoordinatorError | Schema.SchemaError
 > =>
   Effect.map(
     resolveTargetedPrimaryAttackWithSnapshots(store, context, options),
@@ -3406,7 +3464,7 @@ export const requestTargetedPrimaryAttack = (
   options: TargetedPrimaryAttackOptions = {},
 ): Effect.Effect<
   TargetedPrimaryAttackResult,
-  CameraPoseError | RangeError | BlockTargetInputError | WorldCommitCoordinatorError | Schema.SchemaError
+  CameraPoseError | RangeError | BlockTargetInputError | MeleeTargetInputFailure | WorldCommitCoordinatorError | Schema.SchemaError
 > =>
   Effect.gen(function* () {
     const { resolution, dimension } = yield* resolveTargetedPrimaryAttackWithSnapshots(
@@ -4551,7 +4609,10 @@ export const requestTargetedPotatoPlanting = (
 
 const normalizedBlockPlacementCommand = (
   command: BlockPlacementCommand,
-): NormalizedBlockPlacementCommand => ({ ...command, mode: command.mode ?? 'survival' })
+): NormalizedBlockPlacementCommand => ({
+  ...command,
+  mode: Object.hasOwn(command, 'mode') ? command.mode as BlockPlacementMode : 'survival',
+})
 
 const sameBlockPlacementCommand = (
   left: NormalizedBlockPlacementCommand,

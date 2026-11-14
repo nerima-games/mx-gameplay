@@ -109,7 +109,7 @@ export const applyLook = (
   if (!Number.isFinite(deltaYaw)) return Result.fail(inputError('invalid-look', 'deltaYaw'))
   if (!Number.isFinite(deltaPitch)) return Result.fail(inputError('invalid-look', 'deltaPitch'))
   const pitch = clampPitch(pose.pitchRadians + deltaPitch, 'invalid-look')
-  if (Result.isFailure(pitch)) return pitch
+  if (Result.isFailure(pitch)) return Result.fail(pitch.failure)
   const nextPose = {
     feetPosition: pose.feetPosition,
     // Not wrapped. See the header: wrapping breaks interpolation across the seam.

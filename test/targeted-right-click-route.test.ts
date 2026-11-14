@@ -170,13 +170,25 @@ describe('targetedRightClickRoute', () => {
     }),
   )
 
-  it.effect('returns undefined when the target chunk is not loaded', () =>
+  it.effect('preserves the ChunkNotLoaded reading when the ray enters an unloaded chunk', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID, false)
 
-      expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.pose),
-      ).toBeUndefined()
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.pose)).toMatchObject({
+        _tag: 'ChunkNotLoaded',
+      })
+    }),
+  )
+
+  it.effect('preserves the OutOfWorld reading', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const store = {
+        ...world.chunkStore,
+        getBlock: (_position: BlockPosition) => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      }
+
+      expect(yield* targetedRightClickRoute(store, world.pose)).toMatchObject({ _tag: 'OutOfWorld' })
     }),
   )
 
@@ -184,17 +196,13 @@ describe('targetedRightClickRoute', () => {
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(DIRT_ID)
       yield* injectRawBlockId(world.chunkStore, TARGET, BlockId(UNKNOWN_BLOCK_ID))
-
       const result = yield* Effect.result(targetedRightClickRoute(world.chunkStore, world.pose))
-      expect(Result.isFailure(result)).toBe(true)
-      if (Result.isFailure(result)) {
-        expect(result.failure).toMatchObject({
-          _tag: 'BlockTypeDecodeFailed',
-          position: TARGET,
-          block: BlockId(UNKNOWN_BLOCK_ID),
-          failure: { _tag: 'UnregisteredBlockId' },
-        })
-      }
+
+      expect(result).toStrictEqual(Result.fail({
+        _tag: 'UnknownTargetBlockId',
+        position: TARGET,
+        blockId: BlockId(UNKNOWN_BLOCK_ID),
+      }))
     }),
   )
 })

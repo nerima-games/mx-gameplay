@@ -12,7 +12,7 @@ import { blockIdOf, type BlockId, type BlockPositionKey, type BlockType } from '
 import {
   applyDamage as applyDamageResult,
   DEATH_MESSAGES,
-  deathMessage,
+  deathMessage as deathMessageResult,
   describeDeath,
   fullHealth,
   isDead,
@@ -53,6 +53,7 @@ const splitWithBudget = (
 const applyDamage = (
   ...args: Parameters<typeof applyDamageResult>
 ) => Result.getOrThrow(applyDamageResult(...args))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
 
 const registeredBlockId = (type: BlockType): BlockId =>
   Option.getOrElse(blockIdOf(type), () => {
@@ -553,14 +554,16 @@ describe('death: "You died." must not be the only message the game can print', (
     }),
   )
 
-  it.effect('a hand-built dead Vitals with no recorded cause still gets a message rather than nothing', () =>
+  it.effect('a dead Vitals with no recorded cause fails rather than inventing a generic message', () =>
     Effect.sync(() => {
-      // Unreachable through `applyDamage`, which always records. It is reachable
-      // through an object literal — a QA API, a save migration, a test — and a
-      // death screen with no text at all is a worse failure than a generic one.
-      expect(deathMessage({ healthPoints: 0, lastDeathCause: undefined })).toBe(
-        DEATH_MESSAGES.generic,
-      )
+      expect(deathMessageResult({ healthPoints: 0, lastDeathCause: undefined })).toStrictEqual(Result.fail({
+        _tag: 'InvalidDeathMessageInput',
+        field: 'vitals.lastDeathCause',
+      }))
+      expect(deathMessageResult({ healthPoints: 0 } as never)).toStrictEqual(Result.fail({
+        _tag: 'InvalidDeathMessageInput',
+        field: 'vitals.lastDeathCause',
+      }))
     }),
   )
 
@@ -568,6 +571,17 @@ describe('death: "You died." must not be the only message the game can print', (
     Effect.sync(() => {
       expect(applyDamage(fullHealth, { amount: 999, cause: 'fall' }).healthPoints).toBe(0)
       expect(Result.isFailure(applyDamageResult(fullHealth, { amount: -5, cause: 'fall' }))).toBe(true)
+      expect(applyDamageResult(
+        { healthPoints: 20 } as never,
+        { amount: 1, cause: 'fall' },
+      )).toStrictEqual(Result.fail({
+        _tag: 'InvalidDamageApplicationInput',
+        field: 'vitals.lastDeathCause',
+      }))
+      expect(Result.isSuccess(applyDamageResult(
+        { healthPoints: 20, lastDeathCause: undefined },
+        { amount: 1, cause: 'fall' },
+      ))).toBe(true)
     }),
   )
 })

@@ -1,28 +1,28 @@
 import { targetBlockFromPlayerPose } from '@nerima-games/mc-sim'
+import type {
+  BlockTargetInputError,
+  CameraPoseError,
+  PlayerPose,
+} from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 
 import {
   BlockAxis,
   blockPosition,
   blockTypeOfId,
-  type BlockPosition,
   type BlockRegistryResolutionFailure,
+  type BlockId,
+  type BlockPosition,
 } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   rightClickRoute,
   type RightClickRoute,
 } from '../domain/interactions/right-click-target.js'
-import type { PlayerPose } from '@nerima-games/mc-sim'
 import { DEFAULT_BLOCK_REACH } from './registration.js'
-import type { GameplayStageBlockTypeDecodeFailure } from './gameplay-stage-faults.js'
 
 const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
   blockPosition(BlockAxis(x + 0), BlockAxis(y + 0), BlockAxis(z + 0))
-
-type TargetBlockFailure = Extract<ReturnType<typeof targetBlockFromPlayerPose>, { readonly _tag: 'Failure' }>['failure']
-  | GameplayStageBlockTypeDecodeFailure
-  | BlockRegistryResolutionFailure
 
 export type TargetedRightClickRouteInputFailure = Readonly<{
   readonly _tag: 'TargetedRightClickRouteInputFailure'
@@ -30,12 +30,26 @@ export type TargetedRightClickRouteInputFailure = Readonly<{
   readonly reason: 'undefined'
 }>
 
+export type TargetedRightClickRouteFailure = TargetedRightClickRouteInputFailure | Readonly<{
+  readonly _tag: 'UnknownTargetBlockId'
+  readonly position: BlockPosition
+  readonly blockId: BlockId
+}>
+
+export type TargetedRightClickRouteUnavailable = Readonly<{
+  readonly _tag: Extract<BlockReading['_tag'], 'ChunkNotLoaded' | 'OutOfWorld'>
+  readonly position: BlockPosition
+}>
+
 /** Resolve the route from a pose read from the authoritative gameplay player owner. */
 export const targetedRightClickRoute = (
   store: ChunkStoreApi,
   pose: PlayerPose,
   ...maxDistanceArgument: [] | [maxDistance: number]
-): Effect.Effect<RightClickRoute | undefined, TargetBlockFailure | TargetedRightClickRouteInputFailure> =>
+): Effect.Effect<
+  RightClickRoute | TargetedRightClickRouteUnavailable | undefined,
+  CameraPoseError | RangeError | BlockTargetInputError | BlockRegistryResolutionFailure | TargetedRightClickRouteFailure
+> =>
   Effect.gen(function* () {
     const maxDistance = maxDistanceArgument.length === 0
       ? DEFAULT_BLOCK_REACH
@@ -62,20 +76,21 @@ export const targetedRightClickRoute = (
 
     for (const position of candidates) {
       const reading = yield* store.getBlock(position)
-      if (reading._tag !== 'Block' || reading.block === 0) continue
+      if (reading._tag === 'ChunkNotLoaded' || reading._tag === 'OutOfWorld') {
+        return { _tag: reading._tag, position }
+      }
+      if (reading.block === 0) continue
 
-      const decoded = yield* Effect.fromResult(blockTypeOfId(reading.block))
-      if (decoded === undefined) {
-        const reason: GameplayStageBlockTypeDecodeFailure = {
-          _tag: 'BlockTypeDecodeFailed',
+      const blockType = yield* Effect.fromResult(blockTypeOfId(reading.block))
+      if (blockType === undefined) {
+        return yield* Effect.fail({
+          _tag: 'UnknownTargetBlockId',
           position,
-          block: reading.block,
-          failure: { _tag: 'UnregisteredBlockId' },
-        }
-        return yield* Effect.fail(reason)
+          blockId: reading.block,
+        } satisfies TargetedRightClickRouteFailure)
       }
 
-      return rightClickRoute(position, decoded)
+      return rightClickRoute(position, blockType)
     }
 
     return undefined

@@ -52,7 +52,7 @@ export const resolveBedSleep = (
     return Result.succeed({ _tag: 'SleepRejected', reason: 'danger-nearby' })
   }
   const night = isNight(input.timeOfDay)
-  if (Result.isFailure(night)) return night
+  if (Result.isFailure(night)) return Result.fail(night.failure)
   if (!night.success && input.weather !== 'thunder') {
     return Result.succeed({ _tag: 'SleepRejected', reason: 'not-night-or-thunder' })
   }
@@ -162,7 +162,8 @@ export const requiredSleeperCount = (
 export const sleepRatioFromPercentage = (
   value: string | null,
 ): Result.Result<number, 'invalid-sleep-percentage'> => {
-  if (value === null || value.trim() === '') return Result.succeed(1)
+  if (value === null) return Result.succeed(1)
+  if (typeof value !== 'string' || value.trim() === '') return Result.fail('invalid-sleep-percentage')
   const percentage = Number(value)
   return Number.isFinite(percentage)
     ? Result.succeed(Math.min(100, Math.max(0, percentage)) / 100)
@@ -184,7 +185,7 @@ export const advanceSleep = (
   delaySecs: number,
 ): Result.Result<SleepAdvance, 'invalid-sleep-ratio'> => {
   const required = requiredSleeperCount(connectedSurvivalPlayers, requiredRatio)
-  if (Result.isFailure(required)) return required
+  if (Result.isFailure(required)) return Result.fail(required.failure)
   const sleepers = state.sleepers.map((sleeper) => ({
     ...sleeper,
     elapsedSecs: sleeper.elapsedSecs + Math.max(0, deltaSecs),

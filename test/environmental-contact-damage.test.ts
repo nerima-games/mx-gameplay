@@ -2,17 +2,19 @@ import { blockIdOf, propertyOfBlockId } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import { Option, Result } from 'effect'
-import { applyDamage, deathMessage, fullHealth } from '../src/domain/death-cause'
+import { applyDamage, deathMessage as deathMessageResult, fullHealth } from '../src/domain/death-cause'
 import {
   ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS,
   INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
   resolveEnvironmentalContactDamage as resolveEnvironmentalContactDamageResult,
   type EnvironmentalContact,
+  type EnvironmentalContactDamageState,
 } from '../src/domain/environmental-contact-damage'
 
 const resolveEnvironmentalContactDamage = (
   ...args: Parameters<typeof resolveEnvironmentalContactDamageResult>
 ) => Result.getOrThrow(resolveEnvironmentalContactDamageResult(...args))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
 
 const contact = (block: EnvironmentalContact['block']): EnvironmentalContact => {
   const blockId = Option.getOrElse(blockIdOf(block), () => {
@@ -113,6 +115,25 @@ describe('environmental contact damage', () => {
     expect(rewound.damages).toStrictEqual([{ amount: 4, cause: 'lava' }])
     expect(resolveEnvironmentalContactDamage(rewound.state, [contact('lava')], 1).damages).toStrictEqual([])
     expect(Result.isFailure(invalid)).toBe(true)
+  })
+
+  it('rejects a state with a missing last-damage key but accepts its explicit undefined initial state', () => {
+    const missing = resolveEnvironmentalContactDamageResult(
+      {} as EnvironmentalContactDamageState,
+      [],
+      0,
+    )
+    const initial = resolveEnvironmentalContactDamageResult(
+      INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+      [],
+      0,
+    )
+
+    expect(missing).toStrictEqual(Result.fail({
+      _tag: 'InvalidEnvironmentalContactDamageInput',
+      field: 'state.lastDamageElapsedSecs',
+    }))
+    expect(Result.isSuccess(initial)).toBe(true)
   })
 
   it('accepts zero damage and rejects negative or non-finite contact damage', () => {

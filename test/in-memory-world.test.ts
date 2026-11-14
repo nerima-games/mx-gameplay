@@ -14,31 +14,54 @@ describe('in-memory world input boundaries', () => {
   it.effect('returns typed failures for explicitly undefined world options', () =>
     Effect.gen(function* () {
       const inMemoryOptions = [
-        { world: undefined },
-        { spawnPose: undefined },
-        { dimension: undefined },
-        { inventory: undefined },
-        { vitals: undefined },
+        { options: { world: undefined }, field: 'world' },
+        { options: { spawnPose: undefined }, field: 'spawnPose' },
+        { options: { dimension: undefined }, field: 'dimension' },
+        { options: { inventory: undefined }, field: 'inventory' },
+        { options: { vitals: undefined }, field: 'vitals' },
       ]
-      for (const options of inMemoryOptions) {
+      for (const { options, field } of inMemoryOptions) {
         const result = yield* Effect.result(makeInMemoryWorld(options as never))
         expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({ _tag: 'WorldInputFailure', field, reason: 'undefined' })
+        }
       }
 
       const generatedOptions = [
-        { seed: undefined },
-        { spawnX: undefined },
-        { spawnZ: undefined },
-        { chunkSource: undefined },
-        { yawRadians: undefined },
-        { pitchRadians: undefined },
-        { dimension: undefined },
-        { inventory: undefined },
-        { vitals: undefined },
+        { options: { seed: undefined }, field: 'seed' },
+        { options: { spawnX: undefined }, field: 'spawnX' },
+        { options: { spawnZ: undefined }, field: 'spawnZ' },
+        { options: { chunkSource: undefined }, field: 'chunkSource' },
+        { options: { yawRadians: undefined }, field: 'yawRadians' },
+        { options: { pitchRadians: undefined }, field: 'pitchRadians' },
+        { options: { dimension: undefined }, field: 'dimension' },
+        { options: { inventory: undefined }, field: 'inventory' },
+        { options: { vitals: undefined }, field: 'vitals' },
       ]
-      for (const options of generatedOptions) {
+      for (const { options, field } of generatedOptions) {
         const result = yield* Effect.result(makeGeneratedWorld(options as never))
         expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({ _tag: 'WorldInputFailure', field, reason: 'undefined' })
+        }
+      }
+    }),
+  )
+
+  it.effect('returns typed failures for invalid generated seed and spawn coordinates', () =>
+    Effect.gen(function* () {
+      const cases = [
+        { options: { seed: Number.NaN }, field: 'seed' },
+        { options: { spawnX: Number.POSITIVE_INFINITY }, field: 'spawnX' },
+        { options: { spawnZ: Number.NaN }, field: 'spawnZ' },
+      ]
+      for (const { options, field } of cases) {
+        const result = yield* Effect.result(makeGeneratedWorld(options as never))
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({ _tag: 'WorldInputFailure', field, reason: 'invalid' })
+        }
       }
     }),
   )

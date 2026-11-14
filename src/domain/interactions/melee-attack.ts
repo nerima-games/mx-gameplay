@@ -201,6 +201,11 @@ export type MeleeAttackResult =
 
 type MeleeTargetMatch = Readonly<{ entity: Entity<MobBehaviour>; target: ShotHit }>
 
+export type MeleeTargetInputFailure = Readonly<{
+  _tag: 'InvalidMeleeTargetInput'
+  field: 'hitDistance'
+}>
+
 /**
  * Kernel groups all 81 mob IDs from `allay` through `wither` before projectiles.
  * Players, projectiles, vehicles, display/marker, and miscellaneous entities
@@ -215,9 +220,11 @@ const MELEE_TARGET_MOB_KINDS = new Set<string>(
 const meleeTargetMatch = (
   candidates: ReadonlyArray<Entity<MobBehaviour>>,
   request: MeleeAttackRequest,
-): MeleeTargetMatch | undefined => {
-  if (request.hitDistance !== undefined && (!Number.isFinite(request.hitDistance) || request.hitDistance < 0)) {
-    return undefined
+): Result.Result<MeleeTargetMatch | undefined, MeleeTargetInputFailure> => {
+  const hasHitDistance = Object.hasOwn(request, 'hitDistance')
+  const hitDistance = hasHitDistance ? request.hitDistance : undefined
+  if (hasHitDistance && (typeof hitDistance !== 'number' || !Number.isFinite(hitDistance) || hitDistance < 0)) {
+    return Result.fail({ _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' })
   }
 
   const match = shotTargetWithCandidate(
@@ -226,23 +233,24 @@ const meleeTargetMatch = (
     request.direction,
     request.reach,
   )
-  if (match === undefined) return undefined
-  if (request.hitDistance !== undefined && match.hit.distance >= request.hitDistance) return undefined
-  return { entity: match.candidate, target: match.hit }
+  if (match === undefined) return Result.succeed(undefined)
+  if (hitDistance !== undefined && match.hit.distance >= hitDistance) return Result.succeed(undefined)
+  return Result.succeed({ entity: match.candidate, target: match.hit })
 }
 
 /** Returns the nearest mob target only when it is closer than the aimed block. */
 export const meleeTarget = (
   candidates: ReadonlyArray<Entity<MobBehaviour>>,
   request: MeleeAttackRequest,
-): ShotHit | undefined => meleeTargetMatch(candidates, request)?.target
+): Result.Result<ShotHit | undefined, MeleeTargetInputFailure> =>
+  Result.map(meleeTargetMatch(candidates, request), (match) => match?.target)
 
 /** Compose helper: returns a melee target only when it is closer than the aimed block. */
 export const meleeTargetBeforeBlock = (
   candidates: ReadonlyArray<Entity<MobBehaviour>>,
   request: Omit<MeleeAttackRequest, 'hitDistance'>,
   blockDistance: number | undefined,
-): ShotHit | undefined =>
+): Result.Result<ShotHit | undefined, MeleeTargetInputFailure> =>
   meleeTarget(candidates, {
     ...request,
     ...(blockDistance === undefined ? {} : { hitDistance: blockDistance }),
@@ -282,6 +290,7 @@ export type MeleeAttackPreparationError =
   | 'invalid-attack-timing'
   | 'target-invulnerable'
   | 'no-target'
+  | MeleeTargetInputFailure
 
 /** Prepare a C2 melee hit from the server pose, entity roster, inventory item, and world ray. */
 export const prepareMeleeAttack = (
@@ -339,6 +348,12 @@ export const prepareMeleeAttack = (
 
   const eyeY = pose.feetPosition.y + EYE_LEVEL_OFFSET
 
+  const hasBlockDistance = Object.hasOwn(input, 'blockDistance')
+  const blockDistance = input.blockDistance
+  if (hasBlockDistance && blockDistance === undefined) {
+    return Result.fail({ _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' })
+  }
+
   const origin = position(
     PositionAxis(pose.feetPosition.x),
     PositionAxis(eyeY),
@@ -354,9 +369,10 @@ export const prepareMeleeAttack = (
     direction,
     reach: DEFAULT_MELEE_REACH,
     damage: attackDamage,
-    ...(input.blockDistance === undefined ? {} : { hitDistance: input.blockDistance }),
+    ...(hasBlockDistance && blockDistance !== undefined ? { hitDistance: blockDistance } : {}),
   })
-  if (match === undefined) return Result.fail('no-target')
+  if (Result.isFailure(match)) return Result.fail(match.failure)
+  if (match.success === undefined) return Result.fail('no-target')
 
   const invulnerability = resolveDamageWithInvulnerability({
     tick: tick.success,
@@ -368,12 +384,12 @@ export const prepareMeleeAttack = (
   const decodedEvent = Schema.decodeUnknownResult(DomainEventSchema)({
     _tag: 'EntityDamaged',
     tick: tick.success,
-    entity: match.target.id,
+    entity: match.success.target.id,
     position: {
       dimension: dimension.success,
-      x: match.entity.feetPosition.x,
-      y: match.entity.feetPosition.y,
-      z: match.entity.feetPosition.z,
+      x: match.success.entity.feetPosition.x,
+      y: match.success.entity.feetPosition.y,
+      z: match.success.entity.feetPosition.z,
     },
     amount: invulnerability.success.appliedAmount,
     cause: 'mob',
@@ -387,7 +403,7 @@ export const prepareMeleeAttack = (
   )
   if (Result.isFailure(knockback)) return Result.fail('invalid-authoritative-state')
   return Result.succeed({
-    target: match.target,
+    target: match.success.target,
     event: decodedEvent.success,
     knockback: knockback.success,
     targetDamageState: invulnerability.success.state,

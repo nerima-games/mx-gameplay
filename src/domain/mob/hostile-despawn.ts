@@ -178,6 +178,9 @@ export const despawnVerdict = (
 ): Result.Result<DespawnVerdict, DespawnVerdictFailure> => {
   if (typeof candidate !== 'object' || candidate === null) return Result.fail(invalidCandidate('candidate'))
   if (typeof candidate.persistent !== 'boolean') return Result.fail(invalidCandidate('persistent'))
+  if (!Object.hasOwn(candidate, 'distanceToPlayerBlocks')) {
+    return Result.fail(invalidCandidate('distanceToPlayerBlocks'))
+  }
 
   const distance = candidate.distanceToPlayerBlocks
   if (distance !== undefined && (!Number.isFinite(distance) || distance < 0)) {

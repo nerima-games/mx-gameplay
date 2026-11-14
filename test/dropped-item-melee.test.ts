@@ -33,6 +33,7 @@ import {
   DroppedItemPickupResultSchema,
   type DroppedItemSpawn,
   droppedItemPickupOwnerRegistrations,
+  droppedItemPickupResultAfterCommit,
   planDroppedItemPickup,
   pickupDroppedItemsCommitted,
   pickupDroppedItems,
@@ -73,9 +74,9 @@ const makePickupCoordinator = (
 ) =>
   makeWorldCommitCoordinator({
     world: Schema.decodeUnknownSync(WorldIdSchema)('dropped-item-pickup-tests'),
-    owners: droppedItemPickupOwnerRegistrations(committedPickupOwners, playerStorage, {
+    owners: Result.getOrThrow(droppedItemPickupOwnerRegistrations(committedPickupOwners, playerStorage, {
       items: droppedItems,
-    }),
+    })),
   })
 
 describe('dropped item entities', () => {
@@ -732,6 +733,26 @@ describe('dropped item entities', () => {
     }),
   )
 
+  it.effect('returns a typed failure when the committed stack count contradicts its pickup plan', () =>
+    Effect.gen(function* () {
+      const plan = {
+        request: Schema.decodeUnknownSync(DroppedItemPickupRequestSchema)({
+          actor: pickupActor,
+          tick: 5,
+          position: origin,
+        }),
+        playerStorage: emptyPlayerStorage(),
+        droppedItems: { items: [] },
+        planned: [{ source: dropSource, item: 'gunpowder' as const, countBefore: 1 }],
+      }
+      const failure = yield* Effect.flip(droppedItemPickupResultAfterCommit(plan, {
+        items: [committedDroppedItem(2)],
+      }))
+
+      expect(failure).toBeInstanceOf(Error)
+    }),
+  )
+
   it.effect('does not commit or emit when the inventory accepts nothing', () =>
     Effect.gen(function* () {
       const emptyStorage = emptyPlayerStorage()
@@ -785,8 +806,17 @@ describe('dropped item entities', () => {
       const noPosition = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
         actor: pickupActor,
         tick: 8,
-        position: undefined,
       })
+      const explicitUndefinedPosition = yield* Effect.flip(pickupDroppedItemsCommitted(
+        coordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 8, position: undefined },
+      ))
+      const explicitUndefinedFrame = yield* Effect.flip(pickupDroppedItemsCommitted(
+        coordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 8, currentFrame: undefined },
+      ))
       const ineligible = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
         actor: pickupActor,
         tick: 8,
@@ -799,6 +829,14 @@ describe('dropped item entities', () => {
       )
 
       expect(noPosition).toStrictEqual([])
+      expect(explicitUndefinedPosition).toStrictEqual({
+        _tag: 'InvalidDroppedItemPickupField',
+        field: 'position',
+      })
+      expect(explicitUndefinedFrame).toStrictEqual({
+        _tag: 'InvalidDroppedItemPickupField',
+        field: 'currentFrame',
+      })
       expect(ineligible).toStrictEqual([])
       expect(snapshot.state.items.map(({ id }) => id)).toStrictEqual([
         dropSource,
@@ -1076,6 +1114,15 @@ describe('dropped item entities', () => {
         }],
       }),
     )).toBe(true)
+    for (const field of ['eligibleFromFrame', 'customName', 'enchantments'] as const) {
+      const item = committedDroppedItem(1)
+      expect(Result.isFailure(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        items: [{
+          ...item,
+          behaviour: { ...item.behaviour, [field]: undefined },
+        }],
+      }))).toBe(true)
+    }
   })
 
   it('rejects missing required owner and result fields and null for every public pickup schema', () => {
@@ -1164,14 +1211,16 @@ describe('melee targeting', () => {
         damage: 4,
       }
 
-      const target = meleeTarget(candidates, request)
-      expect(target?.id).toBe(passive.id)
-      if (target === undefined) return
+      const targetResult = meleeTarget(candidates, request)
+      expect(Result.isSuccess(targetResult) && targetResult.success?.id).toBe(passive.id)
+      if (Result.isFailure(targetResult) || targetResult.success === undefined) return
+      const target = targetResult.success
 
-      expect(meleeTargetBeforeBlock(candidates, request, target.distance - 0.01)).toBeUndefined()
-      expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toBeUndefined()
-      expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)?.id).toBe(passive.id)
-      expect(meleeTarget(candidates.filter(({ id }) => id !== passive.id), request)?.id).toBe(near.id)
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance - 0.01)).toStrictEqual(Result.succeed(undefined))
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toStrictEqual(Result.succeed(undefined))
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)).toStrictEqual(Result.succeed(target))
+      const nextTarget = meleeTarget(candidates.filter(({ id }) => id !== passive.id), request)
+      expect(Result.isSuccess(nextTarget) && nextTarget.success?.id).toBe(near.id)
     }),
   )
 
@@ -1192,8 +1241,9 @@ describe('melee targeting', () => {
         damage: 4,
       }
 
-      expect(meleeTarget(candidates, { ...request, hitDistance: Number.NaN })).toBeUndefined()
-      expect(meleeTarget(candidates, { ...request, hitDistance: -1 })).toBeUndefined()
+      const invalid = Result.fail({ _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' })
+      expect(meleeTarget(candidates, { ...request, hitDistance: Number.NaN })).toStrictEqual(invalid)
+      expect(meleeTarget(candidates, { ...request, hitDistance: -1 })).toStrictEqual(invalid)
     }),
   )
 })

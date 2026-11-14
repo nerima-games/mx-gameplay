@@ -28,18 +28,18 @@
  * failure mode this project's notes call the expensive one: it looks like a
  * design choice rather than a defect.
  */
-import { Effect, Option, Result } from 'effect'
+import { Brand, Effect, Option, Result } from 'effect'
 import {
   BlockId,
   WorldWriteBatchSchema,
   adjacentBlockPosition,
   blockIdOf,
-  blockTypeOfId,
   type BlockType,
   type Dimension,
   type ItemType,
 } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { entityWorldBlockTypeAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 import type {
   ReplicatedOwnerCandidate,
   WorldCommitCoordinatorApi,
@@ -108,11 +108,34 @@ export type PlantOutcome =
   | { readonly _tag: 'notASeed'; readonly held: ItemType }
   /** A seed, but this soil is not the one it grows on. */
   | { readonly _tag: 'wrongSoil'; readonly crop: BlockType; readonly needs: BlockType; readonly found: BlockType }
+  | { readonly _tag: 'worldUnavailable'; readonly cell: 'soil' | 'above' }
   /** The cell above the soil is occupied; a crop cannot share it. */
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
   | { readonly _tag: 'invalidPosition' }
   | { readonly _tag: 'commitContextMissing' }
   | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
+
+export type PlantWorldDataFailure = Readonly<{
+  _tag: 'PlantWorldDataFailure'
+  cell: 'soil' | 'above'
+  failure: Brand.BrandError | EntityWorldQueryFailure
+}>
+
+const blockTypeAt = (
+  cell: PlantWorldDataFailure['cell'],
+  position: BlockPosition,
+  blockId: number,
+): Result.Result<BlockType, PlantWorldDataFailure> => {
+  const decodedId = BlockId.result(blockId)
+  if (Result.isFailure(decodedId)) {
+    return Result.fail({ _tag: 'PlantWorldDataFailure', cell, failure: decodedId.failure })
+  }
+  const blockType = entityWorldBlockTypeAt(position, decodedId.success)
+  if (Result.isFailure(blockType)) {
+    return Result.fail({ _tag: 'PlantWorldDataFailure', cell, failure: blockType.failure })
+  }
+  return Result.succeed(blockType.success)
+}
 
 /** Where the crop goes: directly above the soil. */
 export const cropCellAbove = (soil: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
@@ -183,7 +206,7 @@ export const plantCrop = (
   port: PlantPort,
   request: PlantRequest,
   commitContext?: PlantCommitContext,
-): Effect.Effect<PlantOutcome> =>
+): Effect.Effect<PlantOutcome, PlantWorldDataFailure> =>
   Effect.gen(function* () {
     const abovePosition = Result.getOrUndefined(cropCellAbove(request.soil))
     if (abovePosition === undefined) {
@@ -206,18 +229,17 @@ export const plantCrop = (
     const soilId = yield* port.blockAt(request.soil)
     const aboveId = yield* port.blockAt(abovePosition)
 
-    const soilBlockId = soilId === undefined ? undefined : Result.getOrUndefined(BlockId.result(soilId))
-    const aboveBlockId = aboveId === undefined ? undefined : Result.getOrUndefined(BlockId.result(aboveId))
-    const soilBlock = soilBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(soilBlockId))
-    const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
+    const soilBlockResult = soilId === undefined
+      ? Result.succeed(undefined)
+      : blockTypeAt('soil', request.soil, soilId)
+    const aboveBlockResult = aboveId === undefined
+      ? Result.succeed(undefined)
+      : blockTypeAt('above', abovePosition, aboveId)
+    const soilBlock = yield* Effect.fromResult(soilBlockResult)
+    const aboveBlock = yield* Effect.fromResult(aboveBlockResult)
 
     if (soilBlock === undefined || aboveBlock === undefined) {
-      return {
-        _tag: 'wrongSoil' as const,
-        crop: heldCrop,
-        needs: SOIL_OF_CROP[heldCrop],
-        found: 'air' as BlockType,
-      }
+      return { _tag: 'worldUnavailable', cell: soilBlock === undefined ? 'soil' : 'above' }
     }
 
     const verdict = plantingVerdict(request, soilBlock, aboveBlock)

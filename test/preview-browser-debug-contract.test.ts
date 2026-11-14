@@ -15,7 +15,7 @@ import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
 import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import { makeVillager } from '../src/domain/villager-trade.js'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
-import { blockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
+import { blockLoot as resolveBlockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../src/domain/entities/mob-frame'
 import { END_ARRIVAL_ORIGIN } from '../src/domain/end-portal-travel'
 import { PORTAL_ACTIVATION_SECS } from '../src/domain/portal-dwell'
@@ -39,6 +39,7 @@ const POWERED_RAIL = Option.getOrThrow(blockIdOf('powered_rail'))
 const WATER = Option.getOrThrow(blockIdOf('water'))
 const DIRT_BLOCK = Option.getOrThrow(blockIdOf('dirt'))
 const END_PORTAL = Option.getOrThrow(blockIdOf('end_portal'))
+const blockLoot = (...args: Parameters<typeof resolveBlockLoot>) => Result.getOrThrow(resolveBlockLoot(...args))
 
 const contractActor = EntityId('browser-debug:contract-fisher')
 const contractBobber = Schema.decodeUnknownSync(ProjectileIdSchema)('browser-debug:contract-bobber')
