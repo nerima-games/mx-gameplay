@@ -99,7 +99,6 @@ import {
   type BlockPosition,
   type BlockPositionKey,
   type BlockAddress,
-  type BlockType,
   type DeltaTimeSecs,
   type GameModule,
   type ItemType,
