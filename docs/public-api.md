@@ -15,7 +15,7 @@
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
 
-`GameplayStageFaults` は stage が記録した異常を `drain` で回収する診断用 outbox である。`gameplayModule.layers` がサービスを提供し、直接 `makeGameplayStages` を使うホストはサービスを登録時に渡す。package は `gameplayModule` も `GameModule` として公開する。記録の形式は `GameplayStageWorldFaultSchema`、item-use の結果に含まれる失敗は `GameplayStageItemUseWorldFailureSchema` で検証できる。
+`GameplayStageFaults` は stage が記録した異常を `drain` で回収する診断用 outbox である。`gameplayModule.layers` がサービスを提供し、直接 `makeGameplayStages` を使うホストはサービスを登録時に渡す。package は `gameplayModule` も `GameModule` として公開する。fault と item-use failure は `drain` と結果の型付き union から参照できる。
 
 `index.ts` はほかの要素も export する。`makeProjectileRuntime` は、mc-sim の `ProjectileServiceApi` を使う gameplay の呼び出し側に、`launch` と `step` だけを型付きで提供する。projectile の状態、物理計算、commit、event は mc-sim が所有する。この adapter は domain 間の連携向けに見える export で、ホスト連携の契約には含めない。ほかの export の分類は §5 に記す。
 
@@ -88,7 +88,7 @@ export const gameplayModule: GameModule<GameplayStageFaults, never, never,
 （階層モデル、plan.md §2.2 が禁じている）。各依存は登録時に一度取得し、stage が共有する。
 
 `ChunkStore`、`EntityManager`、`WorldCommitCoordinator`、`DomainEventBus` の語彙はそれぞれの所有元から使う。
-`GameplayStageFaults` とその fault schema は本パッケージの API であり、`makeGameplayStages` の環境型や
+`GameplayStageFaults` とその fault の型は本パッケージの API であり、`makeGameplayStages` の環境型や
 `gameplayModule.layers` に現れる。API lock は export と supporting declaration の両方を追跡する。
 
 ### 2-3. `simModule` に型引数を生やすべきか —— **生やすべきでない**
@@ -267,7 +267,6 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` が `GameplayStageFaultsLayer` を提供する |
 | `GameplayStageFaults` / `GameplayStageFaultsApi` | **契約** | stage の world fault を operation・位置・理由ごとに集約する outbox。ホストは `drain` で faults と発生回数を受け取る |
 | `GameplayStageWorldFault` / `GameplayStageWorldFaultInput` / `GameplayStageWorldFaultReason` / `GameplayStageFaultOccurrenceCount` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageItemUseWorldFailure` | **契約** | fault と item-use failure の公開型 |
-| `GameplayStageFaultOccurrenceCountSchema` / `GameplayStageBlockTypeDecodeFailureSchema` / `GameplayStageMissingBlockReadFailureSchema` / `GameplayStageWorldFaultReasonSchema` / `GameplayStageWorldFaultInputSchema` / `GameplayStageWorldFaultSchema` / `GameplayStageItemUseWorldFailureSchema` | **契約** | host が fault と item-use failure を検証するための schema |
 | `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
 | `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キューと、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |

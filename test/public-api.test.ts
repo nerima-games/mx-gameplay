@@ -12,7 +12,6 @@
  * here keeps the barrel honest, not the API frozen.
  */
 import { describe, expect, it } from '@effect/vitest'
-import * as FastCheck from 'fast-check'
 import { Effect, Result, Schema } from 'effect'
 import { EntityId } from '@nerima-games/mc-sim'
 import * as gameplay from '../src/index'
@@ -30,20 +29,6 @@ const withoutKey = (record: Readonly<Record<string, unknown>>, key: string): Rec
   Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key))
 
 describe('public API surface', () => {
-  it.effect('decodes arbitrary stage world-fault inputs with the exported schemas', () =>
-    Effect.sync(() => {
-      for (const schema of [
-        gameplay.GameplayStageWorldFaultInputSchema,
-        gameplay.GameplayStageItemUseWorldFailureSchema,
-      ]) {
-        FastCheck.assert(FastCheck.property(FastCheck.anything(), (input: unknown) => {
-          const decoded = Schema.decodeUnknownResult(schema)(input)
-          return Result.isFailure(decoded) || Schema.is(schema)(decoded.success)
-        }))
-      }
-    }),
-  )
-
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
     Effect.sync(() => {
       const contract = [
@@ -70,12 +55,6 @@ describe('public API surface', () => {
         'GameplayFishingItemUseResultSchema',
         'GameplayStageFaults',
         'GameplayStageFaultsLayer',
-        'GameplayStageBlockTypeDecodeFailureSchema',
-        'GameplayStageMissingBlockReadFailureSchema',
-        'GameplayStageWorldFaultReasonSchema',
-        'GameplayStageWorldFaultInputSchema',
-        'GameplayStageWorldFaultSchema',
-        'GameplayStageItemUseWorldFailureSchema',
         'requestCollectBrewingBottle',
         'setPlayerDead',
         'setPortalCandidates',
