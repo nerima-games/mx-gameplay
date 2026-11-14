@@ -21,11 +21,13 @@ import {
   drainPortalTravels,
   gameplayStages,
   makeGameplayFrameState,
+  requestTargetedPrimaryAttack,
+  resolveTargetedPrimaryAttack,
 } from '../src/stages/registration'
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
-import { recordGameplayEntityStageFault } from '../src/stages/registration-core'
+import { recordGameplayEntityStageFault, type TargetedPrimaryAttackOptions } from '../src/stages/registration-core'
 import type { GameplayOwnerInitialState } from '../src/stages/gameplay-owner-registrations'
 import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -78,6 +80,43 @@ const sameCell = (left: BlockPosition, right: BlockPosition): boolean =>
 const unknownBlockId = BlockId(65_535)
 
 describe('registration-core typed world faults', () => {
+  for (const field of ['blockReach', 'meleeReach', 'meleeDamage'] as const) {
+    for (const value of [undefined, null]) {
+      it.effect(`rejects explicitly ${String(value)} ${field} without enqueuing a primary attack`, () =>
+        Effect.gen(function* () {
+          const harness = yield* makeHarness(world([]))
+          const targeting = {
+            coordinator: harness.commit.coordinator,
+            playerOwnerId: harness.commit.playerOwnerId,
+            entitiesOwnerId: harness.commit.entitiesOwnerId!,
+          }
+          const options = { [field]: value } as unknown as TargetedPrimaryAttackOptions
+          const resolved = yield* Effect.flip(resolveTargetedPrimaryAttack(harness.store.api, targeting, options))
+          const requested = yield* Effect.flip(requestTargetedPrimaryAttack(harness.state, harness.store.api, targeting, options))
+
+          expect(resolved._tag).toBe('SchemaError')
+          expect(requested._tag).toBe('SchemaError')
+          expect(yield* Ref.get(harness.state.pendingBreaks)).toStrictEqual([])
+          expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toStrictEqual([])
+          expect(yield* harness.commit.coordinator.revision).toBe(0)
+        }),
+      )
+    }
+  }
+
+  it.effect('uses primary attack defaults only when numeric options are omitted', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]))
+      const targeting = {
+        coordinator: harness.commit.coordinator,
+        playerOwnerId: harness.commit.playerOwnerId,
+        entitiesOwnerId: harness.commit.entitiesOwnerId!,
+      }
+      expect(yield* resolveTargetedPrimaryAttack(harness.store.api, targeting)).toStrictEqual({ _tag: 'None' })
+      expect(yield* requestTargetedPrimaryAttack(harness.state, harness.store.api, targeting, {})).toStrictEqual({ _tag: 'None' })
+    }),
+  )
+
   it.effect('keeps registry faults with different inner reasons distinct', () =>
     Effect.gen(function* () {
       const cell = blockPosition(0, 64, 0)
