@@ -3283,8 +3283,10 @@ export const applyStatusEffectInstantEffects = (
   effects: ReadonlyArray<StatusEffectInstantEffect>,
   damageMultiplier: DamageTakenMultiplier = statusEffectModifiers({ effects: [] }).damageTakenMultiplier,
 ): Result.Result<Vitals, never> => {
-  // Bounded amplifiers and the bounded damage multiplier keep these quantities
-  // finite and within their constructors' accepted domains.
+  // Bounded amplifiers keep these quantities finite. The damage multiplier is
+  // in [0, 1] and reaches 0 at Resistance V, which absorbs Instant Damage
+  // entirely; DamageAmount accepts only positive values, so that case applies
+  // no damage instead of constructing a zero amount.
   let next = vitals
   for (const effect of effects) {
     const level = effect.amplifier + 1
@@ -3292,12 +3294,15 @@ export const applyStatusEffectInstantEffects = (
       const amount = HealthAmount.result(4 * 2 ** effect.amplifier)
       next = healVitals(next, Result.getOrThrow(amount))
     } else if (effect.type === 'instant_damage') {
-      const amount = DamageAmount.result(6 * 2 ** effect.amplifier * damageMultiplier)
-      const cause = DamageCause.result('generic')
-      next = applyVitalsDamage(next, {
-        amount: Result.getOrThrow(amount),
-        cause: Result.getOrThrow(cause),
-      })
+      const damage = 6 * 2 ** effect.amplifier * damageMultiplier
+      if (damage > 0) {
+        const amount = DamageAmount.result(damage)
+        const cause = DamageCause.result('generic')
+        next = applyVitalsDamage(next, {
+          amount: Result.getOrThrow(amount),
+          cause: Result.getOrThrow(cause),
+        })
+      }
     } else {
       const nutrition = FoodNutrition.result(2 * level)
       const saturation = SaturationModifier.result(1)
@@ -3433,7 +3438,15 @@ const stepStatusEffects = (
       applied = outcome.state
       instantEffects.push(...outcome.instantEffects)
     }
-    const tick = tickStatusEffects(applied, dt)
+    const ticked = tickStatusEffects(applied, dt)
+    if (Result.isFailure(ticked)) {
+      yield* recordGameplayStageFailureDeduplicated(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing',
+        error: { _tag: 'GameplayStageExecutionFailure', cause: ticked.failure },
+      })
+      return
+    }
+    const tick = ticked.success
     const status = tick.state
     const changes: Array<ReplicatedOwnerCandidate> = [{
       ownerId: commit.statusEffectsOwnerId,

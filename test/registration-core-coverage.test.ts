@@ -581,6 +581,40 @@ describe('registration-core public paths omitted from focused coverage', () => {
     }),
   )
 
+  // Java Edition Instant Damage I deals 6 points, and each Resistance level
+  // removes 20% of incoming damage, so Resistance V absorbs it completely.
+  // https://minecraft.wiki/w/Instant_Damage
+  // https://minecraft.wiki/w/Resistance
+  for (const scenario of [
+    { resistanceLevel: 5, expectedDamage: 0 },
+    { resistanceLevel: 4, expectedDamage: 6 * (1 - 0.2 * 4) },
+  ] as const) {
+    it.effect(`applies Instant Damage I under Resistance ${scenario.resistanceLevel} through the status stage`, () =>
+      Effect.gen(function* () {
+        const startingVitals = { ...SPAWN_VITALS, healthPoints: EntityHealthPoints(10) }
+        const harness = yield* makeHarness(world([]), true, { vitals: startingVitals })
+        const commit = harness.commit
+        if (commit?.vitalsOwnerId === undefined || commit.statusEffectsOwnerId === undefined) {
+          throw new Error('status-effect and vitals owners were not registered')
+        }
+
+        yield* requestStatusEffect(harness.state, {
+          type: 'resistance', durationSecs: 5, amplifier: scenario.resistanceLevel - 1,
+        })
+        yield* requestStatusEffect(harness.state, { type: 'instant_damage', durationSecs: 0 })
+        yield* runInteractions(harness.interactions, 0)
+
+        const vitalsAfter = yield* commit.coordinator.snapshot(
+          GAMEPLAY_VITALS_OWNER_ID,
+          ExperienceOrbVitalsOwnerSnapshotSchema,
+        )
+        expect(vitalsAfter.state.vitals.healthPoints).toBeCloseTo(10 - scenario.expectedDamage, 12)
+        expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([])
+        expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      }),
+    )
+  }
+
   it.effect('rejects an amplifier outside the status application schema before queueing', () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness(world([]), true)
@@ -689,6 +723,35 @@ describe('registration-core public paths omitted from focused coverage', () => {
       expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
         { _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing' },
       ])
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
+    }),
+  )
+
+  it.effect('records a typed tick fault and keeps the owner unchanged for a bypassed non-finite delta', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const commit = harness.commit
+      if (commit?.statusEffectsOwnerId === undefined) {
+        throw new Error('status-effect owner was not registered')
+      }
+      const before = yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)
+
+      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 1 })
+      yield* harness.interactions.run(Number.NaN as unknown as DeltaTimeSecsValue).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Brewing',
+        error: {
+          _tag: 'GameplayStageExecutionFailure',
+          cause: { _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' },
+        },
+      }))
+      expect(yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema))
+        .toStrictEqual(before)
       expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
     }),
   )
