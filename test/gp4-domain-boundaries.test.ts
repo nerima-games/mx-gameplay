@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref, Result } from 'effect'
-import { BlockAxis, DeltaTimeSecs, PositionAxis, blockPosition, position } from '@nerima-games/mc-kernel'
+import { BlockAxis, DeltaTimeSecs, PositionAxis, blockPosition, position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { Position } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import { resolveBedSleep } from '../src/domain/bed-sleep'
@@ -34,7 +34,7 @@ import { makeTimeWeatherStage } from '../src/stages/time-weather-stage'
 import { makeGameplayFrameState, type GameplayStageContext } from '../src/stages/registration-core'
 import { FrameServicesLayer } from './support/frame-services'
 
-const origin = position(PositionAxis(0), PositionAxis(64), PositionAxis(0))
+const origin = kernelPosition(PositionAxis(0), PositionAxis(64), PositionAxis(0))
 
 describe('persisted gameplay input boundaries', () => {
   it('rejects an unreadable sleep clock rather than accepting or refusing as daytime', () => {
