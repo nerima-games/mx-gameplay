@@ -50,14 +50,14 @@ describe('bed sleep', () => {
       dimension: 'overworld',
       timeOfDay: 0.9,
       weather: 'clear',
-    })).toStrictEqual({
+    })).toStrictEqual(Result.succeed({
       _tag: 'SleepAccepted',
       morningTimeOfDay: 0.95,
       respawnLocation: {
         dimension: 'overworld',
         position: { x: 5, y: 65, z: -3 },
       },
-    })
+    }))
   })
 
   it('accepts thunder during daytime but rejects ordinary daytime weather', () => {
@@ -68,11 +68,11 @@ describe('bed sleep', () => {
       timeOfDay: 0.5,
     }
 
-    expect(resolveBedSleep({ ...common, weather: 'thunder' })._tag).toBe('SleepAccepted')
-    expect(resolveBedSleep({ ...common, weather: 'rain' })).toStrictEqual({
+    expect(Result.getOrThrow(resolveBedSleep({ ...common, weather: 'thunder' }))._tag).toBe('SleepAccepted')
+    expect(resolveBedSleep({ ...common, weather: 'rain' })).toStrictEqual(Result.succeed({
       _tag: 'SleepRejected',
       reason: 'not-night-or-thunder',
-    })
+    }))
   })
 
   it('rejects danger before considering otherwise valid sleep conditions', () => {
@@ -82,7 +82,7 @@ describe('bed sleep', () => {
       dimension: 'overworld',
       timeOfDay: 0,
       weather: 'thunder',
-    })).toStrictEqual({ _tag: 'SleepRejected', reason: 'danger-nearby' })
+    })).toStrictEqual(Result.succeed({ _tag: 'SleepRejected', reason: 'danger-nearby' }))
   })
 
   it('rejects every non-overworld dimension before any other condition', () => {
@@ -93,7 +93,7 @@ describe('bed sleep', () => {
         dimension,
         timeOfDay: 0,
         weather: 'thunder',
-      })).toStrictEqual({ _tag: 'SleepRejected', reason: 'wrong-dimension' })
+      })).toStrictEqual(Result.succeed({ _tag: 'SleepRejected', reason: 'wrong-dimension' }))
     }
   })
 

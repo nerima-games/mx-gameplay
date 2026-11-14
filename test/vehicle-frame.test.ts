@@ -4,7 +4,7 @@ import * as FastCheck from 'fast-check'
 import { BlockId, blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import { advanceVehicles } from '../src/domain/vehicle/vehicle-frame'
+import { advanceVehicles, type VehicleControlInput } from '../src/domain/vehicle/vehicle-frame'
 
 const AIR = Option.getOrThrow(blockIdOf('air'))
 
@@ -144,6 +144,98 @@ describe('vehicle frame', () => {
 
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: -0.009000000000000001 })
     expect(next?.['occupant']).toBe('player:local')
+  })
+
+  it('returns typed failures for malformed host boat controls and continues other vehicles', async () => {
+    const badThrottle = {
+      id: VehicleId('v:bad-throttle'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    const badSteering = {
+      ...badThrottle,
+      id: VehicleId('v:bad-steering'),
+      position: { x: 10, y: 64, z: 0 },
+    }
+    const undefinedThrottle = {
+      ...badThrottle,
+      id: VehicleId('v:undefined-throttle'),
+      position: { x: 20, y: 64, z: 0 },
+    }
+    const good = {
+      ...badThrottle,
+      id: VehicleId('v:good-controls'),
+      position: { x: 30, y: 64, z: 0 },
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([badThrottle, badSteering, undefinedThrottle, good]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    const failures = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: (vehicle) => vehicle.id === badThrottle.id
+        ? { throttle: Number.NaN, steering: 0 }
+        : vehicle.id === badSteering.id
+          ? { throttle: 0, steering: Number.POSITIVE_INFINITY }
+          : vehicle.id === undefinedThrottle.id
+            ? { throttle: undefined, steering: 0 } as unknown as VehicleControlInput
+          : { throttle: 1, steering: 0 },
+    }))
+
+    expect(failures).toMatchObject([
+      { _tag: 'VehicleMotionFailure', vehicleId: badThrottle.id, failure: { _tag: 'InvalidBoatControl', field: 'throttle' } },
+      { _tag: 'VehicleMotionFailure', vehicleId: badSteering.id, failure: { _tag: 'InvalidBoatControl', field: 'steering' } },
+      { _tag: 'VehicleMotionFailure', vehicleId: undefinedThrottle.id, failure: { _tag: 'InvalidBoatControl', field: 'throttle' } },
+    ])
+    expect(updated).toStrictEqual([good.id])
+  })
+
+  it('rejects an explicitly undefined controls callback while preserving the omitted callback default', async () => {
+    const vehicle = {
+      id: VehicleId('v:explicit-undefined-controls'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    const explicitUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: undefined,
+    } as unknown as Parameters<typeof advanceVehicles>[3]))
+    expect(explicitUndefined).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: {
+      _tag: 'InvalidBoatControl', field: 'controls',
+    } }])
+    expect(updated).toStrictEqual([])
+
+    const callbackReturnsUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: () => undefined,
+    } as unknown as Parameters<typeof advanceVehicles>[3]))
+    expect(callbackReturnsUndefined).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: {
+      _tag: 'InvalidBoatControl', field: 'controls',
+    } }])
+    expect(updated).toStrictEqual([])
+
+    const omittedCallback = await Effect.runPromise(advanceVehicles(store, service, 0.05))
+    expect(omittedCallback).toStrictEqual([])
+    expect(updated).toStrictEqual([vehicle.id])
   })
 
   it('does not treat an unloaded cell as water for boat movement', async () => {
@@ -385,7 +477,7 @@ describe('vehicle frame', () => {
     })
   })
 
-  it('reads track power for both the free step and the collision-resolved re-step', async () => {
+  it('samples powered track state once and reuses it for collision resolution', async () => {
     const vehicle = {
       id: VehicleId('v:powered'),
       type: 'minecart' as const,
@@ -419,13 +511,12 @@ describe('vehicle frame', () => {
       },
     }))
 
-    // Queried once building the track for the initial, uncollided step and once
-    // more building the track the collision forces `stepVehicle` to re-run with.
-    expect(poweredQueries).toBe(2)
+    // Track is built once and reused when the collision resolves the step.
+    expect(poweredQueries).toBe(1)
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
   })
 
-  it('falls back to unpowered on both steps when no isPoweredRailAt hook is provided', async () => {
+  it('falls back to unpowered when no isPoweredRailAt hook is provided', async () => {
     const vehicle = {
       id: VehicleId('v:no-power-hook'),
       type: 'minecart' as const,

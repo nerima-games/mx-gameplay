@@ -90,7 +90,9 @@ describe('player damage properties', () => {
       MAX_HEALTH_POINTS + Number.EPSILON * MAX_HEALTH_POINTS,
     ]) {
       const result = deathMessageResult({ healthPoints, lastDeathCause: undefined })
-      expect(Result.isFailure(result)).toBe(healthPoints === 0 || healthPoints > MAX_HEALTH_POINTS)
+      expect(Result.isFailure(result)).toBe(
+        healthPoints < 0 || healthPoints === 0 || healthPoints > MAX_HEALTH_POINTS,
+      )
     }
     FastCheck.assert(FastCheck.property(anyNumber, (simulationElapsedSecs) => {
       const result = resolveEnvironmentalContactDamageResult(
