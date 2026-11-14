@@ -27,6 +27,7 @@ import {
   recordGameplayStageFailureDeduplicated,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
+  type GameplayStageOperationFailure,
   rollAt,
   isSuccessfulBlockUse,
   planFurnaceAdvance,
@@ -63,7 +64,7 @@ import {
   type StorageLocation,
   type EquipmentItem,
 } from '@nerima-games/mc-sim'
-import type { BlockPosition, DeltaTimeSecs, Dimension } from '@nerima-games/mc-kernel'
+import type { BlockPosition, DeltaTimeSecs, Dimension, ProjectileId } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
@@ -176,7 +177,9 @@ import { plantingVerdict, cropCellAbove } from '../domain/interactions/plant-cro
 import { TILLED_BLOCK, tillingVerdict, cellAbove } from '../domain/interactions/till-soil.js'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../domain/entities/xp-orb.js'
 import {
+  GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
   GameplayEntityRosterSchema,
+  GameplayFishingEnchantmentsSnapshotSchema,
   GameplayTntSourcesSnapshotSchema,
   GameplayVillagerTradeSnapshotSchema,
   restoreGameplayEntityMetadata,
@@ -213,6 +216,10 @@ import {
   fishingLootSampleWithLuckOfTheSea,
   fishingWaitTicksWithLure,
 } from '../domain/interactions/fishing-enchantment.js'
+import {
+  fishingOpenWaterAt,
+  type FishingOpenWaterReadFailure,
+} from '../domain/interactions/fishing-open-water.js'
 import {
   MeleeCooldownTicksSchema,
   prepareMeleeAttack,
@@ -308,6 +315,66 @@ const validatedFishingRodAt = (
 // Kernel and docs/responsibility.md define no reel wear amount; mirror `wearRod` from src/domain/interactions/fishing.ts.
 const damageValidatedFishingRodAt = (rod: ValidatedFishingRodLocation): PlayerStorage =>
   damagePlayerStorageAt(rod.storage, rod.location, FISHING_ROD_REEL_WEAR).storage
+
+type FishingEnchantmentRebuildFailure = Readonly<{
+  _tag: 'FishingEnchantmentRebuildFailure'
+  actor: EntityId
+  reason: 'RodNotHeld' | 'BobberUnavailable' | 'OpenWaterUnreadable'
+  openWater?: FishingOpenWaterReadFailure
+}>
+
+/**
+ * Recovers cast-time modifiers for an active cast that has no record, e.g. one
+ * restored from a save written before the record owner existed or cast through
+ * `castFishingWithService`. Enchantments come from the rod the request holds and
+ * open water from the world around the bobber now; nothing is assumed.
+ */
+const rebuildFishingEnchantments = (
+  store: GameplayStageContext['store'],
+  context: NonNullable<GameplayStageContext['commit']>,
+  request: FishingItemUseRequest,
+  bobber: ProjectileId,
+  heldRod: Pick<EquipmentItem, 'components'> | undefined,
+): Effect.Effect<FishingEnchantments, GameplayStageOperationFailure> =>
+  Effect.gen(function* () {
+    const rebuildFailure = (
+      reason: FishingEnchantmentRebuildFailure['reason'],
+      openWater?: FishingOpenWaterReadFailure,
+    ): GameplayStageOperationFailure => ({
+      _tag: 'Failed',
+      operation: 'CandidateBuild',
+      subject: 'Fishing',
+      requestId: request.requestId,
+      error: {
+        _tag: 'GameplayStageExecutionFailure',
+        cause: {
+          _tag: 'FishingEnchantmentRebuildFailure',
+          actor: request.actor,
+          reason,
+          ...(openWater === undefined ? {} : { openWater }),
+        } satisfies FishingEnchantmentRebuildFailure,
+      },
+    })
+    if (heldRod === undefined) return yield* Effect.fail(rebuildFailure('RodNotHeld'))
+    const projectileOwnerId = context.projectileOwnerId ?? PROJECTILE_REPLICATED_OWNER_ID
+    const projectiles = yield* Effect.result(context.coordinator.observe(
+      projectileOwnerId,
+      ProjectileServiceSnapshotSchema,
+      [],
+    ))
+    if (Result.isFailure(projectiles)) {
+      return yield* Effect.fail<GameplayStageOperationFailure>({
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: projectiles.failure,
+      })
+    }
+    const record = projectiles.success.state.projectiles.find((projectile) => projectile.id === bobber)
+    if (record === undefined) return yield* Effect.fail(rebuildFailure('BobberUnavailable'))
+    const openWater = yield* Effect.result(fishingOpenWaterAt(store.getBlock, record.projectile.position))
+    if (Result.isFailure(openWater)) {
+      return yield* Effect.fail(rebuildFailure('OpenWaterUnreadable', openWater.failure))
+    }
+    return fishingEnchantmentsForRod(heldRod, openWater.success)
+  })
 
 type PlayerStorageCommitSnapshot = Readonly<{
   world: WorldCommitPlanFragment<unknown>['world']
@@ -1088,7 +1155,7 @@ const processFishingItemUse = (
   state: GameplayStageContext['state'],
   context: GameplayStageContext['commit'],
   request: FishingItemUseRequest,
-  enchantmentsByActor: Map<EntityId, FishingEnchantments>,
+  store: GameplayStageContext['store'],
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (context === undefined) {
@@ -1126,6 +1193,30 @@ const processFishingItemUse = (
       expectedDimensions: [],
       state: observed.success.state,
     }
+    const enchantmentsOwnerId = context.fishingEnchantmentsOwnerId ?? GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID
+    const enchantmentsObserved = yield* Effect.result(context.coordinator.observe(
+      enchantmentsOwnerId,
+      GameplayFishingEnchantmentsSnapshotSchema,
+      [],
+    ))
+    if (Result.isFailure(enchantmentsObserved)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: enchantmentsObserved.failure,
+      })
+      return
+    }
+    const enchantmentRecords = enchantmentsObserved.success.state.records
+    const recordedEnchantments = enchantmentRecords.find((record) => record.actor === request.actor)
+    const enchantmentsPlan = (
+      records: typeof enchantmentRecords,
+    ): WorldCommitPlanFragment<unknown> => ({
+      world: enchantmentsObserved.success.world,
+      expectedRevision: enchantmentsObserved.success.revision,
+      expectedDimensions: [],
+      changes: [{ ownerId: enchantmentsOwnerId, state: { records } }],
+      result: undefined,
+      postCommitEvents: [],
+    })
 
     let plans: Array<WorldCommitPlanFragment<unknown>> = []
     let outcome: import('@nerima-games/mc-sim').FishingProgressOutcome |
@@ -1134,7 +1225,7 @@ const processFishingItemUse = (
       undefined
     let nextSeed: number | undefined
     let projectilePlan: WorldCommitPlanFragment<unknown> | undefined
-    let reelEnchantments = enchantmentsByActor.get(request.actor) ?? fishingEnchantmentsForRod(null, true)
+    let heldRod: Pick<EquipmentItem, 'components'> | undefined
     const activeRod = snapshot.state.rods.find((rod) => rod.actor === request.actor)
     let removeBobber: import('@nerima-games/mc-kernel').ProjectileId | undefined
     let playerStoragePlan: PlayerStorageCommitSnapshot | undefined
@@ -1161,13 +1252,32 @@ const processFishingItemUse = (
         yield* Ref.update(state.itemUseResults, (results) => [...results, result])
         return
       }
-      reelEnchantments = fishingEnchantmentsForRod(rod.rod, reelEnchantments.openWater)
+      heldRod = rod.rod
       playerStoragePlan = {
         world: storageObserved.success.world,
         expectedRevision: storageObserved.success.revision,
         expectedDimensions: [],
         state: damageValidatedFishingRodAt(rod),
       }
+    }
+    let enchantments: FishingEnchantments | undefined = recordedEnchantments
+    if (
+      enchantments === undefined &&
+      activeRod !== undefined &&
+      (request.action === 'AdvanceFishing' || request.action === 'ReelFishing')
+    ) {
+      const rebuilt = yield* Effect.result(rebuildFishingEnchantments(
+        store,
+        context,
+        request,
+        activeRod.bobber,
+        heldRod,
+      ))
+      if (Result.isFailure(rebuilt)) {
+        yield* recordGameplayStageFailureDeduplicated(state, rebuilt.failure)
+        return
+      }
+      enchantments = rebuilt.success
     }
     if (request.action === 'CastFishing') {
         const cast = yield* Effect.result(context.fishingService.planCast(snapshot, {
@@ -1233,6 +1343,10 @@ const processFishingItemUse = (
         }
         projectilePlan = projectileFragment
         plans.push(projectilePlan)
+        plans.push(enchantmentsPlan([
+          ...enchantmentRecords.filter((record) => record.actor !== request.actor),
+          { actor: request.actor, ...fishingEnchantmentsForRod(request.rod, request.environment.isOpenWater) },
+        ]))
     } else if (request.action === 'AdvanceFishing') {
         const requestedWaitTicks = Schema.decodeUnknownResult(FishingWaitTicksSchema)(request.waitTicks)
         if (Result.isFailure(requestedWaitTicks)) {
@@ -1241,10 +1355,10 @@ const processFishingItemUse = (
           })
           return
         }
-        const adjustedWaitTicks = fishingWaitTicksWithLure(
-          requestedWaitTicks.success,
-          enchantmentsByActor.get(request.actor)?.lureLevel ?? EnchantmentLevel(0),
-        )
+        // Without an active cast planAdvance rejects the request, so there is no wait to adjust.
+        const adjustedWaitTicks = enchantments === undefined
+          ? requestedWaitTicks.success
+          : fishingWaitTicksWithLure(requestedWaitTicks.success, enchantments.lureLevel)
         const intent = {
           actor: request.actor,
           elapsedTicks: request.elapsedTicks,
@@ -1279,13 +1393,16 @@ const processFishingItemUse = (
         const seed = yield* Ref.get(state.rollSeed)
         const batch = drawRolls(seed, 1)
         const baseSample = Schema.decodeUnknownSync(FishingLootSampleSchema)(rollAt(batch, 0))
-        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(
-          fishingLootSampleWithLuckOfTheSea(
-            baseSample,
-            reelEnchantments.luckOfTheSeaLevel,
-            reelEnchantments.openWater,
-          ),
-        )
+        // Without an active cast planReel rejects the request, so there is no sample to adjust.
+        const sample = enchantments === undefined
+          ? baseSample
+          : Schema.decodeUnknownSync(FishingLootSampleSchema)(
+            fishingLootSampleWithLuckOfTheSea(
+              baseSample,
+              enchantments.luckOfTheSeaLevel,
+              enchantments.openWater,
+            ),
+          )
         const intent = {
           actor: request.actor,
           tick,
@@ -1349,6 +1466,13 @@ const processFishingItemUse = (
         nextSeed = batch.seed
     }
 
+    const castEnds = request.action === 'CancelFishing' ||
+      request.action === 'ReelFishing' ||
+      (request.action === 'AdvanceFishing' && outcome?._tag === 'Cancelled')
+    if (castEnds && recordedEnchantments !== undefined) {
+      plans.push(enchantmentsPlan(enchantmentRecords.filter((record) => record.actor !== request.actor)))
+    }
+
     if (removeBobber !== undefined) {
       const projectileOwnerId = context.projectileOwnerId ?? PROJECTILE_REPLICATED_OWNER_ID
       const projectiles = yield* Effect.result(context.coordinator.observe(
@@ -1402,18 +1526,6 @@ const processFishingItemUse = (
       () => Effect.gen(function* () {
         if (nextSeed !== undefined) yield* Ref.set(state.rollSeed, nextSeed)
         yield* Ref.update(state.itemUseResults, (results) => [...results, result])
-        if (request.action === 'CastFishing') {
-          enchantmentsByActor.set(
-            request.actor,
-            fishingEnchantmentsForRod(request.rod, request.environment.isOpenWater),
-          )
-        } else if (
-          request.action === 'CancelFishing' ||
-          request.action === 'ReelFishing' ||
-          (request.action === 'AdvanceFishing' && outcome?._tag === 'Cancelled')
-        ) {
-          enchantmentsByActor.delete(request.actor)
-        }
       }),
       () => Ref.update(state.pendingItemUses, (pending) => [request, ...pending]),
     )
@@ -2693,7 +2805,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
   const { state, store, commit } = context
   const enchantmentTableMailbox = enchantmentTableMailboxFor(state)
   const enchantmentTableService = enchantmentTableServices.get(state)
-  const fishingEnchantmentsByActor = new Map<EntityId, FishingEnchantments>()
   return {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
@@ -4009,7 +4120,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break itemUseAction
               }
               else if (request.action === 'CastFishing' || request.action === 'AdvanceFishing' || request.action === 'CancelFishing' || request.action === 'ReelFishing') {
-                yield* processFishingItemUse(state, commit, request, fishingEnchantmentsByActor)
+                yield* processFishingItemUse(state, commit, request, store)
                 break itemUseAction
               }
               else if (request.action === 'CollectBrewingBottle') {

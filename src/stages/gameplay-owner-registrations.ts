@@ -38,8 +38,10 @@ import {
   ITEM_TYPES,
   SimulationTickSchema,
   type Dimension,
+  type EnchantmentLevel,
   type EntityId,
 } from '@nerima-games/mc-kernel'
+import { FISHING_MAX_ENCHANTMENT_LEVEL } from '../domain/interactions/fishing-enchantment.js'
 import {
   droppedItemOwnerRegistration,
   type DroppedItemOwnerSnapshot,
@@ -81,6 +83,8 @@ export const GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID: ReplicatedOwnerId = makeReplicat
 export const GAMEPLAY_BREWING_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-brewing')
 export const GAMEPLAY_VILLAGER_TRADES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-villager-trades')
 export const GAMEPLAY_FISHING_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-fishing')
+export const GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID: ReplicatedOwnerId =
+  makeReplicatedOwnerId('mx-gameplay-fishing-enchantments')
 export const GAMEPLAY_ENTITIES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-entities')
 export const GAMEPLAY_TNT_SOURCES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-tnt-sources')
 export const GAMEPLAY_STATUS_EFFECTS_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-status-effects')
@@ -225,6 +229,31 @@ export const GameplayTntSourcesSnapshotSchema: Schema.Codec<GameplayTntSourcesSn
     })),
   }))
 
+const FishingEnchantmentLevelSchema = Schema.Int
+  .check(Schema.isBetween({ minimum: 0, maximum: FISHING_MAX_ENCHANTMENT_LEVEL }))
+  .pipe(Schema.brand('EnchantmentLevel'))
+
+/** Cast-time fishing modifiers for one actor, kept until that cast is reeled or cancelled. */
+export type GameplayFishingEnchantmentRecord = Readonly<{
+  actor: EntityId
+  lureLevel: EnchantmentLevel
+  luckOfTheSeaLevel: EnchantmentLevel
+  openWater: boolean
+}>
+export type GameplayFishingEnchantmentsSnapshot = Readonly<{
+  records: ReadonlyArray<GameplayFishingEnchantmentRecord>
+}>
+export const GameplayFishingEnchantmentsSnapshotSchema: Schema.Codec<GameplayFishingEnchantmentsSnapshot, unknown> =
+  strictCodec(Schema.Struct({
+    records: Schema.Array(Schema.Struct({
+      actor: EntityIdSchema,
+      lureLevel: FishingEnchantmentLevelSchema,
+      luckOfTheSeaLevel: FishingEnchantmentLevelSchema,
+      openWater: Schema.Boolean,
+    })),
+  }).check(Schema.makeFilter((snapshot) =>
+    new Set(snapshot.records.map((record) => record.actor)).size === snapshot.records.length)))
+
 const positiveCount: Schema.Codec<number, number> = Schema.Int.check(Schema.isGreaterThan(0))
 
 export const GameplayVillagerTradeSnapshotSchema: Schema.Codec<VillagerTradeState, unknown> = Schema.Struct({
@@ -253,6 +282,7 @@ export type GameplayOwnerInitialState = Readonly<{
   brewing?: BrewingState
   villagerTrades?: VillagerTradeState
   fishing?: FishingState
+  fishingEnchantments?: GameplayFishingEnchantmentsSnapshot
   entities?: MobRoster
   tntSources?: GameplayTntSourcesSnapshot
   statusEffects?: StatusEffectState
@@ -307,6 +337,11 @@ export const gameplayOwnerRegistrations = (
   {
     ...fishingOwnerRegistration(GAMEPLAY_FISHING_OWNER_ID),
     initialState: initial.fishing ?? emptyFishingState(),
+  },
+  {
+    ownerId: GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
+    schema: GameplayFishingEnchantmentsSnapshotSchema,
+    initialState: initial.fishingEnchantments ?? { records: [] },
   },
   {
     ownerId: GAMEPLAY_ENTITIES_OWNER_ID,

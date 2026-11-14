@@ -121,6 +121,8 @@ import {
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GameplayEntityRosterSchema,
   GAMEPLAY_FISHING_OWNER_ID,
+  GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
+  GameplayFishingEnchantmentsSnapshotSchema,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
@@ -161,6 +163,12 @@ const FISHING_LAUNCH = {
 const fishingStateWithRod = (phase: 'cast' | 'bite' = 'cast') =>
   Schema.decodeUnknownSync(FishingStateSchema)({
     rods: [{ actor: FISHER, bobber: BOBBER, phase }],
+  })
+
+// The cast-time record a cast with an unenchanted rod in open water would have written.
+const unenchantedOpenWaterRecord = () =>
+  Schema.decodeUnknownSync(GameplayFishingEnchantmentsSnapshotSchema)({
+    records: [{ actor: FISHER, lureLevel: 0, luckOfTheSeaLevel: 0, openWater: true }],
   })
 
 const projectileStateWithBobber = () =>
@@ -266,6 +274,7 @@ const playerStorageWithKnockbackSword = (): PlayerStorage => {
 
 const makeHarness = (options: Readonly<{
   readonly fishing?: Schema.Schema.Type<typeof FishingStateSchema>
+  readonly fishingEnchantments?: GameplayOwnerInitialState['fishingEnchantments']
   readonly projectiles?: Schema.Schema.Type<typeof ProjectileServiceSnapshotSchema>
   readonly brewing?: Schema.Schema.Type<typeof BrewingServiceStateSchema>
   readonly playerStorage?: PlayerStorage
@@ -307,6 +316,7 @@ const makeHarness = (options: Readonly<{
   const registrations = gameplayOwnerRegistrations({
     playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
+    ...(options.fishingEnchantments === undefined ? {} : { fishingEnchantments: options.fishingEnchantments }),
     ...(options.projectiles === undefined ? {} : { projectiles: options.projectiles }),
     ...(options.brewing === undefined ? {} : { brewing: options.brewing }),
     ...(options.playerStorage === undefined ? {} : { playerStorage: options.playerStorage }),
@@ -619,6 +629,7 @@ describe('registered Fishing plans in the interactions stage', () => {
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_FISHING_OWNER_ID,
       PROJECTILE_REPLICATED_OWNER_ID,
+      GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
     ])
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
   })
@@ -669,6 +680,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('reports cancellation of an inactive actor as a plan failure without changing either owner', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
     }))
     const fishingBefore = await Effect.runPromise(harness.coordinator.snapshot(
@@ -704,6 +716,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('cancels an active cast after losing water and commits rod and bobber removal once', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
     }))
     const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
@@ -736,6 +749,7 @@ describe('registered Fishing plans in the interactions stage', () => {
     expect(harness.commitCalls()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_FISHING_OWNER_ID,
+      GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
       PROJECTILE_REPLICATED_OWNER_ID,
     ])
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
@@ -777,6 +791,7 @@ describe('registered Fishing plans in the interactions stage', () => {
     await Promise.all(scenarios.map(async (scenario) => {
       const harness = await Effect.runPromise(makeHarness({
         fishing: fishingStateWithRod(),
+        fishingEnchantments: unenchantedOpenWaterRecord(),
         projectiles: projectileStateWithBobber(),
       }))
       const projectileBefore = await Effect.runPromise(harness.coordinator.snapshot(
@@ -824,6 +839,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('commits an event-free fishing advance when no interaction event bus is registered', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
       omitInteractionEventBus: true,
     }))
@@ -856,6 +872,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('clears a cast when reeling before a bite without adding a catch to storage', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
     }))
     const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
@@ -888,6 +905,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('uses the registered projectile owner default for Cancel and commits the rod removal once', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
       omitProjectileOwnerId: true,
     }))
@@ -916,6 +934,7 @@ describe('registered Fishing plans in the interactions stage', () => {
     expect(harness.commitCalls()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_FISHING_OWNER_ID,
+      GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
       PROJECTILE_REPLICATED_OWNER_ID,
     ])
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
@@ -955,6 +974,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('requeues a caught Reel when the registered player inventory has no capacity', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod('bite'),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
       playerStorage: fullPlayerStorage(),
     }))
@@ -1001,6 +1021,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('reports the fishing service rejection when casting for an actor with an active rod', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
     }))
     const fishingBefore = await Effect.runPromise(harness.coordinator.snapshot(
@@ -1049,6 +1070,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('reels a catch into player storage and commits fishing, storage, and bobber removal once', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod('bite'),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
     }))
     const fishingBefore = await Effect.runPromise(harness.coordinator.snapshot(
@@ -1102,6 +1124,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('reports a caught Reel as unsupported when its required event bus is unavailable', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod('bite'),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
       omitInteractionEventBus: true,
     }))
@@ -1193,6 +1216,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('reports missing projectile registration for Cast and Reel without changing the active rod', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod(),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       omitProjectileOwnerId: true,
       omitProjectileRegistration: true,
     }))
@@ -1237,6 +1261,7 @@ describe('registered Fishing plans in the interactions stage', () => {
   it('does not reel a caught item when player storage owner observation fails', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod('bite'),
+      fishingEnchantments: unenchantedOpenWaterRecord(),
       projectiles: projectileStateWithBobber(),
       omitPlayerStorageRegistration: true,
     }))

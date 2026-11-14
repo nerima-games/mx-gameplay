@@ -229,6 +229,7 @@ import {
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   GameplayEntityRosterSchema,
+  GameplayFishingEnchantmentsSnapshotSchema,
   GameplayTntSourcesSnapshotSchema,
   gameplayOwnerRegistrations,
   type GameplayOwnerInitialState,
@@ -267,6 +268,11 @@ const fixtureFishingLaunch = {
 const fishingStateFor = (phase: 'cast' | 'bite'): FishingState =>
   Schema.decodeUnknownSync(FishingStateSchema)({
     rods: [{ actor: fixtureFishingActor, bobber: fixtureFishingBobber, phase }],
+  })
+// The cast-time record a cast with an unenchanted rod in open water would have written.
+const unenchantedOpenWaterRecordFor = (): NonNullable<GameplayOwnerInitialState['fishingEnchantments']> =>
+  Schema.decodeUnknownSync(GameplayFishingEnchantmentsSnapshotSchema)({
+    records: [{ actor: fixtureFishingActor, lureLevel: 0, luckOfTheSeaLevel: 0, openWater: true }],
   })
 const projectileStateFor = (bobber = fixtureFishingBobber): ProjectileServiceSnapshot =>
   Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
@@ -414,6 +420,7 @@ const builtStagesInWorld = (
     readonly tntOwnerId?: GameplayStageCommitServices['tntOwnerId'] | undefined
   } = {},
   includeCommit = true,
+  fishingEnchantments: GameplayOwnerInitialState['fishingEnchantments'] = undefined,
 ) =>
   Effect.gen(function* () {
     const store = yield* makeTransactionalChunkStoreDouble(initial, loadedChunks)
@@ -432,6 +439,7 @@ const builtStagesInWorld = (
         villagerTrades,
         entities,
         fishing,
+        ...(fishingEnchantments === undefined ? {} : { fishingEnchantments }),
         projectiles,
         ...(tnt === undefined ? {} : { tnt }),
       }),
@@ -5464,6 +5472,11 @@ describe('Fishing plan requests commit every gameplay owner change once', () => 
       undefined,
       action === 'CastFishing' ? emptyFishingState() : fishingStateFor(action === 'ReelFishing' ? 'bite' : 'cast'),
       action === 'CastFishing' ? { projectiles: [] } : projectileStateFor(),
+      undefined,
+      {},
+      {},
+      true,
+      action === 'CastFishing' ? undefined : unenchantedOpenWaterRecordFor(),
     ))
 
   const runInteractions = (stages: ReadonlyArray<StageRegistration>) => {

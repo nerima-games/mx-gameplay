@@ -11,6 +11,8 @@ import {
   blockIdOf,
   enchantmentsComponent,
   itemComponents,
+  type BlockId,
+  type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
@@ -71,7 +73,7 @@ import {
 import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import { SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
-import { emptyWorldStoreLayer, world } from './support/chunk-store-double.js'
+import { emptyWorldStoreLayer, WATER, world } from './support/chunk-store-double.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
 import {
@@ -96,6 +98,16 @@ const eventBus: DomainEventBusApi = {
   publish: () => Effect.void,
   events: Stream.empty,
 }
+
+const FISHING_OPEN_WATER_BOBBER = fixturePosition(8.5, 62.2, 8.5)
+
+/** Water at y 61..62 under air across the 5x4x5 region around FISHING_OPEN_WATER_BOBBER. */
+const fishingOpenWaterBlocks = (): ReadonlyArray<readonly [BlockPosition, BlockId]> =>
+  Array.from({ length: 25 }, (_, index) => [6 + Math.floor(index / 5), 6 + (index % 5)] as const)
+    .flatMap(([x, z]) => [
+      [blockPosition(x, 61, z), WATER] as const,
+      [blockPosition(x, 62, z), WATER] as const,
+    ])
 
 const productionWorld = Layer.provideMerge(
   gameplayCommitServicesLayer,
@@ -236,68 +248,80 @@ describe('production interactions-stage coverage', () => {
 
   it.effect('uses an inventory-held fishing rod for a production reel request', () =>
     Effect.gen(function* () {
-      const coordinator = yield* WorldCommitCoordinator
-      const state = yield* makeGameplayFrameStateForOwner({
-        coordinator,
-        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
-      })
-      const storage = yield* coordinator.snapshot(
-        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-        PlayerStorageSnapshotSchema,
+      // No cast-time record exists, so the reel rebuilds Luck of the Sea from the held rod and
+      // open water from the blocks around the bobber.
+      const transactionalStore = yield* makeTransactionalChunkStoreDouble(
+        world(fishingOpenWaterBlocks()),
+        ['0,0'],
       )
-      const enchantments = Result.getOrThrow(enchantmentsComponent({
-        'minecraft:lure': 1,
-        'minecraft:luck_of_the_sea': 3,
-      }))
-      const components = Result.getOrThrow(itemComponents('fishing_rod', { enchantments }))
-      const slots: Array<Slot> = [...storage.state.inventory.slots]
-      slots[0] = Result.getOrThrow(itemStack('fishing_rod', 1, { components }))
-      const storageWithRod = storageWithSlots(storage.state, slots)
-      const fishingCandidate = Schema.decodeUnknownSync(FishingStateSchema)({
-        rods: [{ actor: FISHING_ACTOR, bobber: FISHING_BOBBER, phase: 'bite' }],
-      })
-      const projectileCandidate = Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
-        projectiles: [{
-          id: FISHING_BOBBER,
-          dimension: FISHING_DIMENSION,
-          shooter: FISHING_ACTOR,
-          kind: 'projectile',
-          profile: SNOWBALL_PROFILE,
-          projectile: launchProjectile({ ...FISHING_LAUNCH, shooterId: FISHING_ACTOR }),
-        }],
-      })
-      yield* coordinator.commit({
-        expectedRevision: storage.revision,
-        expectedDimensions: [],
-        changes: [
-          { ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageWithRod },
-          { ownerId: GAMEPLAY_FISHING_OWNER_ID, state: fishingCandidate },
-          { ownerId: PROJECTILE_REPLICATED_OWNER_ID, state: projectileCandidate },
-        ],
-      })
-      const stages = yield* makeGameplayStagesWithState(state)
-      yield* Ref.set(state.rollSeed, 113_335)
+      yield* Effect.gen(function* () {
+        const coordinator = yield* WorldCommitCoordinator
+        const state = yield* makeGameplayFrameStateForOwner({
+          coordinator,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        })
+        const storage = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        const enchantments = Result.getOrThrow(enchantmentsComponent({
+          'minecraft:lure': 1,
+          'minecraft:luck_of_the_sea': 3,
+        }))
+        const components = Result.getOrThrow(itemComponents('fishing_rod', { enchantments }))
+        const slots: Array<Slot> = [...storage.state.inventory.slots]
+        slots[0] = Result.getOrThrow(itemStack('fishing_rod', 1, { components }))
+        const storageWithRod = storageWithSlots(storage.state, slots)
+        const fishingCandidate = Schema.decodeUnknownSync(FishingStateSchema)({
+          rods: [{ actor: FISHING_ACTOR, bobber: FISHING_BOBBER, phase: 'bite' }],
+        })
+        const projectileCandidate = Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
+          projectiles: [{
+            id: FISHING_BOBBER,
+            dimension: FISHING_DIMENSION,
+            shooter: FISHING_ACTOR,
+            kind: 'projectile',
+            profile: SNOWBALL_PROFILE,
+            projectile: launchProjectile({
+              ...FISHING_LAUNCH,
+              position: FISHING_OPEN_WATER_BOBBER,
+              shooterId: FISHING_ACTOR,
+            }),
+          }],
+        })
+        yield* coordinator.commit({
+          expectedRevision: storage.revision,
+          expectedDimensions: [],
+          changes: [
+            { ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageWithRod },
+            { ownerId: GAMEPLAY_FISHING_OWNER_ID, state: fishingCandidate },
+            { ownerId: PROJECTILE_REPLICATED_OWNER_ID, state: projectileCandidate },
+          ],
+        })
+        const stages = yield* makeGameplayStagesWithState(state)
+        yield* Ref.set(state.rollSeed, 113_335)
 
-      yield* requestFishingReel(state, 'inventory-rod-reel', FISHING_ACTOR, {
-        _tag: 'Inventory',
-        slotIndex: 0,
-      })
-      yield* runFrame(stages, DeltaTimeSecs(0))
+        yield* requestFishingReel(state, 'inventory-rod-reel', FISHING_ACTOR, {
+          _tag: 'Inventory',
+          slotIndex: 0,
+        })
+        yield* runFrame(stages, DeltaTimeSecs(0))
 
-      expect(yield* drainItemUseResults(state)).toMatchObject([{
-        action: 'ReelFishing',
-        requestId: 'inventory-rod-reel',
-        success: true,
-        outcome: { _tag: 'Caught', item: 'name_tag' },
-      }])
-      const storageAfter = yield* coordinator.snapshot(
-        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-        PlayerStorageSnapshotSchema,
-      )
-      expect(storageAfter.state.inventoryDurability[0]?.current).toBe(63)
-      expect(storageAfter.state.inventory.slots[0]?.item).toBe('fishing_rod')
-      expect(storageAfter.state.inventory.slots.some((slot) => slot?.item === 'name_tag')).toBe(true)
-    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+        expect(yield* drainItemUseResults(state)).toMatchObject([{
+          action: 'ReelFishing',
+          requestId: 'inventory-rod-reel',
+          success: true,
+          outcome: { _tag: 'Caught', item: 'name_tag' },
+        }])
+        const storageAfter = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        expect(storageAfter.state.inventoryDurability[0]?.current).toBe(63)
+        expect(storageAfter.state.inventory.slots[0]?.item).toBe('fishing_rod')
+        expect(storageAfter.state.inventory.slots.some((slot) => slot?.item === 'name_tag')).toBe(true)
+      }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
+    }),
   )
 
   it.effect('reports an invalid fishing wait from the queued public request through production stages', () =>

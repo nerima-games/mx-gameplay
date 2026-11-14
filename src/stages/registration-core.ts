@@ -4432,6 +4432,7 @@ export type GameplayStageCommitServices = Readonly<{
   readonly villagerTradesOwnerId?: ReplicatedOwnerId
   readonly brewingOwnerId?: ReplicatedOwnerId
   readonly fishingOwnerId?: ReplicatedOwnerId
+  readonly fishingEnchantmentsOwnerId?: ReplicatedOwnerId
   readonly entitiesOwnerId?: ReplicatedOwnerId
   readonly projectileOwnerId?: ReplicatedOwnerId
   readonly tntOwnerId?: ReplicatedOwnerId
