@@ -187,7 +187,6 @@ const combatTarget = (id: string, healthPoints = 20) => ({
     PositionAxis(2),
   ),
   healthPoints: EntityHealthPoints(healthPoints),
-  behaviour: undefined,
 })
 
 const meleePlayerPose = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
@@ -260,7 +259,9 @@ const makeHarness = (options: Readonly<{
   readonly playerStorage?: PlayerStorage
   readonly vitals?: Vitals
   readonly villagerTrades?: VillagerTradeState
-  readonly entities?: EntityRoster<MobBehaviour>
+  readonly entities?: Omit<EntityRoster<MobBehaviour>, 'entities'> & {
+    readonly entities: ReadonlyArray<Omit<EntityRoster<MobBehaviour>['entities'][number], 'behaviour'> | EntityRoster<MobBehaviour>['entities'][number]>
+  }
   readonly blocks?: ReadonlyArray<readonly [BlockPosition, BlockId]>
   readonly loadedChunks?: ReadonlyArray<string>
   readonly omitProjectileOwnerId?: boolean

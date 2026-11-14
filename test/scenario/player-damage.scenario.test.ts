@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { DeltaTimeSecs, EntityHealthPoints, EntitySerial } from '@nerima-games/mc-kernel'
 import { EntityId, makeTimeService, SPAWN_VITALS } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { MobBehaviour, MobEntity, MobRoster } from '../../src/domain/entities/mob-frame'
+import type { MobBehaviour, MobRoster } from '../../src/domain/entities/mob-frame'
 import { makeGameplayFrameState, gameplayStages, drainPlayerDamages } from '../../src/stages/registration'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../../src/domain/entities/xp-orb'
@@ -23,14 +23,13 @@ describe('player damage gameplay scenario', () => {
       const player = yield* makePlayerServiceDouble(SPAWN_POSE)
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
-      const zombie: MobEntity = {
+      const zombie = {
         id: EntityId('zombie:damage-scenario'),
         kind: ZOMBIE_KIND,
         feetPosition: position(0, 64, 0),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
-      const entities: MobRoster = {
+      const entities = {
         entities: [zombie],
         nextSerial: EntitySerial(1),
       }
@@ -40,7 +39,7 @@ describe('player damage gameplay scenario', () => {
 
       const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
         playerPose: SPAWN_POSE,
-        entities,
+        entities: entities as unknown as MobRoster,
         vitals: { ...SPAWN_VITALS, healthPoints: EntityHealthPoints(2) },
       })
       const stages = gameplayStages(

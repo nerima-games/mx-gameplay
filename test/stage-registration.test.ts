@@ -367,6 +367,12 @@ const emptyWorldBase = Layer.mergeAll(
 const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
 const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
 
+type GameplayEntitiesInput = NonNullable<GameplayOwnerInitialState['entities']>
+type GameplayEntityInput = GameplayEntitiesInput['entities'][number]
+type PersistedGameplayEntitiesInput = Omit<GameplayEntitiesInput, 'entities'> & {
+  readonly entities: ReadonlyArray<Omit<GameplayEntityInput, 'behaviour'> | GameplayEntityInput>
+}
+
 const builtStages = Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
@@ -392,7 +398,7 @@ const builtStagesInWorld = (
   crops: CropSnapshot = { crops: [] },
   initialSlots: ReadonlyArray<Slot | undefined> = emptySlots(),
   villagerTrades: NonNullable<GameplayOwnerInitialState['villagerTrades']> = { villagers: [], restockElapsedSecs: 0 },
-  entities: GameplayOwnerInitialState['entities'] = { entities: [], nextSerial: EntitySerial(0) },
+  entities: PersistedGameplayEntitiesInput = { entities: [], nextSerial: EntitySerial(0) },
   fishing: GameplayOwnerInitialState['fishing'] = emptyFishingState(),
   projectiles: GameplayOwnerInitialState['projectiles'] = INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
   tnt: GameplayOwnerInitialState['tnt'] = undefined,
@@ -427,7 +433,7 @@ const builtStagesInWorld = (
         playerPose: Object.hasOwn(ownerOverrides, 'playerPose') ? ownerOverrides.playerPose! : SPAWN_POSE,
         crops,
         villagerTrades,
-        entities,
+        entities: entities as unknown as GameplayEntitiesInput,
         fishing,
         projectiles,
         ...(tnt === undefined ? {} : { tnt }),
@@ -716,7 +722,6 @@ describe('fire lifecycle stage integration', () => {
             kind: CREEPER_KIND,
             feetPosition: positionOfBlock(position),
             healthPoints: EntityHealthPoints(healthPoints),
-            behaviour: undefined,
           }],
           nextSerial: EntitySerial(1),
         }
@@ -767,7 +772,6 @@ describe('fire lifecycle stage integration', () => {
           kind: CREEPER_KIND,
           feetPosition: positionOfBlock(position),
           healthPoints: EntityHealthPoints(2),
-          behaviour: undefined,
         }],
         nextSerial: EntitySerial(1),
       }
@@ -1645,7 +1649,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1692,7 +1695,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1732,7 +1734,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1771,7 +1772,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1812,7 +1812,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1863,7 +1862,6 @@ describe('stage behaviour', () => {
           kind: EntityKind(fixture.kind),
           feetPosition: fixturePosition(0, 64.72, -2),
           healthPoints: EntityHealthPoints(1),
-          behaviour: undefined,
         }
         const { state, commit, stages } = yield* builtStagesInWorld(
           world([]), ['0,0'], undefined, undefined, undefined,
@@ -1927,7 +1925,6 @@ describe('stage behaviour', () => {
         kind: SKELETON_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1963,7 +1960,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition,
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1997,7 +1993,6 @@ describe('stage behaviour', () => {
             kind: EntityKind('creeper'),
             feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10 ),
             healthPoints: EntityHealthPoints(20),
-            behaviour: undefined,
           },
         ],
         nextSerial: EntitySerial(1),
@@ -2042,7 +2037,6 @@ describe('stage behaviour', () => {
           kind: EntityKind('creeper'),
           feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10),
           healthPoints: EntityHealthPoints(20),
-          behaviour: undefined,
         }],
         nextSerial: EntitySerial(1),
       }
@@ -2085,7 +2079,6 @@ describe('stage behaviour', () => {
             kind: EntityKind('creeper'),
             feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 20),
             healthPoints: EntityHealthPoints(20),
-            behaviour: undefined,
           },
         ],
         nextSerial: EntitySerial(1),
@@ -2132,7 +2125,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -4219,7 +4211,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: SKELETON_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([
@@ -4264,7 +4255,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         killCredit: 'player',
         lastHitTick: Schema.decodeUnknownSync(SimulationTickSchema)(0),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([
@@ -4352,7 +4342,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: ZOMBIE_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([
@@ -4607,7 +4596,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(100),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([
@@ -4715,19 +4703,19 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       const firePosition = fixtureBlockPosition(6, 64, 6)
       const burningA = {
         id: EntityId('e:0'), kind: CREEPER_KIND, feetPosition: positionOfBlock(firePosition),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const burningB = {
         id: EntityId('e:1'), kind: CREEPER_KIND, feetPosition: positionOfBlock(firePosition),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const safeA = {
         id: EntityId('e:2'), kind: CREEPER_KIND, feetPosition: fixturePosition(20, 64, 20),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const safeB = {
         id: EntityId('e:3'), kind: CREEPER_KIND, feetPosition: fixturePosition(21, 64, 21),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const { state, stages } = yield* builtStagesInWorld(
         world([
@@ -4767,7 +4755,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1000),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([
@@ -5362,7 +5349,6 @@ describe('the entities stage resolves ranged mob attacks and zombie contact dama
         kind: ZOMBIE_KIND,
         feetPosition: fixturePosition(0, 64, 0),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const { state, stages, commit } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -8480,7 +8466,6 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
