@@ -145,9 +145,9 @@ const stepVehicle = (
     Math.floor(vehicle.position.y),
     Math.floor(vehicle.position.z),
   )
-  const neighbourhood = yield* readNeighbourhood(store, position)
-  if (neighbourhood._tag === 'WorldDataFault') return neighbourhood
-  const readings = neighbourhood.readings
+  const vehicleNeighbourhood = yield* readNeighbourhood(store, position)
+  if (vehicleNeighbourhood._tag === 'WorldDataFault') return vehicleNeighbourhood
+  const readings = vehicleNeighbourhood.readings
   const controls = environment.controlsForVehicle?.(vehicle) ?? { throttle: 0, steering: 0 }
   if (vehicle.type === 'boat') {
     const transition = stepBoat(vehicle, {

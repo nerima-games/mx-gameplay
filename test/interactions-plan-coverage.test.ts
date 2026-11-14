@@ -5637,18 +5637,21 @@ describe('schema-valid interaction edge paths', () => {
       dimension: DIMENSION,
       toolLocation: undefined,
     }))
-    for (const [position, heldItem] of [
+    const placementRequests = [
       [occupiedTarget, 'stone'],
       [torchTarget, 'torch'],
       [caneTarget, 'sugar_cane'],
       [cactusTarget, 'cactus'],
       [doorTarget, 'door'],
-    ] as const) {
-      await Effect.runPromise(requestBlockPlacement(harness.state, {
-        positionKey: blockPositionKeyOf(position),
-        heldItem,
-      }))
-    }
+    ] as const
+    await Promise.all(
+      placementRequests.map(([targetPosition, heldItem]) =>
+        Effect.runPromise(requestBlockPlacement(harness.state, {
+          positionKey: blockPositionKeyOf(targetPosition),
+          heldItem,
+        })),
+      ),
+    )
 
     await harness.run()
 

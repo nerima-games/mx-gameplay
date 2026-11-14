@@ -509,12 +509,12 @@ const processBowShot = (
       const isBlockedAt = solidityFromStore(store)
       let terrainFailure: EntityWorldQueryFailure | undefined
       const blocked = shotBlockedByTerrain((x, y, z) => {
-        const result = isBlockedAt({ x, y, z })
-        if (Result.isFailure(result)) {
-          terrainFailure ??= result.failure
+        const blockResult = isBlockedAt({ x, y, z })
+        if (Result.isFailure(blockResult)) {
+          terrainFailure ??= blockResult.failure
           return true
         }
-        return result.success
+        return blockResult.success
       }, request.origin, end)
       if (terrainFailure !== undefined) {
         yield* recordGameplayEntityWorldDataFault(state, 'ProjectileLineOfSight', terrainFailure)
