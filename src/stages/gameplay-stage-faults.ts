@@ -5,7 +5,7 @@ import type {
 } from '@nerima-games/mc-kernel'
 import { BlockIdSchema, BlockPositionSchema } from '@nerima-games/mc-kernel'
 import type { BlockStateCodecFailure, LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
-import { Context, Effect, Layer, Ref, Schema } from 'effect'
+import { Brand, Context, Effect, Layer, Ref, Schema } from 'effect'
 
 export type GameplayStageBlockTypeDecodeFailure = Readonly<{
   _tag: 'BlockTypeDecodeFailed'
@@ -25,12 +25,18 @@ export type GameplayStageMissingBlockReadFailure = Readonly<{
   position: BlockPosition
 }>
 
+export type GameplayStageFaultOccurrenceCount = number & Brand.Brand<'GameplayStageFaultOccurrenceCount'>
+export const GameplayStageFaultOccurrenceCountSchema: Schema.Codec<GameplayStageFaultOccurrenceCount, number> =
+  Schema.Int
+    .check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }))
+    .pipe(Schema.brand('GameplayStageFaultOccurrenceCount'))
+
 export type GameplayStageWorldFault = Readonly<{
   _tag: 'WorldDataFailure'
   operation: 'DecodeBlockType' | 'ReadBlock' | 'ReadBlockState' | 'WriteBlock' | 'ReadLight'
   position: BlockPosition
   reason: GameplayStageWorldFaultReason
-  occurrences: number
+  occurrences: GameplayStageFaultOccurrenceCount
 }>
 
 export type GameplayStageWorldFaultInput = Omit<GameplayStageWorldFault, 'occurrences'>
@@ -147,7 +153,7 @@ export const GameplayStageWorldFaultSchema: Schema.Codec<
   GameplayStageWorldFault
 > = Schema.declare((value): value is GameplayStageWorldFault =>
   isRecord(value) &&
-  Number.isSafeInteger(value['occurrences']) && Number(value['occurrences']) > 0 &&
+  Schema.is(GameplayStageFaultOccurrenceCountSchema)(value['occurrences']) &&
   Schema.is(GameplayStageWorldFaultInputSchema)(value)
 )
 
@@ -186,7 +192,9 @@ export const makeGameplayStageFaults: Effect.Effect<GameplayStageFaultsApi> = Ef
       const next = new Map(current)
       next.set(key, {
         ...fault,
-        occurrences: (previous?.occurrences ?? 0) + 1,
+        occurrences: Schema.decodeUnknownSync(GameplayStageFaultOccurrenceCountSchema)(
+          (previous?.occurrences ?? 0) + 1,
+        ),
       })
       return next
     }),

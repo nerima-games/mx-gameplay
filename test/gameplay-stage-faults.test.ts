@@ -9,6 +9,7 @@ describe('gameplay stage faults', () => {
   it.effect('exports schemas that reject arbitrary malformed input without throwing', () =>
     Effect.sync(() => {
       for (const schema of [
+        gameplay.GameplayStageFaultOccurrenceCountSchema,
         gameplay.GameplayStageBlockTypeDecodeFailureSchema,
         gameplay.GameplayStageMissingBlockReadFailureSchema,
         gameplay.GameplayStageWorldFaultReasonSchema,
@@ -47,6 +48,7 @@ describe('gameplay stage faults', () => {
       expect(Schema.is(gameplay.GameplayStageWorldFaultSchema)({ ...fault, occurrences: 1 })).toBe(true)
       expect(Schema.is(gameplay.GameplayStageWorldFaultSchema)({ ...fault, occurrences: 0 })).toBe(false)
       expect(Schema.is(gameplay.GameplayStageWorldFaultSchema)({ ...fault, occurrences: Number.MAX_SAFE_INTEGER + 1 })).toBe(false)
+      expect(Schema.is(gameplay.GameplayStageWorldFaultSchema)({ ...fault, occurrences: Number.MAX_SAFE_INTEGER })).toBe(true)
     }),
   )
 

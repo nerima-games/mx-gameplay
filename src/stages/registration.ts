@@ -176,6 +176,7 @@ import {
 export {
   GameplayStageFaults,
   GameplayStageFaultsLayer,
+  GameplayStageFaultOccurrenceCountSchema,
   GameplayStageBlockTypeDecodeFailureSchema,
   GameplayStageMissingBlockReadFailureSchema,
   GameplayStageWorldFaultReasonSchema,
@@ -185,6 +186,7 @@ export {
 } from './gameplay-stage-faults.js'
 export type {
   GameplayStageFaultsApi,
+  GameplayStageFaultOccurrenceCount,
   GameplayStageBlockTypeDecodeFailure,
   GameplayStageMissingBlockReadFailure,
   GameplayStageItemUseWorldFailure,

@@ -266,8 +266,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | stage 登録時に `ChunkStore`、`EntityManager`、`TimeService`、`WorldCommitCoordinator`、`DomainEventBus`、`GameplayStageFaults` を要求する（§2-2） |
 | `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` が `GameplayStageFaultsLayer` を提供する |
 | `GameplayStageFaults` / `GameplayStageFaultsApi` | **契約** | stage の world fault を operation・位置・理由ごとに集約する outbox。ホストは `drain` で faults と発生回数を受け取る |
-| `GameplayStageWorldFault` / `GameplayStageWorldFaultInput` / `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageItemUseWorldFailure` | **契約** | fault と item-use failure の公開型 |
-| `GameplayStageBlockTypeDecodeFailureSchema` / `GameplayStageMissingBlockReadFailureSchema` / `GameplayStageWorldFaultReasonSchema` / `GameplayStageWorldFaultInputSchema` / `GameplayStageWorldFaultSchema` / `GameplayStageItemUseWorldFailureSchema` | **契約** | host が fault と item-use failure を検証するための schema |
+| `GameplayStageWorldFault` / `GameplayStageWorldFaultInput` / `GameplayStageWorldFaultReason` / `GameplayStageFaultOccurrenceCount` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageItemUseWorldFailure` | **契約** | fault と item-use failure の公開型 |
+| `GameplayStageFaultOccurrenceCountSchema` / `GameplayStageBlockTypeDecodeFailureSchema` / `GameplayStageMissingBlockReadFailureSchema` / `GameplayStageWorldFaultReasonSchema` / `GameplayStageWorldFaultInputSchema` / `GameplayStageWorldFaultSchema` / `GameplayStageItemUseWorldFailureSchema` | **契約** | host が fault と item-use failure を検証するための schema |
 | `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
 | `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キューと、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |
