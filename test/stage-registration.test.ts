@@ -26,7 +26,7 @@ import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/x
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
-  makeFireLifecycleState,
+  makeFireLifecycleState as makeFireLifecycleStateResult,
   type FireLifecycleSnapshot,
 } from '../src/domain/fire-lifecycle'
 import type { WeatherState } from '../src/domain/weather'
@@ -108,6 +108,7 @@ import {
   drainPlayerHeals,
   drainBowShotResults,
   drainFluidUpdates,
+  drainGameplayEntityStageFaults,
   drainMeleeAttackResults,
   drainMobDrops,
   drainMobExperience,
@@ -232,6 +233,9 @@ import {
   type GameplayOwnerInitialState,
 } from '../src/stages/gameplay-owner-registrations.js'
 import type { CropSnapshot } from '@nerima-games/mc-sim'
+
+const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStateResult>) =>
+  Result.getOrThrow(makeFireLifecycleStateResult(...args))
 
 const itemStack = (item: Parameters<typeof makeItemStack>[0], count: Parameters<typeof makeItemStack>[1]) =>
   Result.getOrThrow(makeItemStack(item, count))
@@ -363,6 +367,12 @@ const emptyWorldBase = Layer.mergeAll(
 const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
 const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
 
+type GameplayEntitiesInput = NonNullable<GameplayOwnerInitialState['entities']>
+type GameplayEntityInput = GameplayEntitiesInput['entities'][number]
+type PersistedGameplayEntitiesInput = Omit<GameplayEntitiesInput, 'entities'> & {
+  readonly entities: ReadonlyArray<Omit<GameplayEntityInput, 'behaviour'> | GameplayEntityInput>
+}
+
 const builtStages = Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
@@ -388,7 +398,7 @@ const builtStagesInWorld = (
   crops: CropSnapshot = { crops: [] },
   initialSlots: ReadonlyArray<Slot | undefined> = emptySlots(),
   villagerTrades: NonNullable<GameplayOwnerInitialState['villagerTrades']> = { villagers: [], restockElapsedSecs: 0 },
-  entities: GameplayOwnerInitialState['entities'] = { entities: [], nextSerial: EntitySerial(0) },
+  entities: PersistedGameplayEntitiesInput = { entities: [], nextSerial: EntitySerial(0) },
   fishing: GameplayOwnerInitialState['fishing'] = emptyFishingState(),
   projectiles: GameplayOwnerInitialState['projectiles'] = INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
   tnt: GameplayOwnerInitialState['tnt'] = undefined,
@@ -417,17 +427,17 @@ const builtStagesInWorld = (
     const initialStorage = yield* inventory.api.storageSnapshot
     const coordinator = yield* makeWorldCommitCoordinator({
       world: Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests'),
-      owners: gameplayOwnerRegistrations({
+      owners: Result.getOrThrow(gameplayOwnerRegistrations({
         ...ownerOverrides,
         playerStorage: initialStorage,
-        playerPose: ownerOverrides.playerPose ?? SPAWN_POSE,
+        playerPose: Object.hasOwn(ownerOverrides, 'playerPose') ? ownerOverrides.playerPose! : SPAWN_POSE,
         crops,
         villagerTrades,
-        entities,
+        entities: entities as unknown as GameplayEntitiesInput,
         fishing,
         projectiles,
         ...(tnt === undefined ? {} : { tnt }),
-      }),
+      })),
       chunkStores: { forDimension: () => store.api },
     })
     const commitCalls = yield* Ref.make(0)
@@ -1267,6 +1277,39 @@ describe('stage behaviour', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('records an unregistered fluid neighbour and defers that flow without writing', () =>
+    Effect.gen(function* () {
+      const source = fixtureBlockPosition(0, 64, 0)
+      const malformedNeighbour = fixtureBlockPosition(1, 64, 0)
+      const unknownBlock = BlockId(65_535)
+      const { state, store, stages } = yield* builtStagesInWorld(world([
+        [source, WATER],
+        [malformedNeighbour, unknownBlock],
+      ]))
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt(source)).toBe(WATER)
+      expect(yield* store.blockAt(malformedNeighbour)).toBe(unknownBlock)
+      expect(yield* Ref.get(state.fluidFrontier)).toContainEqual({
+        key: '0,64,0',
+        kind: 'water',
+        level: 0,
+        source: true,
+        falling: false,
+        deferred: 1,
+      })
+      expect(yield* drainGameplayEntityStageFaults(state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'Fluid',
+        target: { _tag: 'Cell', cell: malformedNeighbour },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: malformedNeighbour, blockId: unknownBlock },
+      }))
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   it.effect('blocked fluid spreads to the four horizontal neighbours in deterministic order', () =>
     Effect.gen(function* () {
       const origin = fixtureBlockPosition(0, 64, 0)
@@ -1483,6 +1526,7 @@ describe('stage behaviour', () => {
         'endPortalTravels',
         'enderDragonEncounter',
         'enderPearlOutcomes',
+        'entityStageFaults',
         'experienceOrbAbsorptionExecutions',
         'fallingBlocks',
         'fireLifecycle',
@@ -1607,7 +1651,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1654,7 +1697,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1683,7 +1725,12 @@ describe('stage behaviour', () => {
         { requestId: 'melee-invalid-block-distance', success: false },
       ])
       expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
-      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([{
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'Entities',
+        error: { _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' },
+      }])
     }),
   )
 
@@ -1694,7 +1741,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1733,7 +1779,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1774,7 +1819,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1825,7 +1869,6 @@ describe('stage behaviour', () => {
           kind: EntityKind(fixture.kind),
           feetPosition: fixturePosition(0, 64.72, -2),
           healthPoints: EntityHealthPoints(1),
-          behaviour: undefined,
         }
         const { state, commit, stages } = yield* builtStagesInWorld(
           world([]), ['0,0'], undefined, undefined, undefined,
@@ -1889,7 +1932,6 @@ describe('stage behaviour', () => {
         kind: SKELETON_KIND,
         feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1925,7 +1967,6 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         feetPosition,
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -1996,6 +2037,48 @@ describe('stage behaviour', () => {
     }),
   )
 
+  it.effect('an unregistered block faults and defers a bow shot without applying the hit', () =>
+    Effect.gen(function* () {
+      const target: EntityRoster<MobBehaviour> = {
+        entities: [{
+          id: EntityId('target-behind-unregistered-block'),
+          kind: EntityKind('creeper'),
+          feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10),
+          healthPoints: EntityHealthPoints(20),
+          behaviour: undefined,
+        }],
+        nextSerial: EntitySerial(1),
+      }
+      const cell = fixtureBlockPosition(0, 64, 5)
+      const unknownBlock = BlockId(65_535)
+      const harness = yield* builtStagesInWorld(
+        world([[cell, unknownBlock]]), ['0,0'], undefined, undefined, undefined, target,
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestBowShot(harness.state, 'unknown-terrain-shot', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      const entityOwner = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities[0]?.healthPoints).toBe(20)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'ProjectileLineOfSight',
+        target: { _tag: 'Cell', cell },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+      }))
+    }),
+  )
+
   it.effect('an unreadable chunk in the arrow path blocks the hit before damage reaches the roster', () =>
     Effect.gen(function* () {
       const target: EntityRoster<MobBehaviour> = {
@@ -2045,14 +2128,13 @@ describe('stage behaviour', () => {
     }),
   )
 
-  it.effect('rejects an overflowing enchantment damage candidate without committing the shot', () =>
+  it.effect('rejects an unsafe enchantment power level without committing the shot', () =>
     Effect.gen(function* () {
       const target = {
         id: EntityId('bow-overflow-target'),
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
@@ -2077,12 +2159,13 @@ describe('stage behaviour', () => {
       expect(yield* harness.commit.coordinator.revision).toBe(revision)
       expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
         .toStrictEqual(before)
-      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toStrictEqual([])
       expect(yield* drainBowShotResults(harness.state)).toStrictEqual([])
       expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
-      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
-        { _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player' },
-      ])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-overflow', reason: 'InvalidBowPowerLevel',
+      }])
     }),
   )
 
@@ -2455,6 +2538,37 @@ describe('the module contract has caught up with this file’s shape', () => {
       expect(stand.state.ingredient).toBeUndefined()
       expect(stand.state.fuelCharges).toBe(BREWING_FUEL_CHARGES - 1)
     }).pipe(Effect.provide(Layer.orDie(emptyWorld))),
+  )
+
+  it.effect('records automatic brewing failures and continues the frame', () =>
+    Effect.gen(function* () {
+      const { commit } = yield* builtStages
+      const brewing = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+      const failure = {
+        _tag: 'BrewingValidationFailure',
+        path: 'advance',
+        reason: 'deterministic service rejection',
+      } as const
+      const failingBrewing = {
+        ...brewing,
+        advance: (_elapsedSecs: number) => Effect.fail(failure),
+      }
+      const advance = yield* makeBrewingAdvanceStage(failingBrewing, commit.coordinator)
+      let laterWorkRan = false
+      const laterStage: StageRegistration = {
+        id: StageId('test:after-brewing'),
+        after: [BREWING_ADVANCE_STAGE_ID],
+        run: () => Effect.sync(() => { laterWorkRan = true }),
+      }
+
+      yield* runFrames([laterStage, advance.stage], 1)
+
+      expect(laterWorkRan).toBe(true)
+      const executions = yield* advance.drainResults
+      expect(executions).toHaveLength(1)
+      expect(executions[0]?.requestId).toBeUndefined()
+      expect(executions[0]?.result).toMatchObject({ _tag: 'Failure', failure })
+    }),
   )
 
   // REGRESSION-SHAPED, and it is the property mc-sim's §7-1 buys with
@@ -4087,16 +4201,16 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
     }),
   )
 
-  it.effect('restoreFireLifecycle dies on a snapshot that fails validation', () =>
+  it.effect('restoreFireLifecycle rejects an invalid snapshot without changing its state', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
       const invalid = { version: 999 } as unknown as FireLifecycleSnapshot
 
-      const exit = yield* Effect.exit(restoreFireLifecycle(state, invalid))
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe('Unsupported fire lifecycle snapshot')
-      }
+      const before = yield* Ref.get(state.fireLifecycle)
+      expect(yield* Effect.flip(restoreFireLifecycle(state, invalid))).toStrictEqual({
+        _tag: 'InvalidFireLifecycleInput', field: 'snapshot',
+      })
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(before)
     }),
   )
 
@@ -4108,7 +4222,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: SKELETON_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([
@@ -4241,7 +4354,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: ZOMBIE_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([
@@ -4496,7 +4608,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(100),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([
@@ -4604,19 +4715,19 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       const firePosition = fixtureBlockPosition(6, 64, 6)
       const burningA = {
         id: EntityId('e:0'), kind: CREEPER_KIND, feetPosition: positionOfBlock(firePosition),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const burningB = {
         id: EntityId('e:1'), kind: CREEPER_KIND, feetPosition: positionOfBlock(firePosition),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const safeA = {
         id: EntityId('e:2'), kind: CREEPER_KIND, feetPosition: fixturePosition(20, 64, 20),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const safeB = {
         id: EntityId('e:3'), kind: CREEPER_KIND, feetPosition: fixturePosition(21, 64, 21),
-        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+        healthPoints: EntityHealthPoints(100),
       }
       const { state, stages } = yield* builtStagesInWorld(
         world([
@@ -4656,7 +4767,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1000),
-        behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
         world([
@@ -5232,8 +5342,8 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
   )
 })
 
-describe('the entities stage resolves both ranged mob attacks and zombie contact damage', () => {
-  it.effect('a skeleton hit applies and suppresses same-tick zombie contact damage after recording cooldown', () =>
+describe('the entities stage resolves ranged mob attacks and zombie contact damage', () => {
+  it.effect('a skeleton ranged attack records cooldown while nearby zombie contact resolves this tick', () =>
     Effect.gen(function* () {
       // Skeleton: within the [6, 16] projectile band the ecosystem rule uses,
       // cooldown at zero so it fires immediately.
@@ -5251,9 +5361,8 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
         kind: ZOMBIE_KIND,
         feetPosition: fixturePosition(0, 64, 0),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
-      const { state, stages } = yield* builtStagesInWorld(
+      const { state, stages, commit } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
         { entities: [skeleton, zombie], nextSerial: EntitySerial(2) },
       )
@@ -5261,15 +5370,21 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
 
       yield* entities.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer))
 
+      const entitySnapshot = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const skeletonAfter = entitySnapshot.state.entities.find(({ id }) => id === skeleton.id)
+      expect(skeletonAfter?.behaviour).toMatchObject({ _tag: 'EcosystemMob', attackCooldownTicks: 60 })
       const damages = yield* drainPlayerDamages(state)
       expect(damages).toHaveLength(1)
       expect(damages[0]).toMatchObject({
         _tag: 'HostileContact',
-        source: skeleton.id,
-        kind: SKELETON_KIND,
+        source: zombie.id,
+        kind: ZOMBIE_KIND,
         damage: { amount: 3, cause: 'mob' },
       })
-      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === ZOMBIE_KIND)).toBe(false)
+      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === SKELETON_KIND)).toBe(false)
       expect((yield* Ref.get(state.hostileContactCooldowns)).get(zombie.id)).toBe(
         Schema.decodeUnknownSync(SimulationTickSchema)(0),
       )
@@ -5777,26 +5892,33 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
     }),
   )
 
-  it.effect('an unregistered neighbouring block reads as an unknown fire block rather than crashing', () =>
+  it.effect('an unregistered neighbouring block faults and leaves its fire unchanged for the tick', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(30, 64, 30)
+      const support = fixtureBlockPosition(30, 63, 30)
       const strangeNeighbour = fixtureBlockPosition(31, 64, 30)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
+          [support, STONE],
           [position, FIRE],
           [strangeNeighbour, UNREGISTERED_BLOCK_ID],
         ]),
         ['0,0', '1,1'],
       )
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
-      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 41))
+      const seeded = makeFireLifecycleState([position], 41)
+      yield* Ref.set(state.fireLifecycle, seeded)
 
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
-      // Nothing crashed reading the unregistered id, and the fire itself is
-      // still tracked.
       expect(yield* store.blockAt(strangeNeighbour)).toBe(UNREGISTERED_BLOCK_ID)
-      expect((yield* Ref.get(state.fireLifecycle)).fires.length).toBeGreaterThanOrEqual(0)
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(seeded.fires)
+      expect(yield* drainGameplayEntityStageFaults(state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'Fire',
+        target: { _tag: 'Cell', cell: strangeNeighbour },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: strangeNeighbour, blockId: UNREGISTERED_BLOCK_ID },
+      }))
     }),
   )
 
@@ -6056,6 +6178,31 @@ describe('End portal travel commits the player owner from either source dimensio
       expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
         expect.objectContaining({ _tag: 'Failed', operation: 'WorldCommit', subject: 'Player' }),
       )
+    }),
+  )
+})
+
+describe('portal faults on unregistered world cells', () => {
+  it.effect('keeps portal dwell and travel unchanged when the player cell cannot be resolved', () =>
+    Effect.gen(function* () {
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const unknownBlock = BlockId(65_535)
+      const harness = yield* builtStagesInWorld(world([[cell, unknownBlock]]), ['0,0'])
+      const dwell = { _tag: 'Standing', dwelledSecs: 3.9 } as const
+      yield* Ref.set(harness.state.portalDwell, dwell)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.portalDwell)).toStrictEqual(dwell)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.endPortalTravels)).toStrictEqual([])
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'Portal',
+        target: { _tag: 'Cell', cell },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+      }))
     }),
   )
 })
@@ -6437,6 +6584,49 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
       expect(yield* vehicleService.vehicles).toStrictEqual([])
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
+
+  it.effect('records unknown terrain read by a vehicle and keeps the stage tick alive', () =>
+    Effect.gen(function* () {
+      const faultyCell = fixtureBlockPosition(1, 64, 2)
+      const vehiclePosition = fixturePosition(2, 64, 2)
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(
+        world([[faultyCell, BlockId(65_535)]]),
+        ['0,0'],
+      )
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
+      const vehicleService = yield* makeVehicleService()
+      const vehicle = yield* vehicleService.spawn('minecart', 'overworld', vehiclePosition)
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        vehicleService,
+      )
+      const vehicles = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.vehicles)!
+
+      yield* vehicles.run(DeltaTimeSecs(0.016))
+      yield* vehicles.run(DeltaTimeSecs(0.016))
+
+      expect(yield* vehicleService.vehicles).toMatchObject([{ id: vehicle.id, position: vehiclePosition }])
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([{
+        _tag: 'EntityWorldDataFault',
+        source: 'VehicleMovement',
+        target: { _tag: 'Cell', cell: faultyCell },
+        failure: {
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: faultyCell,
+          blockId: BlockId(65_535),
+        },
+      }])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
 })
 
 describe('farming and food item uses through the full interactions stage', () => {
@@ -6693,7 +6883,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(40, 64, 40)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'])
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestBoneMeal(state, 'bone-meal-stage', position)
@@ -6858,7 +7048,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('bone meal against an unloaded cell reports not-a-crop without a block reading', () =>
+  it.effect('defers bone meal against an unloaded cell without inventing a crop result', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([]), [])
@@ -6867,16 +7057,10 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestBoneMeal(state, 'bone-meal-unloaded', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainItemUseResults(state)).toStrictEqual([
-        {
-          action: 'ApplyBoneMeal',
-          requestId: 'bone-meal-unloaded',
-          heldItem: 'bone_meal',
-          success: false,
-          consumedCount: 0,
-          outcome: { _tag: 'notCrop', at: position, block: undefined },
-        },
-      ])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingItemUses)).toMatchObject([{
+        action: 'ApplyBoneMeal', requestId: 'bone-meal-unloaded',
+      }])
     }),
   )
 
@@ -7003,7 +7187,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('reports a registered crop as unavailable when its world chunk is not loaded for harvest', () =>
+  it.effect('defers harvesting a registered crop while its world chunk is unloaded', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(
@@ -7018,11 +7202,9 @@ describe('farming and food item uses through the full interactions stage', () =>
 
       expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
       expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
-      expect(yield* drainItemUseResults(state)).toMatchObject([{
-        action: 'HarvestPotato',
-        requestId: 'harvest-unloaded-crop',
-        success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingItemUses)).toMatchObject([{
+        action: 'HarvestPotato', requestId: 'harvest-unloaded-crop',
       }])
     }),
   )
@@ -7032,7 +7214,7 @@ describe('farming and food item uses through the full interactions stage', () =>
       const position = fixtureBlockPosition(41, 64, 41)
       const slots = [...emptySlots()]
       slots[0] = itemStack('iron_hoe', 1)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['0,0'], undefined, slots)
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'], undefined, slots)
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestSoilTill(state, 'till-fail', position, 'iron_hoe')
@@ -7081,7 +7263,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('reports the typed owner-unavailable result when a valid soil position has no representable cell above', () =>
+  it.effect('records a coordinate fault when a valid soil position has no representable cell above', () =>
     Effect.gen(function* () {
       const soil = fixtureBlockPosition(0, Number.MAX_SAFE_INTEGER, 0)
       const harness = yield* builtStagesInWorld(world([]))
@@ -7090,12 +7272,12 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestSoilTill(harness.state, 'till-at-coordinate-limit', soil, 'iron_hoe')
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
-        _tag: 'Unsupported',
-        action: 'TillSoil',
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'GameplayRequestFault',
+        source: 'ItemUse',
         requestId: 'till-at-coordinate-limit',
-        reason: 'OwnerRegistrationUnavailable',
-      })
+        reason: 'NeighbourPositionOverflow',
+      }])
       expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
       expect(yield* Ref.get(harness.commitCalls)).toBe(0)
     }),
@@ -7208,7 +7390,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('planting a potato on non-farmland reports failure with nothing consumed', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'])
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestPotatoPlanting(state, 'plant-fail', position)
@@ -8288,7 +8470,6 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
         kind: CREEPER_KIND,
         feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,

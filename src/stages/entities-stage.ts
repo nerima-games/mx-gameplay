@@ -8,7 +8,10 @@ import {
   Ref,
   applyFallingBlocks,
   hostileSpawnsAllowed,
+  recordGameplayEntityStageExecutionFailure,
+  recordGameplayEntityWorldDataFault,
   recordGameplayStageFailure,
+  recordGameplayEntityStageFault,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollCasualtyExperience,
@@ -16,25 +19,32 @@ import {
   settled,
   takeBatch,
 } from './registration-core.js'
-import { Equal, Option, Result, Schema } from 'effect'
+import { Brand, Equal, Option, Result, Schema } from 'effect'
+import { COLLISION_SHAPE_AABBS } from '@nerima-games/mc-physics'
 import {
   AIR_BLOCK_ID,
+  AngleRadians,
   BlockAxis,
   BlockBlastResistance,
+  DeltaTimeSecs,
+  DimensionIdSchema,
+  CHUNK_SIZE_XZ,
+  FixedDurationSecs,
   PositionAxis,
+  ProjectileIdSchema,
   RandomSeed,
   SimulationTickSchema,
   WorldPositionSchema,
   WorldWriteBatchSchema,
   blockPosition,
   blockPositionKeyOf,
-  propertyOfBlockId,
   position,
   resistsExplosion,
   type BlockPosition,
-  type DeltaTimeSecs,
   type BlockPositionKey,
+  type Dimension,
   type Position,
+  type ProjectileId,
   type WorldWriteBatch,
 } from '@nerima-games/mc-kernel'
 import {
@@ -43,14 +53,22 @@ import {
   EntityId,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
+  ProjectileServiceSnapshotSchema,
+  stepProjectile,
   TntServiceSnapshotSchema,
   WorldRevisionConflict,
   applyDamage as applyVitalsDamage,
   damageAt,
+  ARROW_PROFILE,
+  raycastArrowBlock,
   type ReplicatedOwnerCandidate,
   type PlayerStorage,
+  type ProjectileLaunchRequest,
+  type ProjectileProfile,
+  type ProjectileWorld,
+  type ProjectileHit,
 } from '@nerima-games/mc-sim'
-import type { ExplosionBlock, ExplosionBlockReader } from '@nerima-games/mc-sim'
+import type { ExplosionBlock, ExplosionBlockPosition, ExplosionBlockReader } from '@nerima-games/mc-sim'
 import { craterCells } from '../domain/interactions/explosion-crater.js'
 import {
   appendDroppedItemSpawns,
@@ -69,25 +87,53 @@ import {
 import {
   planEndermanTeleportRoster,
   planMobBlastRoster,
+  planMobDamageRoster,
   planMobExplosionRoster,
+  hasMobMovementCandidates,
+  planMobMovementRoster,
   planMobRosterSweep,
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
   type MobExplosionHit,
+  type MobDamageHit,
+  type MobAttackEvent,
+  type MobMovementRosterFault,
+  type MobProjectilePendingImpact,
   type MobSpawnAttempt,
+  type MobRoster,
+  type MobDropEvent,
+  type MobExperienceEvent,
+  isDroppedItemBehaviour,
+  isHostileMobSnapshot,
+  isMobBehaviourRepairFault,
 } from '../domain/entities/mob-frame.js'
+import { chunkCoordsAround, openChunkWindow } from '../domain/chunk-window.js'
+import {
+  entityWorldBlockDataAt,
+  entityWorldCellAt,
+  type EntityWorldCell,
+  type EntityWorldCellPosition,
+  type EntityWorldQueryFailure,
+} from '../domain/entities/entity-world-cell.js'
+import { mobMovementCell, mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
+import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
+import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND, MOB_MOVEMENT_POLICIES } from '../domain/mob/mob-ecosystem.js'
+import type { BurningActor } from '../domain/fire-lifecycle.js'
 import {
   resolveHostileContacts,
   prepareHostileAttack,
   prepareShieldBlocking,
   resolvePlayerBlastDamage,
+  type DamageImmunityState,
+  type ShieldBlockingState,
   type PlayerDamageEvent,
+  type HostileAttackPreparation,
 } from '../domain/mob/hostile-combat.js'
-import { prepareArmorHit } from '../domain/combat/armor.js'
+import { prepareArmorHit, type ArmorHitResolution } from '../domain/combat/armor.js'
 import { disturb } from '../domain/falling-block.js'
 import { TNT_EXPLOSION_POWER, type Explosion } from '../domain/mob/explosion.js'
 import { PRIMED_TNT_KIND } from '../domain/entities/mob-frame.js'
-import { hostileSpawnSearchDue } from '../domain/mob/hostile-spawn.js'
+import { SkyLightLevel, hostileSpawnSearchDue } from '../domain/mob/hostile-spawn.js'
 import {
   GameplayEntityRosterSchema,
   GameplayTntSourcesSnapshotSchema,
@@ -98,11 +144,18 @@ import {
 import type {
   DroppedItemPickupExecution,
   ExperienceOrbAbsorptionExecution,
+  EntityWorldDataFaultSource,
+  EntityStageFault,
   GameplayStageContext,
   StageRegistration,
 } from './registration-core.js'
 
 type PlayerServiceSnapshot = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
+type EntityWorldFaultTarget = Extract<EntityStageFault, { _tag: 'EntityWorldDataFault' }>['target']
+const mobSpawnPlanFailures = new WeakMap<
+  GameplayStageContext['state'],
+  Result.Result.Failure<ReturnType<typeof planSpawnAttemptsOnRoster>>
+>()
 
 const unsupportedMobSimulation = (
   state: GameplayStageContext['state'],
@@ -116,6 +169,1032 @@ const unsupportedMobSimulation = (
   action: 'MobSimulation',
   reason,
 })
+
+const entityWorldFaultTarget = (
+  failure: EntityWorldQueryFailure,
+  entityId: import('@nerima-games/mc-sim').EntityId,
+): EntityWorldFaultTarget => {
+  if ('cell' in failure) return { _tag: 'Cell', cell: failure.cell }
+  return { _tag: 'Entity', entityId }
+}
+
+const recordEntityWorldDataFault = (
+  state: GameplayStageContext['state'],
+  source: EntityWorldDataFaultSource,
+  failure: EntityWorldQueryFailure,
+  entityId?: import('@nerima-games/mc-sim').EntityId,
+): Effect.Effect<void> => recordGameplayEntityWorldDataFault(state, source, failure, entityId)
+
+export const entityStageFaultForMobMovement = (fault: MobMovementRosterFault): EntityStageFault => {
+  switch (fault.reason) {
+    case 'world-query-failed':
+      return {
+        _tag: 'EntityWorldDataFault',
+        source: 'MobMovement',
+        target: entityWorldFaultTarget(fault.worldFailure, fault.entityId),
+        failure: fault.worldFailure,
+      }
+    case 'invalid-state':
+      if ('repairFailure' in fault) {
+        return {
+          _tag: 'MobBehaviourRepairFault',
+          entityId: fault.entityId,
+          entityKind: fault.entityKind,
+          failure: fault.repairFailure,
+        }
+      }
+      return { _tag: 'MobMovementExecutionFault', entityId: fault.entityId, reason: fault.reason }
+    case 'invalid-goal':
+      return { _tag: 'MobMovementExecutionFault', entityId: fault.entityId, reason: fault.reason }
+    case 'simulation-rejected':
+    case 'step-failed':
+      return {
+        _tag: 'MobMovementExecutionFault',
+        entityId: fault.entityId,
+        reason: fault.reason,
+        failure: fault.failure,
+      }
+    /* v8 ignore start */
+    default: {
+      const exhaustive: never = fault
+      return exhaustive
+    }
+    /* v8 ignore stop */
+  }
+}
+
+const recordMobMovementRosterFault = (
+  state: GameplayStageContext['state'],
+  fault: MobMovementRosterFault,
+): Effect.Effect<void> => recordGameplayEntityStageFault(state, entityStageFaultForMobMovement(fault))
+
+const mobMovementChunkCoords = (
+  roster: GameplayEntityRoster,
+  target: Position,
+): ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]> => {
+  const coords = new Map<string, ReturnType<typeof chunkCoordsAround>[number]>()
+  const add = (at: Position, radius: number) => {
+    if (mobMovementCell(at) === undefined) return
+    for (const coord of chunkCoordsAround(at, radius)) coords.set(`${Number(coord.cx)},${Number(coord.cz)}`, coord)
+  }
+  add(target, 32)
+  for (const entity of roster.entities) add(entity.feetPosition, 16)
+  return [...coords.values()]
+}
+
+const mobHasStoredMovement = (entity: MobRoster['entities'][number]): boolean => {
+  const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+  if (snapshot?.movement !== undefined) return true
+  const behaviour = snapshot?.behaviour ?? entity.behaviour
+  return behaviour?._tag === 'EcosystemMob' && behaviour.movement !== undefined
+}
+
+const hasUndeadDaylightCandidates = (roster: GameplayEntityRoster, dimension: string): boolean =>
+  roster.entities.some((entity) =>
+    entity.dimension === dimension && (entity.kind === 'zombie' || entity.kind === 'skeleton'),
+  )
+
+const undeadDaylightChunkCoords = (
+  roster: GameplayEntityRoster,
+  dimension: string,
+): ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]> => {
+  const coords = new Map<string, ReturnType<typeof chunkCoordsAround>[number]>()
+  for (const entity of roster.entities) {
+    if (entity.dimension !== dimension || (entity.kind !== 'zombie' && entity.kind !== 'skeleton')) continue
+    for (const coord of chunkCoordsAround(entity.feetPosition, 0)) {
+      coords.set(`${Number(coord.cx)},${Number(coord.cz)}`, coord)
+    }
+  }
+  return [...coords.values()]
+}
+
+const undeadDaylightFacts = (
+  roster: GameplayEntityRoster,
+  window: import('../domain/chunk-window.js').ChunkWindow,
+  store: GameplayStageContext['store'],
+  daytime: boolean,
+  dimension: string,
+): Effect.Effect<Readonly<{
+  facts: ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>
+  faults: ReadonlyArray<Readonly<{ entityId: import('@nerima-games/mc-sim').EntityId; failure: EntityWorldQueryFailure }>>
+}>> =>
+  Effect.gen(function* () {
+    const facts = new Map<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>()
+    const faults: Array<Readonly<{ entityId: import('@nerima-games/mc-sim').EntityId; failure: EntityWorldQueryFailure }>> = []
+    for (const entity of roster.entities) {
+      if ((entity.kind !== 'zombie' && entity.kind !== 'skeleton') || entity.dimension !== dimension) continue
+      const feetX = BlockAxis.result(Math.floor(entity.feetPosition.x))
+      const feetY = BlockAxis.result(Math.floor(entity.feetPosition.y))
+      const feetZ = BlockAxis.result(Math.floor(entity.feetPosition.z))
+      const headY = BlockAxis.result(Math.floor(entity.feetPosition.y + 1.62))
+      if (Result.isFailure(feetX) || Result.isFailure(feetY) || Result.isFailure(feetZ) || Result.isFailure(headY)) {
+        facts.set(entity.id, { exposed: false, inWater: true })
+        continue
+      }
+      const cellPosition = { x: feetX.success, y: feetY.success, z: feetZ.success }
+      const feetCell = entityWorldCellAt(window, cellPosition)
+      if (Result.isFailure(feetCell)) {
+        faults.push({ entityId: entity.id, failure: feetCell.failure })
+        continue
+      }
+      let inWater: boolean
+      switch (feetCell.success._tag) {
+        case 'Loaded': {
+          inWater = feetCell.success.properties.fluid === 'water'
+          break
+        }
+        case 'Unloaded':
+          inWater = true
+          break
+        case 'AboveWorld':
+          inWater = false
+          break
+        case 'BelowWorld':
+          inWater = false
+          break
+        /* v8 ignore start */
+        default: {
+          const exhaustive: never = feetCell.success
+          return exhaustive
+        }
+        /* v8 ignore stop */
+      }
+      const light = yield* store.getLight(blockPosition(feetX.success, headY.success, feetZ.success))
+      const skyLight = SkyLightLevel(light._tag === 'Light' ? light.sky : -1)
+      const rawBehaviour = isHostileMobSnapshot(entity.behaviour)
+        ? entity.behaviour.behaviour
+        : entity.behaviour
+      const hasHeadProtection = rawBehaviour?._tag === 'EcosystemMob' && rawBehaviour.hasHeadProtection
+      facts.set(entity.id, {
+        exposed: burnsInDaylight({ daytime, skyLight, inWater, hasHeadProtection }),
+        inWater,
+      })
+    }
+    return { facts, faults }
+  })
+
+const BlocksPerSecondSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecond'))
+const BlocksPerSecondSquaredSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecondSquared'))
+const PROJECTILE_FIXED_STEP_SECONDS = 1 / 20
+const PROJECTILE_AGE_TOLERANCE_SECONDS = 1e-9
+const BLAZE_FIREBALL_PROFILE: ProjectileProfile = {
+  ...ARROW_PROFILE,
+  gravity: Schema.decodeUnknownSync(BlocksPerSecondSquaredSchema)(0),
+  airDrag: 1,
+  waterDrag: 1,
+  maxLifetimeSeconds: FixedDurationSecs(3),
+}
+
+const projectileAxis = (value: number): number & Brand.Brand<'PositionAxis'> =>
+  Result.getOrThrow(PositionAxis.result(value))
+
+const projectileAabb = (
+  feet: Position,
+  widthX: number,
+  widthZ: number,
+  height: number,
+): ProjectileWorld['entities'][number]['bounds'] => {
+  // Position coordinates are finite and every dimension below is a finite constant.
+  return {
+    minX: projectileAxis(feet.x - widthX / 2),
+    minY: projectileAxis(feet.y),
+    minZ: projectileAxis(feet.z - widthZ / 2),
+    maxX: projectileAxis(feet.x + widthX / 2),
+    maxY: projectileAxis(feet.y + height),
+    maxZ: projectileAxis(feet.z + widthZ / 2),
+  }
+}
+
+const projectileEntitySize = (kind: string): readonly [number, number] =>
+  kind === SPIDER_KIND ? [1.4, 0.9]
+    : kind === 'chicken' ? [0.4, 0.7]
+      : kind === 'cow' || kind === 'sheep' ? [0.9, 1.4]
+        : kind === 'pig' ? [0.9, 0.9]
+          : kind === 'enderman' ? [0.6, 2.9]
+            : [0.6, 1.8]
+
+type ProjectileWorldAdapter = Readonly<{
+  readonly world: ProjectileWorld
+  readonly queryFailure: () => EntityWorldQueryFailure | undefined
+  readonly lineOfSight: (from: Position, to: Position) => Result.Result<boolean, ProjectileLineOfSightFailure>
+  readonly resetUnloadedCells: () => void
+  readonly unloadedEntryFraction: () => number | undefined
+}>
+
+type ProjectileLineOfSightFailure = EntityWorldQueryFailure | Readonly<{
+  _tag: 'ProjectilePathUnavailable'
+  cell: EntityWorldCellPosition
+}>
+
+type ProjectileBlockShape = (typeof COLLISION_SHAPE_AABBS)[keyof typeof COLLISION_SHAPE_AABBS]
+type UnloadedEntityWorldCell = Extract<EntityWorldCell, { _tag: 'Unloaded' }>
+
+const projectileTickMustPauseForCell = (cell: EntityWorldCell): cell is UnloadedEntityWorldCell => cell._tag === 'Unloaded'
+const projectileRayMustDeferForCell = projectileTickMustPauseForCell
+
+const segmentEntryFraction = (
+  start: Position,
+  end: Position,
+  cell: Readonly<{ x: number; y: number; z: number }>,
+): number | undefined => {
+  let entry = 0
+  let exit = 1
+  const axes: ReadonlyArray<readonly [number, number, number]> = [
+    [start.x, end.x, cell.x],
+    [start.y, end.y, cell.y],
+    [start.z, end.z, cell.z],
+  ]
+  for (const [from, to, min] of axes) {
+    const delta = to - from
+    if (delta === 0) {
+      // blockBounds only visits the segment's floored AABB, so this axis is in the cell.
+      continue
+    }
+    const first = (min - from) / delta
+    const second = (min + 1 - from) / delta
+    entry = Math.max(entry, Math.min(first, second))
+    exit = Math.min(exit, Math.max(first, second))
+    if (entry > exit) return undefined
+  }
+  if (exit < 0 || entry > 1 || (entry === exit && entry !== 1)) return undefined
+  return Math.max(0, entry)
+}
+
+const projectileWorldFor = (
+  roster: GameplayEntityRoster,
+  player: Position,
+  dimension: Dimension,
+  window: import('../domain/chunk-window.js').ChunkWindow,
+  coords: ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]>,
+): ProjectileWorldAdapter => {
+  const chunksX = coords.map(({ cx }) => Number(cx))
+  const chunksZ = coords.map(({ cz }) => Number(cz))
+  const bounds: ProjectileWorld['entities'][number]['bounds'] = {
+    minX: projectileAxis(Math.min(...chunksX) * CHUNK_SIZE_XZ),
+    minY: projectileAxis(0),
+    minZ: projectileAxis(Math.min(...chunksZ) * CHUNK_SIZE_XZ),
+    maxX: projectileAxis((Math.max(...chunksX) + 1) * CHUNK_SIZE_XZ),
+    maxY: projectileAxis(256),
+    maxZ: projectileAxis((Math.max(...chunksZ) + 1) * CHUNK_SIZE_XZ),
+  }
+  const entities: ProjectileWorld['entities'][number][] = []
+  const playerBounds = projectileAabb(player, 0.6, 0.6, 1.8)
+  entities.push({ id: PLAYER_BLAST_ENTITY_ID, bounds: playerBounds })
+  for (const entity of roster.entities) {
+    if (entity.dimension !== undefined && entity.dimension !== dimension) continue
+    if (isMobBehaviourRepairFault(entity.behaviour)) continue
+    if (isDroppedItemBehaviour(entity.behaviour)) continue
+    const [width, height] = projectileEntitySize(entity.kind)
+    const entityBounds = projectileAabb(entity.feetPosition, width, width, height)
+    entities.push({ id: entity.id, bounds: entityBounds })
+  }
+
+  let firstFailure: EntityWorldQueryFailure | undefined
+  let firstUnloadedEntryFraction: number | undefined
+  const rememberFailure = (failure: EntityWorldQueryFailure): void => {
+    firstFailure ??= failure
+  }
+  const cellAt = (at: Position) => {
+    const bx = BlockAxis.result(Math.floor(at.x))
+    const by = BlockAxis.result(Math.floor(at.y))
+    const bz = BlockAxis.result(Math.floor(at.z))
+    if (Result.isFailure(bx) || Result.isFailure(by) || Result.isFailure(bz)) {
+      return Result.fail({ _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: at } as const)
+    }
+    const cellPosition = { x: bx.success, y: by.success, z: bz.success }
+    return Result.map(entityWorldCellAt(window, cellPosition), (cell) => ({ position: cellPosition, cell }))
+  }
+  const collisionShapeAtCell = (cell: Exclude<EntityWorldCell, UnloadedEntityWorldCell>): ProjectileBlockShape => {
+    switch (cell._tag) {
+      case 'Loaded': return COLLISION_SHAPE_AABBS[cell.properties.collisionShape]
+      case 'AboveWorld':
+        return null
+      case 'BelowWorld':
+        return null
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = cell
+        return exhaustive
+      }
+      /* v8 ignore stop */
+    }
+  }
+  const lineOfSight: ProjectileWorldAdapter['lineOfSight'] = (from, to) => {
+    const rayFailure: { value: EntityWorldQueryFailure | undefined } = { value: undefined }
+    let rayUnavailable: Extract<ProjectileLineOfSightFailure, { _tag: 'ProjectilePathUnavailable' }> | undefined
+    const ray = raycastArrowBlock(from, to, (x, y, z) => {
+      const result = cellAt(position(PositionAxis(x), PositionAxis(y), PositionAxis(z)))
+      if (Result.isFailure(result)) {
+        rayFailure.value ??= result.failure
+        return true
+      }
+      if (projectileRayMustDeferForCell(result.success.cell)) {
+        rayUnavailable ??= { _tag: 'ProjectilePathUnavailable', cell: result.success.position }
+        return true
+      }
+      return collisionShapeAtCell(result.success.cell) !== null
+    })
+    if (rayFailure.value !== undefined) {
+      rememberFailure(rayFailure.value)
+      return Result.fail(rayFailure.value)
+    }
+    if (rayUnavailable !== undefined) return Result.fail(rayUnavailable)
+    return Result.succeed(Result.isSuccess(ray) && Option.isNone(ray.success))
+  }
+  const world: ProjectileWorld = {
+    bounds,
+    entities,
+    isInWater: (at) => {
+      const result = cellAt(at)
+      if (Result.isFailure(result)) {
+        rememberFailure(result.failure)
+        return false
+      }
+      const { cell } = result.success
+      switch (cell._tag) {
+        case 'Loaded': return cell.properties.fluid === 'water'
+        case 'Unloaded': return false
+        case 'AboveWorld':
+          return false
+        case 'BelowWorld':
+          return false
+        /* v8 ignore start */
+        default: {
+          const exhaustive: never = cell
+          return exhaustive
+        }
+        /* v8 ignore stop */
+      }
+    },
+    blockBounds: (start, end) => {
+      const minX = Math.floor(Math.min(start.x, end.x))
+      const minY = Math.floor(Math.min(start.y, end.y))
+      const minZ = Math.floor(Math.min(start.z, end.z))
+      const maxX = Math.floor(Math.max(start.x, end.x))
+      const maxY = Math.floor(Math.max(start.y, end.y))
+      const maxZ = Math.floor(Math.max(start.z, end.z))
+      if ([minX, minY, minZ, maxX, maxY, maxZ].some((value) => !Number.isSafeInteger(value))) return [bounds]
+      if (maxX - minX > 16 || maxY - minY > 16 || maxZ - minZ > 16) return [bounds]
+      const boxes: Array<ReturnType<ProjectileWorld['blockBounds']>[number]> = []
+      for (let x = minX; x <= maxX; x += 1) {
+        for (let y = minY; y <= maxY; y += 1) {
+          for (let z = minZ; z <= maxZ; z += 1) {
+            const result = cellAt(position(PositionAxis(x), PositionAxis(y), PositionAxis(z)))
+            if (Result.isFailure(result)) {
+              rememberFailure(result.failure)
+              continue
+            }
+            const { cell } = result.success
+            if (projectileTickMustPauseForCell(cell)) {
+              const entry = segmentEntryFraction(start, end, { x, y, z })
+              if (entry !== undefined && (firstUnloadedEntryFraction === undefined || entry < firstUnloadedEntryFraction)) {
+                firstUnloadedEntryFraction = entry
+              }
+              continue
+            }
+            const shape = collisionShapeAtCell(cell)
+            if (shape === null) continue
+            boxes.push({
+              minX: projectileAxis(x + shape.minX),
+              minY: projectileAxis(y + shape.minY),
+              minZ: projectileAxis(z + shape.minZ),
+              maxX: projectileAxis(x + shape.maxX),
+              maxY: projectileAxis(y + shape.maxY),
+              maxZ: projectileAxis(z + shape.maxZ),
+            })
+          }
+        }
+      }
+      return boxes
+    },
+  }
+  return {
+    world,
+    queryFailure: () => firstFailure,
+    lineOfSight,
+    resetUnloadedCells: () => { firstUnloadedEntryFraction = undefined },
+    unloadedEntryFraction: () => firstUnloadedEntryFraction,
+  }
+}
+
+const mobProjectileId = (source: string, tick: number, fireball: boolean): string =>
+  `mx-gameplay:mob:${fireball ? 'fireball' : 'arrow'}:${source}:${tick}`
+
+type MobProjectileStep = Readonly<{
+  readonly impacts: ReadonlyArray<MobProjectilePendingImpact>
+  readonly retiredIds: ReadonlyArray<ProjectileId>
+}>
+
+const noMobProjectileStep: MobProjectileStep = { impacts: [], retiredIds: [] }
+
+const projectileLaunchTick = (id: string): number | undefined => {
+  const launchTick = Number(id.slice(id.lastIndexOf(':') + 1))
+  return Number.isSafeInteger(launchTick) && launchTick >= 0 ? launchTick : undefined
+}
+
+const pendingMobProjectileImpact = (
+  id: ProjectileId,
+  source: import('@nerima-games/mc-sim').EntityId,
+  hit: ProjectileHit,
+  dimension: Dimension,
+): MobProjectilePendingImpact => {
+  const point = Schema.decodeUnknownSync(WorldPositionSchema)({ dimension, ...hit.point })
+  return {
+    id,
+    source,
+    kind: String(id).includes(':fireball:') ? BLAZE_KIND : SKELETON_KIND,
+    hit: hit.kind === 'entity'
+      ? { kind: 'entity', entityId: hit.entityId, point }
+      : { kind: 'block', point },
+  }
+}
+
+const launchAndStepMobProjectiles = (
+  context: GameplayStageContext,
+  attacks: ReadonlyArray<MobAttackEvent>,
+  roster: GameplayEntityRoster,
+  playerPosition: Position,
+  dimension: Dimension,
+  tick: import('@nerima-games/mc-kernel').SimulationTick,
+  window: import('../domain/chunk-window.js').ChunkWindow | undefined,
+  store: GameplayStageContext['store'],
+  coords: ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]>,
+): Effect.Effect<MobProjectileStep, unknown> => Effect.gen(function* () {
+  // runMobSimulation returns before this helper when no coordinator is available.
+  const commit = context.commit!
+  const ranged = attacks.filter(({ mode }) => mode === 'projectile')
+  const service = commit.projectileService
+  if (service === undefined || commit.projectileOwnerId === undefined) {
+    let hasMobProjectiles = false
+    if (commit.projectileOwnerId !== undefined) {
+      const outstanding = yield* Effect.result(commit.coordinator.snapshot(
+        commit.projectileOwnerId,
+        ProjectileServiceSnapshotSchema,
+      ))
+      if (Result.isFailure(outstanding)) {
+        if (outstanding.failure._tag === 'ReplicatedOwnerUnknown') {
+          yield* unsupportedMobSimulation(context.state, 'OwnerRegistrationUnavailable')
+          return noMobProjectileStep
+        }
+        return yield* Effect.fail(outstanding.failure)
+      }
+      const resolvedProjectileIds = new Set(roster.resolvedMobProjectileIds ?? [])
+      hasMobProjectiles = outstanding.success.state.projectiles.some(({ id, dimension: projectileDimension }) =>
+        projectileDimension === dimension && String(id).startsWith('mx-gameplay:mob:') && !resolvedProjectileIds.has(id))
+    }
+    if (ranged.length > 0 || hasMobProjectiles || (roster.pendingMobProjectileImpacts?.length ?? 0) > 0) {
+      yield* unsupportedMobSimulation(context.state, 'OwnerRegistrationUnavailable')
+    }
+    return noMobProjectileStep
+  }
+  const currentTick = Number(tick)
+  const resolvedProjectileIds = new Set((roster.resolvedMobProjectileIds ?? [])
+    .filter((id) => projectileLaunchTick(String(id)) === currentTick))
+  const initial = yield* service.snapshot
+  const existingIds = new Set(initial.state.projectiles.map(({ id }) => String(id)))
+  const unresolvedMobProjectiles = initial.state.projectiles.filter(({ id, dimension: recordDimension }) =>
+    recordDimension === dimension && String(id).startsWith('mx-gameplay:mob:') && !resolvedProjectileIds.has(id))
+  const hasUnresolvedMobProjectiles = unresolvedMobProjectiles.length > 0
+  const pendingForDimension = (roster.pendingMobProjectileImpacts ?? [])
+    .filter(({ hit }) => hit.point.dimension === dimension)
+  if (ranged.length > 0 || hasUnresolvedMobProjectiles || pendingForDimension.length > 0) {
+    if (commit.entitiesOwnerId === undefined || commit.playerOwnerId === undefined ||
+      commit.playerStorageOwnerId === undefined || commit.vitalsOwnerId === undefined ||
+      commit.droppedItemsOwnerId === undefined) {
+      yield* unsupportedMobSimulation(context.state, 'OwnerRegistrationUnavailable')
+      return noMobProjectileStep
+    }
+    const preflight = yield* Effect.result(Effect.all([
+      commit.coordinator.snapshot(commit.entitiesOwnerId, GameplayEntityRosterSchema),
+      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
+      commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
+      commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
+      commit.coordinator.snapshot(commit.droppedItemsOwnerId, DroppedItemOwnerSnapshotSchema),
+    ]))
+    if (Result.isFailure(preflight)) {
+      if (preflight.failure._tag === 'ReplicatedOwnerUnknown') {
+        yield* unsupportedMobSimulation(context.state, 'OwnerRegistrationUnavailable')
+        return noMobProjectileStep
+      }
+      return yield* Effect.fail(preflight.failure)
+    }
+  }
+  let projectileWindow = window
+  let world: ProjectileWorldAdapter | undefined = undefined
+  if (ranged.length > 0) {
+    // A ranged attack comes from a valid in-dimension mob, which contributes its chunk to `coords`.
+    if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
+    world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
+  } else if (hasUnresolvedMobProjectiles && coords.length > 0) {
+    if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
+    world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
+  }
+  const sourceById = new Map(roster.entities.map((entity) => [entity.id, entity]))
+  const newlyLaunchedIds = new Set<string>()
+  for (const attack of ranged) {
+    const source = sourceById.get(attack.source)
+    if (source === undefined) continue
+    // `stepEcosystemMob` emits projectile attacks only for skeletons and blazes.
+    const eyeY = projectileAxis(source.feetPosition.y + (source.kind === BLAZE_KIND ? 1.5 : 1.62))
+    const targetY = projectileAxis(playerPosition.y + 1.62)
+    const from = position(PositionAxis(source.feetPosition.x), eyeY, PositionAxis(source.feetPosition.z))
+    const to = position(PositionAxis(playerPosition.x), targetY, PositionAxis(playerPosition.z))
+    // A non-empty `ranged` list opened this window above.
+    const lineOfSight = world!.lineOfSight(from, to)
+    if (Result.isFailure(lineOfSight)) {
+      if (lineOfSight.failure._tag === 'ProjectilePathUnavailable') continue
+      yield* recordEntityWorldDataFault(context.state, 'ProjectileLineOfSight', lineOfSight.failure, source.id)
+      continue
+    }
+    if (!lineOfSight.success) continue
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const dz = to.z - from.z
+    const horizontal = Math.hypot(dx, dz)
+    // Ranged policies only emit inside finite distance bands with a positive minimum.
+    const fireball = source.kind === BLAZE_KIND
+    const rawId = mobProjectileId(String(source.id), Number(tick), fireball)
+    const projectileId = Schema.decodeUnknownSync(ProjectileIdSchema)(rawId)
+    if (existingIds.has(rawId) || resolvedProjectileIds.has(projectileId)) continue
+    const request: ProjectileLaunchRequest = {
+      projectileId,
+      dimension,
+      shooter: source.id,
+      tick,
+      expectedRevision: yield* commit.coordinator.revision,
+      expectedDimensionRevision: yield* commit.coordinator.dimensionRevision(dimension),
+      kind: 'projectile',
+      position: from,
+      yawRadians: AngleRadians(Math.atan2(-dx, -dz)),
+      pitchRadians: AngleRadians(-Math.atan2(dy, horizontal)),
+      speed: Schema.decodeUnknownSync(BlocksPerSecondSchema)(fireball ? 20 : 60),
+      profile: fireball ? BLAZE_FIREBALL_PROFILE : ARROW_PROFILE,
+    }
+    yield* service.launch(request)
+    existingIds.add(rawId)
+    newlyLaunchedIds.add(rawId)
+  }
+
+  const projectileSnapshot = yield* service.snapshot
+  const mobRecords = projectileSnapshot.state.projectiles.filter(({ id, dimension: recordDimension }) => {
+    const value = String(id)
+    return value.startsWith('mx-gameplay:mob:') && recordDimension === dimension && !resolvedProjectileIds.has(id)
+  })
+  if (mobRecords.length === 0 && pendingForDimension.length === 0) return noMobProjectileStep
+  const projectileAdapter = world
+  const entitiesOwnerId = commit.entitiesOwnerId!
+  const entitySnapshot = yield* commit.coordinator.snapshot(entitiesOwnerId, GameplayEntityRosterSchema)
+  if (projectileSnapshot.revision !== entitySnapshot.revision) {
+    return yield* Effect.fail(new WorldRevisionConflict({
+      expected: projectileSnapshot.revision,
+      actual: entitySnapshot.revision,
+    }))
+  }
+  const dimensionRevision = yield* commit.coordinator.dimensionRevision(dimension)
+  const currentPending = entitySnapshot.state.pendingMobProjectileImpacts ?? []
+  const pendingById = new Map(currentPending.map((impact) => [impact.id, impact]))
+  const newPending: MobProjectilePendingImpact[] = []
+  const toStep: Array<Readonly<{
+    id: ProjectileId
+    record: typeof mobRecords[number]
+    previewHit: boolean
+    world: ProjectileWorld
+  }>> = []
+  const retiredIds: ProjectileId[] = []
+
+  for (const record of mobRecords) {
+    if (pendingById.has(record.id)) continue
+    if (record.projectile.state === 'stuck') {
+      newPending.push(pendingMobProjectileImpact(record.id, record.shooter, record.projectile.hit, record.dimension))
+      continue
+    }
+    if (record.projectile.state === 'despawned') {
+      if (record.projectile.reason === 'entity-hit') {
+        return yield* Effect.fail({ _tag: 'MobProjectileImpactOutcomeUnavailable', projectileId: record.id })
+      }
+      retiredIds.push(record.id)
+      continue
+    }
+    const id = String(record.id)
+    const launchTick = projectileLaunchTick(id)
+    if (launchTick === undefined) continue
+    if (launchTick === currentTick && !newlyLaunchedIds.has(id)) continue
+    const expectedAge = Math.max(0, (currentTick - launchTick) * PROJECTILE_FIXED_STEP_SECONDS)
+    if (record.projectile.ageSeconds + PROJECTILE_AGE_TOLERANCE_SECONDS >= expectedAge + PROJECTILE_FIXED_STEP_SECONDS) continue
+    if (projectileAdapter === undefined) {
+      if (coords.length === 0) {
+        const invalidPosition = mobMovementCell(record.projectile.position) === undefined
+          ? record.projectile.position
+          : playerPosition
+        yield* recordEntityWorldDataFault(context.state, 'ProjectileStep', {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: invalidPosition,
+        }, record.shooter)
+        continue
+      }
+      return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
+    }
+    projectileAdapter.resetUnloadedCells()
+    const preview = stepProjectile(
+      record.projectile,
+      DeltaTimeSecs(PROJECTILE_FIXED_STEP_SECONDS),
+      projectileAdapter.world,
+      record.profile,
+    )
+    const queryFailure = projectileAdapter.queryFailure()
+    if (queryFailure !== undefined) {
+      yield* recordEntityWorldDataFault(context.state, 'ProjectileStep', queryFailure, record.shooter)
+      continue
+    }
+    const unloadedEntry = projectileAdapter.unloadedEntryFraction()
+    const hitElapsed = preview.hit === undefined
+      ? PROJECTILE_FIXED_STEP_SECONDS
+      : Number(preview.hit.flightTimeSeconds) - Number(record.projectile.ageSeconds)
+    if (unloadedEntry !== undefined && unloadedEntry * PROJECTILE_FIXED_STEP_SECONDS <= hitElapsed) continue
+    toStep.push({ id: record.id, record, previewHit: preview.hit !== undefined, world: projectileAdapter.world })
+    if (preview.hit !== undefined) {
+      newPending.push(pendingMobProjectileImpact(record.id, record.shooter, preview.hit, record.dimension))
+    }
+  }
+
+  const mergedPending = new Map(pendingById)
+  for (const impact of newPending) mergedPending.set(impact.id, impact)
+  const pendingCandidate = [...mergedPending.values()]
+  let expectedRevision = entitySnapshot.revision
+  if (!Equal.equals(currentPending, pendingCandidate)) {
+    const delta = yield* commit.coordinator.commit({
+      expectedRevision: entitySnapshot.revision,
+      expectedDimensions: [],
+      changes: [{
+        ownerId: entitiesOwnerId,
+        state: { ...entitySnapshot.state, pendingMobProjectileImpacts: pendingCandidate },
+      }],
+    })
+    expectedRevision = delta.revision
+  }
+
+  for (const candidate of toStep) {
+    const outcome = yield* service.step({
+      projectileId: candidate.id,
+      tick,
+      expectedRevision,
+      expectedDimensionRevision: dimensionRevision,
+      deltaTime: DeltaTimeSecs(PROJECTILE_FIXED_STEP_SECONDS),
+      world: candidate.world,
+      blockAddressOfHit: (hit) => {
+        return {
+          dimension: Schema.decodeUnknownSync(DimensionIdSchema)(candidate.record.dimension),
+          // Block hits come only from AABBs built from validated BlockAxis cells.
+          position: blockPosition(
+            BlockAxis(Math.floor(hit.point.x)),
+            BlockAxis(Math.floor(hit.point.y)),
+            BlockAxis(Math.floor(hit.point.z)),
+          ),
+        }
+      },
+    })
+    if (candidate.previewHit !== (outcome.hit !== undefined)) {
+      return yield* Effect.fail({ _tag: 'MobProjectilePreviewMismatch', projectileId: candidate.id })
+    }
+    expectedRevision = outcome.revision
+  }
+
+  const impacts = [...mergedPending.values()].filter(({ hit }) => hit.point.dimension === dimension)
+  return { impacts, retiredIds }
+})
+
+type MobProjectileResolution = Readonly<{
+  readonly playerDamages: ReadonlyArray<PlayerDamageEvent>
+  readonly drops: ReadonlyArray<MobDropEvent>
+  readonly experience: ReadonlyArray<MobExperienceEvent>
+  readonly seed: number
+  readonly shield: ShieldBlockingState | null
+  readonly immunity: DamageImmunityState | null
+  readonly ignitions: ReadonlyArray<BurningActor>
+}>
+
+const resolveMobProjectileImpactsOnce = (
+  context: GameplayStageContext,
+  impacts: ReadonlyArray<MobProjectilePendingImpact>,
+  retiredIds: ReadonlyArray<ProjectileId>,
+  dimension: Dimension,
+  tick: import('@nerima-games/mc-kernel').SimulationTick,
+  difficulty: import('../domain/survival-hunger.js').SurvivalDifficulty,
+  seed: number,
+  currentShield: ShieldBlockingState | null,
+  currentImmunity: DamageImmunityState | null,
+): Effect.Effect<MobProjectileResolution, unknown> => Effect.gen(function* () {
+  const { commit } = context
+  const noChange: MobProjectileResolution = {
+    playerDamages: [],
+    drops: [],
+    experience: [],
+    seed,
+    shield: currentShield,
+    immunity: currentImmunity,
+    ignitions: [],
+  }
+  if (impacts.length === 0 && retiredIds.length === 0) return noChange
+  // The only caller supplies outcomes from launchAndStepMobProjectiles, which
+  // returns no outcomes when the stage has no commit coordinator.
+  const projectileCommit = commit!
+  const entitiesOwnerId = projectileCommit.entitiesOwnerId!
+  const projectileOwnerId = projectileCommit.projectileOwnerId!
+
+  const entitySnapshot = yield* projectileCommit.coordinator.snapshot(entitiesOwnerId, GameplayEntityRosterSchema)
+  const expectedRevision = entitySnapshot.revision
+  const resolved = new Set(entitySnapshot.state.resolvedMobProjectileIds ?? [])
+  const pendingImpacts = impacts.filter(({ id }) => !resolved.has(id))
+  const consumedIds = new Set(impacts.map(({ id }) => id))
+  const projectileSnapshot = yield* projectileCommit.coordinator.snapshot(projectileOwnerId, ProjectileServiceSnapshotSchema)
+  if (projectileSnapshot.revision !== expectedRevision) {
+    return yield* Effect.fail(new WorldRevisionConflict({
+      expected: expectedRevision,
+      actual: projectileSnapshot.revision,
+    }))
+  }
+  const playerImpacts = pendingImpacts.filter(({ hit }) => hit.kind === 'entity' && hit.entityId === PLAYER_BLAST_ENTITY_ID)
+  const entityById = new Map(entitySnapshot.state.entities.map((entity) => [entity.id, entity]))
+  const mobHits: MobDamageHit[] = pendingImpacts.flatMap((impact) => {
+    if (impact.hit.kind !== 'entity' || !entityById.has(impact.hit.entityId)) return []
+    return [{
+      id: impact.hit.entityId,
+      damage: { amount: impact.kind === BLAZE_KIND ? 6 : 3, cause: impact.kind === BLAZE_KIND ? 'in_fire' : 'projectile' },
+      burning: impact.kind === BLAZE_KIND,
+    }]
+  })
+  let damagePlan = planMobDamageRoster(entitySnapshot.state, mobHits, tick)
+  for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(context.state, fault)
+  const casualtyDropsResult = rollCasualtyDrops(damagePlan.casualties, seed)
+  if (Result.isFailure(casualtyDropsResult)) {
+    if (damagePlan.casualties.length === 0) {
+      yield* recordGameplayStageFailure(context.state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
+      })
+    } else {
+      const affectedIds = new Set(damagePlan.casualties.map(({ id }) => id))
+      for (const casualty of damagePlan.casualties) {
+        yield* recordGameplayEntityStageFault(context.state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyDropsResult.failure,
+        })
+      }
+      damagePlan = planMobDamageRoster(
+        entitySnapshot.state,
+        mobHits.filter(({ id }) => !affectedIds.has(id)),
+        tick,
+      )
+    }
+  }
+  let casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
+  const casualtyExperienceResult = casualtyDrops === undefined
+    ? undefined
+    : rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
+  if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
+    const affectedCasualties = damagePlan.casualties
+    if (affectedCasualties.length === 0) {
+      yield* recordGameplayStageFailure(context.state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
+      })
+    } else {
+      const affectedIds = new Set(affectedCasualties.map(({ id }) => id))
+      for (const casualty of affectedCasualties) {
+        yield* recordGameplayEntityStageFault(context.state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
+        })
+      }
+      damagePlan = planMobDamageRoster(
+        entitySnapshot.state,
+        mobHits.filter(({ id }) => !affectedIds.has(id)),
+        tick,
+      )
+      casualtyDrops = undefined
+    }
+  }
+  const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
+    ? undefined
+    : casualtyExperienceResult.success
+  const nextRewardSeed = casualtyExperience?.seed ?? casualtyDrops?.seed ?? seed
+  const entityCandidateResult = restoreGameplayEntityMetadata(
+    damagePlan.roster,
+    entitySnapshot.state,
+    dimension,
+  )
+  if (Result.isFailure(entityCandidateResult)) {
+    yield* recordGameplayStageFailure(context.state, {
+      _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidateResult.failure,
+    })
+    return noChange
+  }
+  const entityCandidate = entityCandidateResult.success
+  const currentTick = Number(tick)
+  const resolvedMobProjectileIds = new Set(
+    [...resolved].filter((id) => projectileLaunchTick(String(id)) === currentTick),
+  )
+  for (const impact of impacts) resolvedMobProjectileIds.add(impact.id)
+  const entityCandidateWithProjectileMarkers = {
+    ...entityCandidate,
+    resolvedMobProjectileIds: [...resolvedMobProjectileIds],
+    pendingMobProjectileImpacts: (entitySnapshot.state.pendingMobProjectileImpacts ?? [])
+      .filter(({ id }) => !consumedIds.has(id)),
+  }
+  const projectileCandidate = {
+    projectiles: projectileSnapshot.state.projectiles.filter(({ id }) =>
+      !consumedIds.has(id) && !retiredIds.includes(id)),
+  }
+
+  let storageSnapshot: Readonly<{ revision: number; state: PlayerStorage }> | undefined
+  let vitalsSnapshot: Readonly<{ revision: number; state: { readonly vitals: import('@nerima-games/mc-sim').Vitals } }> | undefined
+  let storage: PlayerStorage | undefined
+  let vitals: import('@nerima-games/mc-sim').Vitals | undefined
+  let shield = currentShield
+  let immunity = currentImmunity
+  const playerDamages: PlayerDamageEvent[] = []
+  const ignitedPlayers = new Set<string>()
+  if (playerImpacts.length > 0) {
+    const [playerSnapshot, readStorage, readVitals] = yield* Effect.all([
+      projectileCommit.coordinator.snapshot(projectileCommit.playerOwnerId!, PlayerServiceSnapshotSchema),
+      projectileCommit.coordinator.snapshot(projectileCommit.playerStorageOwnerId!, PlayerStorageSnapshotSchema),
+      projectileCommit.coordinator.snapshot(projectileCommit.vitalsOwnerId!, ExperienceOrbVitalsOwnerSnapshotSchema),
+    ])
+    if (playerSnapshot.revision !== expectedRevision || readStorage.revision !== expectedRevision || readVitals.revision !== expectedRevision) {
+      return yield* Effect.fail(new WorldRevisionConflict({
+        expected: expectedRevision,
+        actual: playerSnapshot.revision !== expectedRevision
+          ? playerSnapshot.revision
+          : readStorage.revision !== expectedRevision
+            ? readStorage.revision
+            : readVitals.revision,
+      }))
+    }
+    storageSnapshot = readStorage
+    vitalsSnapshot = readVitals
+    storage = readStorage.state
+    vitals = readVitals.state.vitals
+    const playerPose = playerSnapshot.state.pose
+    const pose = {
+      feetPosition: {
+        x: playerPose.feetPosition.x,
+        y: playerPose.feetPosition.y,
+        z: playerPose.feetPosition.z,
+      },
+      yawRadians: playerPose.yawRadians,
+      pitchRadians: playerPose.pitchRadians,
+    }
+    for (const impact of playerImpacts) {
+      const attacker = entityById.get(impact.source)
+      const attackerAt = attacker?.feetPosition ?? impact.hit.point
+      const burning = impact.kind === BLAZE_KIND
+      const incoming = {
+        attacker: impact.source,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({ dimension, ...attackerAt }),
+        kind: 'projectile' as const,
+        amount: burning ? 6 : 3,
+      }
+      const intent = {
+        _tag: 'SetShieldBlocking' as const,
+        actor: PLAYER_BLAST_ENTITY_ID,
+        blocking: shield !== null,
+      }
+      const prepared: HostileAttackPreparation = yield* Effect.fromResult(prepareHostileAttack(intent, {
+        tick,
+        dimension,
+        pose,
+        hasShield: storage.equipment.slots.offhand?.item === 'shield',
+        currentShield: shield,
+        incoming,
+        difficulty,
+        damageState: immunity,
+      }))
+      shield = prepared.shield.blocking && prepared.shield.raisedAt !== null
+        ? { actor: prepared.shield.actor, raisedAt: prepared.shield.raisedAt }
+        : null
+      immunity = prepared.damageState
+      if (prepared.shield.durabilityDamage > 0) {
+        storage = damageAt(storage, { _tag: 'Equipment', slot: 'offhand' }, prepared.shield.durabilityDamage).storage
+        if (storage.equipment.slots.offhand?.item !== 'shield') shield = null
+      }
+      if (prepared.appliedAmount === 0) continue
+      const armor: ArmorHitResolution = yield* Effect.fromResult(prepareArmorHit(storage.equipment, {
+        amount: prepared.appliedAmount,
+        cause: impact.kind === BLAZE_KIND ? 'in_fire' : 'projectile',
+      }))
+      const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+      const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+      vitals = applyVitalsDamage(vitals, { amount, cause })
+      for (const slot of armor.wornSlots) {
+        storage = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear).storage
+      }
+      playerDamages.push({
+        _tag: 'HostileContact',
+        source: impact.source,
+        kind: impact.kind,
+        at: impact.hit.point,
+        damage: armor.damage,
+      })
+      if (impact.kind === BLAZE_KIND) ignitedPlayers.add(impact.id)
+    }
+  }
+
+  let droppedCandidate: DroppedItemOwnerSnapshot | undefined
+  if ((casualtyDrops?.drops.length ?? 0) > 0) {
+    const droppedItemsOwnerId = projectileCommit.droppedItemsOwnerId!
+    const snapshot = yield* projectileCommit.coordinator.snapshot(droppedItemsOwnerId, DroppedItemOwnerSnapshotSchema)
+    if (snapshot.revision !== expectedRevision) {
+      return yield* Effect.fail(new WorldRevisionConflict({ expected: expectedRevision, actual: snapshot.revision }))
+    }
+    droppedCandidate = yield* Effect.fromResult(appendDroppedItemSpawns(
+      snapshot.state,
+      casualtyDrops!.drops.map(({ item, count, at }) => ({ item, count, at })),
+      expectedRevision,
+    ))
+  }
+
+  const changes: ReplicatedOwnerCandidate[] = []
+  if (!Equal.equals(entitySnapshot.state, entityCandidateWithProjectileMarkers)) {
+    changes.push({ ownerId: entitiesOwnerId, state: entityCandidateWithProjectileMarkers })
+  }
+  if (!Equal.equals(projectileSnapshot.state, projectileCandidate)) {
+    changes.push({ ownerId: projectileOwnerId, state: projectileCandidate })
+  }
+  if (storageSnapshot !== undefined && storage !== undefined && !Equal.equals(storageSnapshot.state, storage)) {
+    changes.push({ ownerId: projectileCommit.playerStorageOwnerId!, state: storage })
+  }
+  if (vitalsSnapshot !== undefined && vitals !== undefined && !Equal.equals(vitalsSnapshot.state.vitals, vitals)) {
+    changes.push({ ownerId: projectileCommit.vitalsOwnerId!, state: { vitals } })
+  }
+  if (droppedCandidate !== undefined) {
+    changes.push({ ownerId: projectileCommit.droppedItemsOwnerId!, state: droppedCandidate })
+  }
+  // Non-empty impacts consume a pending roster entry, and retired IDs remove
+  // a projectile record; this function only runs when one of those sets exists.
+  yield* projectileCommit.coordinator.commit({ expectedRevision, expectedDimensions: [], changes })
+
+  const livingEntityIds = new Set(damagePlan.roster.entities.map(({ id }) => id))
+  const ignitions: BurningActor[] = pendingImpacts.flatMap((impact): ReadonlyArray<BurningActor> => {
+    const hit = impact.hit
+    if (impact.kind !== BLAZE_KIND || hit.kind !== 'entity') return []
+    if (hit.entityId === PLAYER_BLAST_ENTITY_ID) {
+      if (!ignitedPlayers.has(impact.id)) return []
+      return [{
+        id: 'player',
+        kind: 'player',
+        position: { x: Math.floor(hit.point.x), y: Math.floor(hit.point.y), z: Math.floor(hit.point.z) },
+        remainingTicks: 100,
+        damageCooldownTicks: 20,
+      }]
+    }
+    if (!livingEntityIds.has(hit.entityId)) return []
+    const target = damagePlan.roster.entities.find(({ id }) => id === hit.entityId)!
+    return [{
+      id: String(target.id),
+      kind: 'entity',
+      position: { x: Math.floor(target.feetPosition.x), y: Math.floor(target.feetPosition.y), z: Math.floor(target.feetPosition.z) },
+      remainingTicks: 100,
+      damageCooldownTicks: 20,
+    }]
+  })
+  return {
+    playerDamages,
+    drops: casualtyDrops?.drops ?? [],
+    experience: casualtyExperience?.experience ?? [],
+    seed: nextRewardSeed,
+    shield,
+    immunity,
+    ignitions,
+  }
+})
+
+const resolveMobProjectileImpacts = (
+  context: GameplayStageContext,
+  impacts: ReadonlyArray<MobProjectilePendingImpact>,
+  retiredIds: ReadonlyArray<ProjectileId>,
+  dimension: Dimension,
+  tick: import('@nerima-games/mc-kernel').SimulationTick,
+  difficulty: import('../domain/survival-hunger.js').SurvivalDifficulty,
+  seed: number,
+  currentShield: ShieldBlockingState | null,
+  currentImmunity: DamageImmunityState | null,
+): Effect.Effect<MobProjectileResolution, unknown> => {
+  const retryRevisionConflict = (retriesRemaining: number): Effect.Effect<MobProjectileResolution, unknown> =>
+    resolveMobProjectileImpactsOnce(
+      context,
+      impacts,
+      retiredIds,
+      dimension,
+      tick,
+      difficulty,
+      seed,
+      currentShield,
+      currentImmunity,
+    ).pipe(Effect.catchIf(
+      (error): error is WorldRevisionConflict => error instanceof WorldRevisionConflict,
+      (error) => retriesRemaining > 0
+        ? retryRevisionConflict(retriesRemaining - 1)
+        : Effect.fail(error),
+    ))
+  return retryRevisionConflict(2)
+}
 
 const explosionReadPositions = (
   center: Readonly<{ x: number; y: number; z: number }>,
@@ -152,26 +1231,31 @@ const explosionBlockReader = (
       | Readonly<{ _tag: 'ChunkNotLoaded' }>
       | Readonly<{ _tag: 'OutOfWorld' }>
   }>>,
-): ExplosionBlockReader => {
-  const byPosition = new Map<string, ExplosionBlock>()
-  for (const { position: cell, reading } of blocks) {
-    if (reading._tag !== 'Block') continue
-    const resistance = Result.getOrThrow(propertyOfBlockId(reading.block, 'blastResistance'))
-    byPosition.set(blockPositionKeyOf(cell), {
-      resistance: Number.isFinite(resistance)
+): Result.Result<ExplosionBlockReader, EntityWorldQueryFailure> => {
+  const resolved = Result.all(blocks.map(({ position: cell, reading }) => reading._tag === 'Block'
+    ? Result.map(
+        entityWorldBlockDataAt(cell, reading.block),
+        ({ properties }) => ({ cell, resistance: properties.blastResistance }),
+      )
+    : Result.succeed(undefined)))
+  return Result.map(resolved, (entries) => {
+    const byPosition = new Map<string, ExplosionBlock>()
+    for (const entry of entries) {
+      if (entry === undefined) continue
+      const { cell, resistance } = entry
+      byPosition.set(blockPositionKeyOf(cell), {
+        resistance: Number.isFinite(resistance)
         ? Math.min(resistance, Number.MAX_SAFE_INTEGER)
         : Number.MAX_SAFE_INTEGER,
-      destructible: Number.isFinite(resistance),
-    })
-  }
-  return ({ x, y, z }) => byPosition.get(blockPositionKeyOf(blockPosition(
-    Result.getOrThrow(BlockAxis.result(x)),
-    Result.getOrThrow(BlockAxis.result(y)),
-    Result.getOrThrow(BlockAxis.result(z)),
-  )))
+        destructible: Number.isFinite(resistance),
+      })
+    }
+    return ({ x, y, z }) => byPosition.get(`${String(x)},${String(y)},${String(z)}`)
+  })
 }
 
 const PLAYER_BLAST_ENTITY_ID = EntityId('mx-gameplay:player-avatar')
+const EMPTY_EXPLOSION_BLOCKS: ReadonlyMap<ExplosionBlockPosition, ExplosionBlock> = new Map()
 
 const runTntSimulation = (
   context: GameplayStageContext,
@@ -228,7 +1312,8 @@ const runTntSimulation = (
     let entityRoster: GameplayEntityRoster | undefined
     let playerState: PlayerServiceSnapshot | undefined
     let tntSourcesSnapshot: GameplayTntSourcesSnapshot | undefined
-    let blocks = explosionBlockReader([])
+    // The TNT service does not consult this reader until the fuse is due.
+    let blocks: ExplosionBlockReader = EMPTY_EXPLOSION_BLOCKS.get.bind(EMPTY_EXPLOSION_BLOCKS)
     let explosionEntities: ReadonlyArray<{ readonly id: import('@nerima-games/mc-kernel').EntityId; readonly feetPosition: Position }> = []
 
     if (willDetonate) {
@@ -252,7 +1337,20 @@ const runTntSimulation = (
         yield* unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable')
         return
       }
-      const reads = yield* explosionReadPositions(record.center)
+      const readPositions = yield* Effect.result(explosionReadPositions(record.center))
+      if (Result.isFailure(readPositions)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: position(
+            PositionAxis(record.center.x),
+            PositionAxis(record.center.y),
+            PositionAxis(record.center.z),
+          ),
+        }, id)
+        continue
+      }
+      const reads = readPositions.success
       const observed = yield* commit.coordinator.observe(
         entityOwnerId,
         GameplayEntityRosterSchema,
@@ -267,7 +1365,12 @@ const runTntSimulation = (
       }
       entityRoster = observed.state
       playerState = player.state
-      blocks = explosionBlockReader(observed.blocks)
+      const explosionBlocks = explosionBlockReader(observed.blocks)
+      if (Result.isFailure(explosionBlocks)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', explosionBlocks.failure)
+        continue
+      }
+      blocks = explosionBlocks.success
       const mobEntities = observed.state.entities
         .filter(({ dimension }) => dimension === record.dimension)
         .map(({ id: entityId, feetPosition }) => ({
@@ -317,8 +1420,62 @@ const runTntSimulation = (
     })
     const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
-    const loot = rollCasualtyDrops(mobBlast.casualties, seed)
-    const casualtyExperience = rollCasualtyExperience(mobBlast.casualties, loot.seed)
+    for (const fault of mobBlast.faults) yield* recordGameplayEntityStageFault(state, fault)
+    const lootResult = rollCasualtyDrops(mobBlast.casualties, seed)
+    let mobBlastRoster = mobBlast.roster
+    if (Result.isFailure(lootResult)) {
+      if (mobBlast.casualties.length === 0) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: lootResult.failure,
+        })
+      } else {
+        const affectedIds = new Set(mobBlast.casualties.map(({ id: casualtyId }) => casualtyId))
+        for (const casualty of mobBlast.casualties) {
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: lootResult.failure,
+          })
+        }
+        const retained = new Map(mobBlast.roster.entities.map((entity) => [entity.id, entity]))
+        for (const entity of roster.entities) {
+          if (affectedIds.has(entity.id)) retained.set(entity.id, entity)
+        }
+        mobBlastRoster = {
+          ...mobBlast.roster,
+          entities: [...retained.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+        }
+      }
+    }
+    let loot = Result.isFailure(lootResult) ? undefined : lootResult.success
+    const casualtyExperienceResult = loot === undefined
+      ? undefined
+      : rollCasualtyExperience(mobBlast.casualties, loot.seed)
+    if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
+      if (mobBlast.casualties.length === 0) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
+        })
+      } else {
+        const affectedIds = new Set(mobBlast.casualties.map(({ id: casualtyId }) => casualtyId))
+        for (const casualty of mobBlast.casualties) {
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
+          })
+        }
+        const retained = new Map(mobBlastRoster.entities.map((entity) => [entity.id, entity]))
+        for (const entity of roster.entities) {
+          if (affectedIds.has(entity.id)) retained.set(entity.id, entity)
+        }
+        mobBlastRoster = {
+          ...mobBlastRoster,
+          entities: [...retained.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+        }
+      }
+      loot = undefined
+    }
+    const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
+      ? undefined
+      : casualtyExperienceResult.success
+    const nextTntRewardSeed = casualtyExperience?.seed ?? loot?.seed ?? seed
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
@@ -397,7 +1554,7 @@ const runTntSimulation = (
       : undefined
 
     let droppedCandidate: DroppedItemOwnerSnapshot | undefined
-    if (loot.drops.length > 0) {
+    if ((loot?.drops.length ?? 0) > 0) {
       const droppedItemsOwnerId = commit.droppedItemsOwnerId
       if (droppedItemsOwnerId === undefined) {
         yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
@@ -413,17 +1570,17 @@ const runTntSimulation = (
           actual: droppedSnapshot.revision,
         }))
       }
-      const drops: ReadonlyArray<DroppedItemSpawn> = loot.drops.map(({ item, count, at }) => ({ item, count, at }))
+      const drops: ReadonlyArray<DroppedItemSpawn> = loot!.drops.map(({ item, count, at }) => ({ item, count, at }))
       droppedCandidate = yield* Effect.fromResult(
         appendDroppedItemSpawns(droppedSnapshot.state, drops, outcome.expectedRevision),
       )
     }
 
     const changes: ReplicatedOwnerCandidate[] = []
-    if (!Equal.equals(roster, mobBlast.roster)) {
+    if (!Equal.equals(roster, mobBlastRoster)) {
       changes.push({
         ownerId: Option.getOrThrow(Option.fromNullishOr(entityOwnerId)),
-        state: mobBlast.roster,
+        state: mobBlastRoster,
       })
     }
     if (playerCandidate !== undefined) changes.push({ ownerId: commit.playerOwnerId, state: playerCandidate })
@@ -442,14 +1599,14 @@ const runTntSimulation = (
 
     yield* commit.tntService.commitDetonation({ id: outcome.id, planRevision: outcome.planRevision }, changes)
 
-    if (loot._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
-    if (casualtyExperience._tag === 'Unsupported') {
+    if (loot?._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
+    if (casualtyExperience?._tag === 'Unsupported') {
       yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
     }
-    yield* Ref.set(state.rollSeed, casualtyExperience.seed)
-    if (loot.drops.length > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot.drops])
-    if (casualtyExperience.experience.length > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
+    yield* Ref.set(state.rollSeed, nextTntRewardSeed)
+    if ((loot?.drops.length ?? 0) > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot!.drops])
+    if ((casualtyExperience?.experience.length ?? 0) > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience!.experience])
     }
     if (playerDamage !== undefined) yield* Ref.update(state.playerDamages, (pending) => [...pending, playerDamage])
     const disturbed = outcome.explosion.destroyedBlocks.map(({ x, y, z }) => blockPositionKeyOf(blockPosition(
@@ -480,6 +1637,24 @@ const runMobSimulation = (
     commit.entitiesOwnerId,
     GameplayEntityRosterSchema,
   )
+  const faultedEntities = new Map<
+    GameplayEntityRoster['entities'][number]['id'],
+    GameplayEntityRoster['entities'][number]
+  >()
+  for (const entity of entitySnapshot.state.entities) {
+    if (!isMobBehaviourRepairFault(entity.behaviour)) continue
+    faultedEntities.set(entity.id, entity)
+    yield* recordGameplayEntityStageFault(state, {
+      _tag: 'MobBehaviourRepairFault',
+      entityId: entity.id,
+      entityKind: entity.kind,
+      failure: entity.behaviour.failure,
+    })
+  }
+  let tickRoster: GameplayEntityRoster = {
+    ...entitySnapshot.state,
+    entities: entitySnapshot.state.entities.filter(({ behaviour }) => !isMobBehaviourRepairFault(behaviour)),
+  }
   const playerSnapshot = yield* commit.coordinator.snapshot(
     commit.playerOwnerId,
     PlayerServiceSnapshotSchema,
@@ -502,16 +1677,154 @@ const runMobSimulation = (
   // `entities` runs before `fluids`, which advances this counter later in the pass.
   const currentTick = (yield* Ref.get(state.tickCount)) + 1
   const stageTick = Schema.decodeUnknownSync(SimulationTickSchema)(currentTick)
-  const sweep = planMobRosterSweep(entitySnapshot.state, {
+  const dimension = playerSnapshot.state.pose.feetPosition.dimension
+  const otherDimensionEntities = tickRoster.entities.filter((entity) =>
+    entity.dimension !== undefined && entity.dimension !== dimension,
+  )
+  tickRoster = {
+    ...tickRoster,
+    entities: tickRoster.entities.filter((entity) =>
+      entity.dimension === undefined || entity.dimension === dimension,
+    ),
+  }
+  const timeOfDay = yield* context.time.timeOfDay
+  const daytime = dimension === 'overworld' && !(yield* context.time.isNight)
+  const invalidMovementEntities = tickRoster.entities.filter((entity) =>
+    (entity.dimension === undefined || entity.dimension === dimension) &&
+    MOB_MOVEMENT_POLICIES.has(entity.kind) &&
+    mobMovementCell(entity.feetPosition) === undefined,
+  )
+  const invalidMovementEntityIds = new Set(invalidMovementEntities.map(({ id }) => id))
+  for (const entity of invalidMovementEntities) {
+    yield* recordGameplayEntityStageFault(state, {
+      _tag: 'MobMovementExecutionFault',
+      entityId: entity.id,
+      reason: mobHasStoredMovement(entity) ? 'invalid-goal' : 'invalid-state',
+    })
+  }
+  for (const entity of invalidMovementEntities) faultedEntities.set(entity.id, entity)
+  tickRoster = {
+    ...tickRoster,
+    entities: tickRoster.entities.filter(({ id }) => !invalidMovementEntityIds.has(id)),
+  }
+  const hasMovableMobBeforeFiltering = invalidMovementEntities.length > 0 ||
+    hasMobMovementCandidates(tickRoster, dimension, playerPosition)
+  if (hasMovableMobBeforeFiltering && mobMovementCell(playerPosition) === undefined) {
+    yield* recordEntityWorldDataFault(state, 'MobMovement', {
+      _tag: 'EntityWorldInvalidCell',
+      reason: 'not-block-coordinate',
+      position: playerPosition,
+    })
+  }
+  const hasMovableMob = hasMobMovementCandidates(tickRoster, dimension, playerPosition)
+  const movementCoords = mobMovementChunkCoords(tickRoster, playerPosition)
+  const hasUndeadForDaylight = hasUndeadDaylightCandidates(tickRoster, dimension)
+  let movementWindow: import('../domain/chunk-window.js').ChunkWindow | undefined = undefined
+  let movementWorld: ReturnType<typeof mobMovementWorldFromChunkWindow> | undefined = undefined
+  let daylightFacts: ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>> = new Map()
+  if (hasMovableMob || hasUndeadForDaylight) {
+    const coords = hasMovableMob
+      ? movementCoords
+      : undeadDaylightChunkCoords(tickRoster, dimension)
+    movementWindow = yield* openChunkWindow(store, coords)
+    if (hasMovableMob) {
+      movementWorld = mobMovementWorldFromChunkWindow(movementWindow)
+    }
+    if (hasUndeadForDaylight) {
+      // A stopped undead still burns or extinguishes when SM3 has no movement work.
+      const daylight = yield* undeadDaylightFacts(
+        tickRoster,
+        movementWindow,
+        store,
+        daytime,
+        dimension,
+      )
+      daylightFacts = daylight.facts
+      const daylightFaultEntityIds = new Set(daylight.faults.map(({ entityId }) => entityId))
+      for (const fault of daylight.faults) {
+        yield* recordEntityWorldDataFault(state, 'UndeadDaylight', fault.failure, fault.entityId)
+      }
+      for (const entity of tickRoster.entities) {
+        if (daylightFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+      }
+      tickRoster = {
+        ...tickRoster,
+        entities: tickRoster.entities.filter(({ id }) => !daylightFaultEntityIds.has(id)),
+      }
+    }
+  }
+  const sweep = planMobRosterSweep(tickRoster, {
     target: playerPosition,
     dt,
+    undeadDaylight: daylightFacts,
   }, RandomSeed(seed))
-  const teleported = yield* planEndermanTeleportRoster(
-    sweep.roster,
+  const sweepFaultEntityIds = new Set(sweep.faults.map(({ entityId }) => entityId))
+  for (const fault of sweep.faults) {
+    yield* recordGameplayEntityStageFault(state, fault)
+  }
+  for (const entity of tickRoster.entities) {
+    if (sweepFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const sweepRoster = {
+    ...sweep.roster,
+    entities: sweep.roster.entities.filter(({ id }) => !sweepFaultEntityIds.has(id)),
+  }
+  const teleport = yield* planEndermanTeleportRoster(
+    sweepRoster,
     store,
     sweep.teleports,
   )
-  const blast = planMobBlastRoster(teleported, sweep.blasts, stageTick)
+  const teleportFaultEntityIds = new Set(teleport.faults.map(({ entityId }) => entityId))
+  for (const fault of teleport.faults) {
+    yield* recordEntityWorldDataFault(state, 'EndermanTeleport', fault.failure, fault.entityId)
+  }
+  for (const entity of tickRoster.entities) {
+    if (teleportFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const teleportRoster = {
+    ...teleport.roster,
+    entities: teleport.roster.entities.filter(({ id }) => !teleportFaultEntityIds.has(id)),
+  }
+  const movement = movementWorld === undefined
+    ? { roster: teleportRoster, faults: [] as ReadonlyArray<MobMovementRosterFault> }
+    : Result.getOrThrow(planMobMovementRoster(teleportRoster, playerPosition, movementWorld, stageTick, dimension))
+  const movementFaultEntityIds = new Set(movement.faults.map(({ entityId }) => entityId))
+  for (const fault of movement.faults) {
+    yield* recordMobMovementRosterFault(state, fault)
+  }
+  for (const entity of tickRoster.entities) {
+    if (movementFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const movementRoster = {
+    ...movement.roster,
+    entities: movement.roster.entities.filter(({ id }) => !movementFaultEntityIds.has(id)),
+  }
+  const stageFaultEntityIds = new Set([...sweepFaultEntityIds, ...teleportFaultEntityIds, ...movementFaultEntityIds])
+  const activeBlastEvents = sweep.blasts.filter(({ source }) => !stageFaultEntityIds.has(source))
+  const activeAttacks = sweep.attacks.filter(({ source }) => !stageFaultEntityIds.has(source))
+  const blast = planMobBlastRoster(movementRoster, activeBlastEvents, stageTick)
+  const blastFaultEntityIds = new Set(blast.faults.map(({ entityId }) => entityId))
+  for (const fault of blast.faults) yield* recordGameplayEntityStageFault(state, fault)
+  for (const entity of tickRoster.entities) {
+    if (blastFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const blastRoster = {
+    ...blast.roster,
+    entities: blast.roster.entities.filter(({ id }) => !blastFaultEntityIds.has(id)),
+  }
+  const undeadBurnHits: ReadonlyArray<MobDamageHit> = blastRoster.entities.flatMap((entity) => {
+    if (entity.kind !== 'zombie' && entity.kind !== 'skeleton') return []
+    const behaviour = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour.behaviour : entity.behaviour
+    if (behaviour?._tag !== 'EcosystemMob' || behaviour.burningTicks === 0 || behaviour.burningTicks % 20 !== 0) return []
+    return [{ id: entity.id, damage: { amount: 1, cause: 'on_fire' }, burning: true }]
+  })
+  const undeadBurning = planMobDamageRoster(blastRoster, undeadBurnHits, stageTick)
+  const undeadBurnFaultEntityIds = new Set(undeadBurning.faults.map(({ entityId }) => entityId))
+  for (const fault of undeadBurning.faults) yield* recordGameplayEntityStageFault(state, fault)
+  for (const entity of tickRoster.entities) {
+    if (undeadBurnFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const mobCasualties = [...blast.casualties, ...undeadBurning.casualties]
   const offeredAttempts = yield* Ref.get(state.spawnAttempts)
   const difficulty = (yield* state.survivalHunger.snapshot).difficulty
   const lastHostileSpawnTick = yield* Ref.get(state.lastHostileSpawnTick)
@@ -519,60 +1832,147 @@ const runMobSimulation = (
     hostileSpawnSearchDue(stageTick, lastHostileSpawnTick, difficulty),
   )
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
-  const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
-  const casualtyExperience = rollCasualtyExperience(blast.casualties, casualtyDrops.seed)
+  const casualtyDropsResult = rollCasualtyDrops(mobCasualties, sweep.seed)
+  if (Result.isFailure(casualtyDropsResult)) {
+    if (mobCasualties.length === 0) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
+      })
+    } else {
+      for (const casualty of mobCasualties) {
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyDropsResult.failure,
+        })
+        const entity = tickRoster.entities.find(({ id }) => id === casualty.id)
+        if (entity !== undefined) faultedEntities.set(entity.id, entity)
+      }
+    }
+  }
+  let casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
+  const casualtyExperienceResult = casualtyDrops === undefined
+    ? undefined
+    : rollCasualtyExperience(mobCasualties, casualtyDrops.seed)
+  if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
+    if (mobCasualties.length === 0) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
+      })
+    } else {
+      for (const casualty of mobCasualties) {
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
+        })
+        const entity = tickRoster.entities.find(({ id }) => id === casualty.id)
+        if (entity !== undefined) faultedEntities.set(entity.id, entity)
+      }
+      casualtyDrops = undefined
+    }
+  }
+  const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
+    ? undefined
+    : casualtyExperienceResult.success
   let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
-  let nextRollSeed = casualtyExperience.seed
-  const timeOfDay = yield* context.time.timeOfDay
-  const dimension = playerSnapshot.state.pose.feetPosition.dimension
+  let nextRollSeed = casualtyExperience?.seed ?? casualtyDrops?.seed ?? sweep.seed
   const passiveInitialSpawnPending = yield* Ref.get(state.passiveInitialSpawnPending)
   const lastPassiveSpawnTick = yield* Ref.get(state.lastPassiveSpawnTick)
-  const passiveSearchDue = dimension === 'overworld' &&
-    !hostileSpawnsAllowed(timeOfDay) &&
+  const hostileWindow = hostileSpawnsAllowed(timeOfDay)
+  if (Result.isFailure(hostileWindow)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: hostileWindow.failure,
+    })
+  }
+  const passiveSearchDue = Result.isSuccess(hostileWindow) &&
+    dimension === 'overworld' && !hostileWindow.success &&
     (passiveInitialSpawnPending || currentTick - lastPassiveSpawnTick >= PASSIVE_SPAWN_INTERVAL_TICKS)
+  let hostileSearchCompleted = false
+  let passiveSearchCompleted = false
   if (hostileSearchDue) {
-    const found = yield* searchSpawnCandidates(
+    const found = yield* Effect.result(searchSpawnCandidates(
       store,
       playerPosition,
       timeOfDay,
-      RandomSeed(casualtyExperience.seed),
+      RandomSeed(nextRollSeed),
       dimension,
       'hostile',
-    )
-    searchedAttempts = found.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
-    nextRollSeed = found.seed
+    ))
+    if (Result.isFailure(found)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: found.failure,
+      })
+    } else {
+      for (const failure of found.success.worldFaults) {
+        yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
+      }
+      searchedAttempts = found.success.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
+      nextRollSeed = found.success.seed
+      hostileSearchCompleted = true
+    }
   }
   if (passiveSearchDue) {
-    const found = yield* searchSpawnCandidates(
+    const found = yield* Effect.result(searchSpawnCandidates(
       store,
       playerPosition,
       timeOfDay,
       RandomSeed(nextRollSeed),
       dimension,
       'passive',
-    )
-    nextRollSeed = found.seed
-    searchedAttempts = searchedAttempts.length === 0
-      ? found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)
-      : [...searchedAttempts, ...found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)]
+    ))
+    if (Result.isFailure(found)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: found.failure,
+      })
+    } else {
+      for (const failure of found.success.worldFaults) {
+        yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
+      }
+      nextRollSeed = found.success.seed
+      searchedAttempts = searchedAttempts.length === 0
+        ? found.success.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)
+        : [...searchedAttempts, ...found.success.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)]
+      passiveSearchCompleted = true
+    }
   }
   const attempts = offeredAttempts.length === 0
     ? searchedAttempts
     : searchedAttempts.length === 0
       ? offeredAttempts
       : [...offeredAttempts, ...searchedAttempts]
-  const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts, difficulty)
-  if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
+  const spawned = planSpawnAttemptsOnRoster(undeadBurning.roster, attempts, difficulty)
+  if (Result.isFailure(spawned)) {
+    if (!Equal.equals(mobSpawnPlanFailures.get(state), spawned.failure)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: spawned.failure,
+      })
+      mobSpawnPlanFailures.set(state, spawned.failure)
+    }
+  } else {
+    mobSpawnPlanFailures.delete(state)
+  }
+  const spawnedRoster = Result.isFailure(spawned) ? undeadBurning.roster : spawned.success.roster
 
   const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
-  const contact = yield* Effect.fromResult(resolveHostileContacts(
-    spawned.success.roster.entities,
+  const contactResult = resolveHostileContacts(
+    spawnedRoster.entities,
     playerPosition,
     damageTick,
     yield* Ref.get(state.hostileContactCooldowns),
     difficulty,
-  ))
-  const playerBlasts = resolvePlayerBlastDamage(sweep.blasts, playerPosition, difficulty)
+  )
+  const contact = Result.isFailure(contactResult)
+    ? { damages: [], cooldowns: yield* Ref.get(state.hostileContactCooldowns) }
+    : contactResult.success
+  if (Result.isFailure(contactResult)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: contactResult.failure,
+    })
+  }
+  const playerBlastsResult = resolvePlayerBlastDamage(activeBlastEvents, playerPosition, difficulty)
+  const playerBlasts = Result.isFailure(playerBlastsResult) ? [] : playerBlastsResult.success
+  if (Result.isFailure(playerBlastsResult)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: playerBlastsResult.failure,
+    })
+  }
   type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
   type HostileDamageInput = Readonly<{
     event: HostileDamageEvent
@@ -580,7 +1980,7 @@ const runMobSimulation = (
     difficulty: typeof difficulty
   }>
   const damageInputs: ReadonlyArray<HostileDamageInput> = [
-    ...sweep.attacks.map((attack) => ({
+    ...activeAttacks.filter(({ mode }) => mode === 'melee').map((attack) => ({
       event: {
         _tag: 'HostileContact' as const,
         source: attack.source,
@@ -752,7 +2152,7 @@ const runMobSimulation = (
   }
 
   let droppedCandidate: DroppedItemOwnerSnapshot | undefined
-  if (casualtyDrops.drops.length > 0) {
+  if ((casualtyDrops?.drops.length ?? 0) > 0) {
     if (commit.droppedItemsOwnerId === undefined) {
       yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
       return
@@ -767,7 +2167,7 @@ const runMobSimulation = (
         actual: droppedSnapshot.revision,
       }))
     }
-    const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at }))
+    const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops!.drops.map(({ item, count, at }) => ({ item, count, at }))
     droppedCandidate = yield* Effect.fromResult(
       appendDroppedItemSpawns(droppedSnapshot.state, drops, expectedRevision),
     )
@@ -775,19 +2175,33 @@ const runMobSimulation = (
 
   const blockEdits = new Map<string, { readonly position: ReturnType<typeof blockPosition>; readonly block: typeof AIR_BLOCK_ID }>()
   const disturbedKeys: BlockPositionKey[] = []
-  for (const blastEvent of sweep.blasts) {
-    const power = Result.getOrUndefined(BlockBlastResistance.result(blastEvent.explosion.power))
-    const x = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.x)))
-    const y = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.y)))
-    const z = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.z)))
-    if (power === undefined || x === undefined || y === undefined || z === undefined) continue
-    for (const cell of craterCells(blockPosition(x, y, z), blastEvent.explosion.power)) {
+  for (const blastEvent of activeBlastEvents) {
+    // Only validated, in-dimension creepers reach this sweep; their cell and fixed blast power are valid.
+    const power = Result.getOrThrow(BlockBlastResistance.result(blastEvent.explosion.power))
+    const blastPosition = blockPosition(
+      Result.getOrThrow(BlockAxis.result(Math.floor(blastEvent.at.x))),
+      Result.getOrThrow(BlockAxis.result(Math.floor(blastEvent.at.y))),
+      Result.getOrThrow(BlockAxis.result(Math.floor(blastEvent.at.z))),
+    )
+    for (const cell of craterCells(blastPosition, blastEvent.explosion.power)) {
       const reading = yield* store.getBlock(cell)
-      if (
-        reading._tag !== 'Block' ||
-        reading.block === AIR_BLOCK_ID ||
-        Result.getOrUndefined(resistsExplosion(reading.block, power)) !== false
-      ) continue
+      if (reading._tag !== 'Block' || reading.block === AIR_BLOCK_ID) continue
+      const worldCell = { x: cell.x, y: cell.y, z: cell.z }
+      const blockData = entityWorldBlockDataAt(worldCell, reading.block)
+      if (Result.isFailure(blockData)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', blockData.failure)
+        continue
+      }
+      const resistance = resistsExplosion(reading.block, power)
+      if (Result.isFailure(resistance)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', {
+          _tag: 'EntityWorldRegistryFailure',
+          cell: worldCell,
+          failure: resistance.failure,
+        })
+        continue
+      }
+      if (resistance.success) continue
       const key = blockPositionKeyOf(cell)
       if (blockEdits.has(key)) continue
       blockEdits.set(key, { position: cell, block: AIR_BLOCK_ID })
@@ -799,11 +2213,25 @@ const runMobSimulation = (
   const expectedDimensions = edits.length === 0
     ? []
     : [{ dimension, expectedRevision: dimensionRevision }]
-  const entityCandidate = restoreGameplayEntityMetadata(
-    spawned.success.roster,
-    blast.roster,
+  const entityCandidateResult = restoreGameplayEntityMetadata(
+    {
+      ...spawnedRoster,
+      entities: [
+        ...spawnedRoster.entities.filter(({ id }) => !faultedEntities.has(id)),
+        ...faultedEntities.values(),
+        ...otherDimensionEntities,
+      ],
+    },
+    entitySnapshot.state,
     playerSnapshot.state.pose.feetPosition.dimension,
   )
+  if (Result.isFailure(entityCandidateResult)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidateResult.failure,
+    })
+    return
+  }
+  const entityCandidate = entityCandidateResult.success
   const changes: ReplicatedOwnerCandidate[] = []
   if (!Equal.equals(entitySnapshot.state, entityCandidate)) {
     changes.push({
@@ -848,18 +2276,61 @@ const runMobSimulation = (
     yield* commit.coordinator.commit(request)
   }
 
-  if (casualtyDrops._tag === 'Unsupported') {
+  // Daylight-only undead work can use a radius-zero window; projectile rays use movementCoords instead.
+  const projectileWindow = hasMovableMob ? movementWindow : undefined
+  const projectileStep = yield* launchAndStepMobProjectiles(
+    context,
+    activeAttacks,
+    entityCandidate,
+    playerPosition,
+    dimension,
+    stageTick,
+    projectileWindow,
+    store,
+    movementCoords,
+  )
+  const projectileResolution = yield* resolveMobProjectileImpacts(
+    context,
+    projectileStep.impacts,
+    projectileStep.retiredIds,
+    dimension,
+    stageTick,
+    difficulty,
+    nextRollSeed,
+    shieldState,
+    damageImmunityState,
+  )
+  resolvedDamages = [...resolvedDamages, ...projectileResolution.playerDamages]
+  shieldState = projectileResolution.shield
+  damageImmunityState = projectileResolution.immunity
+  nextRollSeed = projectileResolution.seed
+  if (projectileResolution.ignitions.length > 0) {
+    yield* Ref.update(state.fireLifecycle, (current) => {
+      const actors = new Map((current.burningActors ?? []).map((actor) => [actor.id, actor]))
+      for (const ignition of projectileResolution.ignitions) {
+        const previous = actors.get(ignition.id)
+        actors.set(ignition.id, {
+          ...ignition,
+          remainingTicks: Math.max(previous?.remainingTicks ?? 0, ignition.remainingTicks),
+          damageCooldownTicks: previous?.damageCooldownTicks ?? ignition.damageCooldownTicks,
+        })
+      }
+      return { ...current, burningActors: [...actors.values()].sort((a, b) => a.id.localeCompare(b.id)) }
+    })
+  }
+
+  if (casualtyDrops?._tag === 'Unsupported') {
     yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
   }
-  if (casualtyExperience._tag === 'Unsupported') {
+  if (casualtyExperience?._tag === 'Unsupported') {
     yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
   }
 
   // Local cursors and output queues move only after the replicated candidate
   // has committed. Ref updates are synchronous and append to any newly queued work.
   yield* Ref.set(state.rollSeed, nextRollSeed)
-  if (hostileSearchDue) yield* Ref.set(state.lastHostileSpawnTick, stageTick)
-  if (passiveSearchDue) {
+  if (hostileSearchCompleted) yield* Ref.set(state.lastHostileSpawnTick, stageTick)
+  if (passiveSearchCompleted) {
     yield* Ref.set(state.lastPassiveSpawnTick, currentTick)
     yield* Ref.set(state.passiveInitialSpawnPending, false)
   }
@@ -869,14 +2340,22 @@ const runMobSimulation = (
   if (pendingShieldBlocking.length > 0) {
     yield* Ref.update(state.pendingShieldBlocking, (pending) => pending.slice(pendingShieldBlocking.length))
   }
-  if (offeredAttempts.length > 0) {
+  if (offeredAttempts.length > 0 &&
+    (Result.isSuccess(spawned) || spawned.failure._tag !== 'EntitySerialExhausted')) {
     yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(offeredAttempts.length))
   }
-  if (casualtyDrops.drops.length > 0) {
-    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
+  if ((casualtyDrops?.drops.length ?? 0) > 0) {
+    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops!.drops])
   }
-  if (casualtyExperience.experience.length > 0) {
-    yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
+  if (projectileResolution.drops.length > 0) {
+    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...projectileResolution.drops])
+  }
+  if ((casualtyExperience?.experience.length ?? 0) > 0 || projectileResolution.experience.length > 0) {
+    yield* Ref.update(state.mobExperience, (pending) => [
+      ...pending,
+      ...(casualtyExperience?.experience ?? []),
+      ...projectileResolution.experience,
+    ])
   }
   if (resolvedDamages.length > 0) {
     yield* Ref.update(state.playerDamages, (pending) => [...pending, ...resolvedDamages])
@@ -894,7 +2373,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
     // Owner-backed pickups, mob simulation, and TNT detonation run before the
     // deferred falling-block work.
     run: (dt) =>
-      Effect.orDie(Effect.gen(function* () {
+      Effect.catch(Effect.gen(function* () {
         const pickupRequests = yield* Ref.getAndSet(state.pendingDroppedItemPickups, [])
         const pickupExecutions: Array<DroppedItemPickupExecution> = []
         const retryPickups: Array<(typeof pickupRequests)[number]> = []
@@ -1072,7 +2551,11 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           return
         }
 
-        const { destinations } = yield* applyFallingBlocks(store, batch)
+        const falling = yield* applyFallingBlocks(store, batch)
+        for (const failure of falling.faults) {
+          yield* recordGameplayEntityWorldDataFault(state, 'FallingBlock', failure)
+        }
+        const { destinations } = falling
 
         // `update`, not `set`: the store writes above may have caused other
         // rules to disturb positions while this tick was running, and a `set`
@@ -1080,6 +2563,6 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         if (destinations.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, destinations))
         }
-      })),
+      }), (failure) => recordGameplayEntityStageExecutionFailure(state, failure)),
   }
 }

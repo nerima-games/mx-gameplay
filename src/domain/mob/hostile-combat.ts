@@ -23,7 +23,7 @@ import {
   type EntityId,
   type IntentPayload,
 } from '@nerima-games/mc-sim'
-import { explosionDamageAt, type Explosion } from './explosion.js'
+import { explosionDamageAt, explosionRadius, type Explosion, type ExplosionInputFailure } from './explosion.js'
 import {
   DifficultyDamageResultSchema,
   scaleDifficultyDamage,
@@ -402,11 +402,17 @@ export const prepareHostileAttack = (
 }
 
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')
+export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 
 export type HostileLocomotion = {
   readonly speedBlocksPerSecond: number
   readonly stoppingDistanceBlocks: number
 }
+
+export type PursueHorizontallyFailure = Readonly<{
+  _tag: 'InvalidPursuitInput'
+  field: 'from' | 'target' | 'dt' | 'locomotion' | 'speedBlocksPerSecond' | 'stoppingDistanceBlocks' | 'distance'
+}>
 
 export const ZOMBIE_LOCOMOTION: HostileLocomotion = {
   speedBlocksPerSecond: 2.3,
@@ -423,29 +429,43 @@ export const pursueHorizontally = (
   target: Position | undefined,
   dt: number,
   locomotion: HostileLocomotion,
-): Position => {
-  if (target === undefined || !Number.isFinite(dt) || dt <= 0) {
-    return from
+): Result.Result<Position, PursueHorizontallyFailure> => {
+  const validPosition = (value: Position): boolean =>
+    typeof value === 'object' && value !== null &&
+    Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.z)
+  if (!validPosition(from)) return Result.fail({ _tag: 'InvalidPursuitInput', field: 'from' })
+  if (target !== undefined && !validPosition(target)) return Result.fail({ _tag: 'InvalidPursuitInput', field: 'target' })
+  if (!Number.isFinite(dt) || dt < 0) return Result.fail({ _tag: 'InvalidPursuitInput', field: 'dt' })
+  if (typeof locomotion !== 'object' || locomotion === null) {
+    return Result.fail({ _tag: 'InvalidPursuitInput', field: 'locomotion' })
   }
+  if (!Number.isFinite(locomotion.speedBlocksPerSecond) || locomotion.speedBlocksPerSecond < 0) {
+    return Result.fail({ _tag: 'InvalidPursuitInput', field: 'speedBlocksPerSecond' })
+  }
+  if (!Number.isFinite(locomotion.stoppingDistanceBlocks) || locomotion.stoppingDistanceBlocks < 0) {
+    return Result.fail({ _tag: 'InvalidPursuitInput', field: 'stoppingDistanceBlocks' })
+  }
+  if (target === undefined || dt === 0) return Result.succeed(from)
 
   const dx = target.x - from.x
   const dz = target.z - from.z
   const distance = Math.hypot(dx, dz)
+  if (!Number.isFinite(distance)) return Result.fail({ _tag: 'InvalidPursuitInput', field: 'distance' })
   const remaining = distance - locomotion.stoppingDistanceBlocks
   if (!Number.isFinite(distance) || distance === 0 || remaining <= 0) {
-    return from
+    return Result.succeed(from)
   }
 
   const distanceMoved = Math.min(remaining, locomotion.speedBlocksPerSecond * dt)
   if (distanceMoved <= 0) {
-    return from
+    return Result.succeed(from)
   }
 
-  return position(
+  return Result.succeed(position(
     PositionAxis(from.x + (dx / distance) * distanceMoved),
     from.y,
     PositionAxis(from.z + (dz / distance) * distanceMoved),
-  )
+  ))
 }
 
 export type PlayerDamageEvent =
@@ -495,8 +515,12 @@ export const resolveHostileContacts = <S>(
   target: Position | undefined,
   tick: SimulationTick,
   previousCooldowns: ReadonlyMap<EntityId, SimulationTick>,
-  difficulty: SurvivalDifficulty = 'normal',
+  ...difficultyInput: readonly [] | readonly [SurvivalDifficulty]
 ): Result.Result<HostileContactResolution, HostileContactResolutionError> => {
+  const difficulty = difficultyInput.length === 0 ? 'normal' : difficultyInput[0]
+  if (difficulty !== 'peaceful' && difficulty !== 'easy' && difficulty !== 'normal' && difficulty !== 'hard') {
+    return Result.fail('invalid-input')
+  }
   const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
   if (Result.isFailure(decodedTick)) return Result.fail('invalid-input')
 
@@ -555,12 +579,40 @@ export type PlayerBlast = {
   readonly explosion: Explosion
 }
 
+export type PlayerBlastDamageFailure = ExplosionInputFailure | Readonly<{
+  _tag: 'InvalidPlayerBlastDamageInput'
+  field: 'blasts' | 'target' | 'difficulty' | 'position' | 'explosion' | 'damageAmount'
+}>
+
 export const resolvePlayerBlastDamage = (
   blasts: ReadonlyArray<PlayerBlast>,
   target: Position | undefined,
-  difficulty: SurvivalDifficulty = 'normal',
-): ReadonlyArray<PlayerExplosionDamageEvent> => {
-  if (target === undefined) return []
+  ...difficultyInput: readonly [] | readonly [SurvivalDifficulty]
+): Result.Result<ReadonlyArray<PlayerExplosionDamageEvent>, PlayerBlastDamageFailure> => {
+  const difficulty = difficultyInput.length === 0 ? 'normal' : difficultyInput[0]
+  if (!Array.isArray(blasts)) {
+    return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'blasts' })
+  }
+  if (difficulty !== 'peaceful' && difficulty !== 'easy' && difficulty !== 'normal' && difficulty !== 'hard') {
+    return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'difficulty' })
+  }
+  const validPosition = (value: Position): boolean =>
+    typeof value === 'object' && value !== null &&
+    Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.z)
+  if (target !== undefined && !validPosition(target)) {
+    return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'target' })
+  }
+  for (const blast of blasts) {
+    if (typeof blast !== 'object' || blast === null || !validPosition(blast.at)) {
+      return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'position' })
+    }
+    if (typeof blast.explosion !== 'object' || blast.explosion === null) {
+      return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'explosion' })
+    }
+    const radius = explosionRadius(blast.explosion.power)
+    if (Result.isFailure(radius)) return Result.fail(radius.failure)
+  }
+  if (target === undefined) return Result.succeed([])
 
   const damages: Array<PlayerExplosionDamageEvent> = []
   for (const blast of blasts) {
@@ -568,22 +620,29 @@ export const resolvePlayerBlastDamage = (
       blast.explosion,
       Math.hypot(target.x - blast.at.x, target.y - blast.at.y, target.z - blast.at.z),
     )
-    if (baseDamage.amount <= 0) continue
-    const scaledAmount = Result.getOrThrow(scaleDifficultyDamage({
-      amount: baseDamage.amount,
+    if (Result.isFailure(baseDamage)) return Result.fail(baseDamage.failure)
+    if (baseDamage.success.amount <= 0) continue
+    const scaledAmount = scaleDifficultyDamage({
+      amount: baseDamage.success.amount,
       difficulty,
-    }))
-    if (scaledAmount > 0) {
-      const amount = Result.getOrThrow(Schema.decodeUnknownResult(DamageAmountSchema)(scaledAmount))
+    })
+    if (Result.isFailure(scaledAmount)) {
+      return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'difficulty' })
+    }
+    if (scaledAmount.success > 0) {
+      const amount = Schema.decodeUnknownResult(DamageAmountSchema)(scaledAmount.success)
+      if (Result.isFailure(amount)) {
+        return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'damageAmount' })
+      }
       damages.push({
         _tag: 'Explosion',
         source: blast.source,
         kind: blast.kind,
         at: blast.at,
         explosion: blast.explosion,
-        damage: { amount, cause: 'explosion' },
+        damage: { amount: amount.success, cause: 'explosion' },
       })
     }
   }
-  return damages
+  return Result.succeed(damages)
 }

@@ -87,7 +87,8 @@ import {
   type Vitals,
 } from '../../src/domain/death-cause'
 import { AIR_BLOCK_ID, BlockId, DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
+import { Result } from 'effect'
+import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
   createWeatherState,
@@ -155,6 +156,7 @@ import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
   type DespawnVerdict,
+  type DespawnVerdictFailure,
 } from '../../src/domain/mob/hostile-despawn'
 
 // ---------------------------------------------------------------------------
@@ -210,12 +212,24 @@ export const initialTimeState = (): TimeState => ({
   weatherSeed: DEFAULT_ROLL_SEED,
 })
 
-/** Draw the two rolls one transition needs, advancing the screen's seed. */
-const drawWeatherRolls = (state: TimeState): WeatherRolls => {
-  const batch = drawRolls(state.weatherSeed, WEATHER_TRANSITION_ROLLS)
-  state.weatherSeed = batch.seed
-
-  return { transition: batch.rolls[0] ?? 0, duration: batch.rolls[1] ?? 0 }
+/** Draw the two rolls one transition needs without publishing the seed yet. */
+const drawWeatherRolls = (seed: number): Readonly<{ rolls: WeatherRolls; seed: number }> => {
+  const batch = drawRolls(seed, WEATHER_TRANSITION_ROLLS)
+  if (Result.isFailure(batch)) {
+    throw new Error(`preview weather rolls failed: ${JSON.stringify(batch.failure)}`)
+  }
+  const transition = rollAt(batch.success, 0)
+  if (Result.isFailure(transition)) {
+    throw new Error(`preview weather transition roll failed: ${JSON.stringify(transition.failure)}`)
+  }
+  const duration = rollAt(batch.success, 1)
+  if (Result.isFailure(duration)) {
+    throw new Error(`preview weather duration roll failed: ${JSON.stringify(duration.failure)}`)
+  }
+  return {
+    rolls: { transition: transition.success, duration: duration.success },
+    seed: batch.success.seed,
+  }
 }
 
 /**
@@ -227,9 +241,17 @@ const drawWeatherRolls = (state: TimeState): WeatherRolls => {
  * still look right and would quietly stop matching the stage.
  */
 export const stepWeather = (state: TimeState, secs: number): void => {
-  state.weather = weatherExpires(state.weather, secs)
-    ? advanceWeather(state.weather, secs, drawWeatherRolls(state))
-    : advanceWeather(state.weather, secs, LOWEST_WEATHER_ROLLS)
+  const expired = weatherExpires(state.weather, secs)
+  if (Result.isFailure(expired)) {
+    throw new Error(`preview weather expiry failed: ${JSON.stringify(expired.failure)}`)
+  }
+  const drawn = expired.success ? drawWeatherRolls(state.weatherSeed) : undefined
+  const next = advanceWeather(state.weather, secs, drawn === undefined ? LOWEST_WEATHER_ROLLS : drawn.rolls)
+  if (Result.isFailure(next)) {
+    throw new Error(`preview weather advance failed: ${JSON.stringify(next.failure)}`)
+  }
+  state.weather = next.success
+  if (drawn !== undefined) state.weatherSeed = drawn.seed
 }
 
 /**
@@ -242,11 +264,17 @@ export const stepWeather = (state: TimeState, secs: number): void => {
  * repeatedly walks the actual Markov chain rather than a cycle somebody wrote.
  */
 export const skipWeather = (state: TimeState): void => {
-  state.weather = advanceWeather(
+  const drawn = drawWeatherRolls(state.weatherSeed)
+  const next = advanceWeather(
     { weather: state.weather.weather, remainingSecs: 0 },
     0,
-    drawWeatherRolls(state),
+    drawn.rolls,
   )
+  if (Result.isFailure(next)) {
+    throw new Error(`preview weather fast-forward failed: ${JSON.stringify(next.failure)}`)
+  }
+  state.weather = next.success
+  state.weatherSeed = drawn.seed
 }
 
 /**
@@ -258,10 +286,28 @@ export const skipWeather = (state: TimeState): void => {
  * countdown would be the screen inventing half a rule.
  */
 export const cycleForcedWeather = (state: TimeState): void => {
-  const next = WEATHERS[(WEATHERS.indexOf(state.weather.weather) + 1) % WEATHERS.length] ?? 'clear'
+  const currentIndex = WEATHERS.indexOf(state.weather.weather)
+  if (currentIndex < 0) {
+    throw new Error(`preview forced-weather current state is unknown: ${String(state.weather.weather)}`)
+  }
+  const next = WEATHERS[(currentIndex + 1) % WEATHERS.length]
+  if (next === undefined) {
+    throw new Error(`preview forced-weather cycle has no successor for ${state.weather.weather}`)
+  }
   const batch = drawRolls(state.weatherSeed, 1)
-  state.weatherSeed = batch.seed
-  state.weather = createWeatherState(next, batch.rolls[0] ?? 0)
+  if (Result.isFailure(batch)) {
+    throw new Error(`preview forced-weather rolls failed: ${JSON.stringify(batch.failure)}`)
+  }
+  const duration = rollAt(batch.success, 0)
+  if (Result.isFailure(duration)) {
+    throw new Error(`preview forced-weather duration roll failed: ${JSON.stringify(duration.failure)}`)
+  }
+  const weather = createWeatherState(next, duration.success)
+  if (Result.isFailure(weather)) {
+    throw new Error(`preview forced-weather state failed: ${JSON.stringify(weather.failure)}`)
+  }
+  state.weatherSeed = batch.success.seed
+  state.weather = weather.success
 }
 
 /** What the world does about the current weather. Every value is a rule's answer. */
@@ -291,7 +337,7 @@ export const readWeather = (state: WeatherState): WeatherReading => ({
  * hard-coded table is how a chart ends up lying about its own axis.
  */
 export const weatherTransitionTable = (): ReadonlyArray<
-  readonly [Weather, string, Weather, Weather]
+  readonly [Weather, string, string, string]
 > =>
   WEATHERS.map((from) => {
     const threshold =
@@ -304,8 +350,18 @@ export const weatherTransitionTable = (): ReadonlyArray<
     return [
       from,
       threshold.toFixed(2),
-      resolveNextWeatherState(from, { transition: 0, duration: 0 }).weather,
-      resolveNextWeatherState(from, { transition: 1, duration: 0 }).weather,
+      (() => {
+        const result = resolveNextWeatherState(from, { transition: 0, duration: 0 })
+        return Result.isFailure(result)
+          ? `failure: ${JSON.stringify(result.failure)}`
+          : result.success.weather
+      })(),
+      (() => {
+        const result = resolveNextWeatherState(from, { transition: 1, duration: 0 })
+        return Result.isFailure(result)
+          ? `failure: ${JSON.stringify(result.failure)}`
+          : result.success.weather
+      })(),
     ] as const
   })
 
@@ -324,12 +380,26 @@ export type TimeReading = {
   readonly hostiles: boolean
 }
 
-export const readTime = (timeOfDay: number): TimeReading => ({
-  timeOfDay,
-  phase: dayPhase(timeOfDay),
-  night: isNight(timeOfDay),
-  hostiles: hostileSpawnsAllowed(timeOfDay),
-})
+export const readTime = (timeOfDay: number): TimeReading => {
+  const phase = dayPhase(timeOfDay)
+  const night = isNight(timeOfDay)
+  const hostiles = hostileSpawnsAllowed(timeOfDay)
+  if (Result.isFailure(phase)) {
+    throw new Error(`preview day phase failed: ${JSON.stringify(phase.failure)}`)
+  }
+  if (Result.isFailure(night)) {
+    throw new Error(`preview night check failed: ${JSON.stringify(night.failure)}`)
+  }
+  if (Result.isFailure(hostiles)) {
+    throw new Error(`preview hostile-spawn time check failed: ${JSON.stringify(hostiles.failure)}`)
+  }
+  return {
+    timeOfDay,
+    phase: phase.success,
+    night: night.success,
+    hostiles: hostiles.success,
+  }
+}
 
 /**
  * The same instant, expressed three ways.
@@ -369,7 +439,13 @@ export const wrapReport = (timeOfDay: number): WrapReport => {
 
 /** The phase at each of `steps` equally spaced points across one whole day. */
 export const phaseBand = (steps: number): ReadonlyArray<DayPhase> =>
-  Array.from({ length: Math.max(1, steps) }, (_, index) => dayPhase(index / Math.max(1, steps)))
+  Array.from({ length: Math.max(1, steps) }, (_, index) => {
+    const phase = dayPhase(index / Math.max(1, steps))
+    if (Result.isFailure(phase)) {
+      throw new Error(`preview phase band failed: ${JSON.stringify(phase.failure)}`)
+    }
+    return phase.success
+  })
 
 // ---------------------------------------------------------------------------
 // Arena
@@ -575,7 +651,12 @@ export const strike = (state: ArenaState): void => {
   const cause = arenaCause(state)
   const { amount, label } = arenaAmount(state)
   const before = state.vitals.healthPoints
-  state.vitals = applyDamage(state.vitals, { amount, cause })
+  const damaged = applyDamage(state.vitals, { amount, cause })
+  if (Result.isFailure(damaged)) {
+    state.note = `damage rejected: ${JSON.stringify(damaged.failure)}`
+    return
+  }
+  state.vitals = damaged.success
   state.log = [
     ...state.log.slice(-11),
     { cause, amountLabel: label, before, after: state.vitals.healthPoints },
@@ -667,6 +748,11 @@ export const arenaCandidate = (state: ArenaState, timeOfDay: number): SpawnCandi
 
 export const attemptSpawn = (state: ArenaState, timeOfDay: number): void => {
   const verdict = canHostileSpawnAt(arenaCandidate(state, timeOfDay))
+  if (verdict._tag === 'InvalidDayNightInput' || verdict._tag === 'InvalidSpawnCandidate') {
+    state.verdict = undefined
+    state.note = `spawn input rejected: ${JSON.stringify(verdict)}`
+    return
+  }
   state.verdict = verdict
 
   if (verdict._tag === 'Refused') {
@@ -724,13 +810,22 @@ export const stepArena = (state: ArenaState): void => {
   }
 
   const damage = explosionDamageAt(step.explosion, creeper.distanceBlocks)
+  if (Result.isFailure(damage)) {
+    state.note = `explosion damage rejected: ${JSON.stringify(damage.failure)}`
+    return
+  }
   const before = state.vitals.healthPoints
-  state.vitals = applyDamage(state.vitals, damage)
+  const damaged = applyDamage(state.vitals, damage.success)
+  if (Result.isFailure(damaged)) {
+    state.note = `damage application rejected: ${JSON.stringify(damaged.failure)}`
+    return
+  }
+  state.vitals = damaged.success
   state.log = [
     ...state.log.slice(-11),
     {
-      cause: damage.cause,
-      amountLabel: `${String(damage.amount)} @${creeper.distanceBlocks.toFixed(1)}b`,
+      cause: damage.success.cause,
+      amountLabel: `${String(damage.success.amount)} @${creeper.distanceBlocks.toFixed(1)}b`,
       before,
       after: state.vitals.healthPoints,
     },
@@ -742,7 +837,7 @@ export const stepArena = (state: ArenaState): void => {
   // point: the empty list below came out of `rollMobDrops`.
   state.loot = rollMobDrops(CREEPER_DROPS, { _tag: 'SelfDestruct' }, () => LOWEST_ROLLS)
   state.xp = mobXpReward({ _tag: 'SelfDestruct' }, CREEPER_XP_REWARD)
-  state.note = `it detonated at ${creeper.distanceBlocks.toFixed(1)} blocks for ${String(damage.amount)} damage`
+  state.note = `it detonated at ${creeper.distanceBlocks.toFixed(1)} blocks for ${String(damage.success.amount)} damage`
 }
 
 /** Kill it before the fuse ends — the only path that yields loot. */
@@ -942,11 +1037,16 @@ export const DESPAWN_PROBES: ReadonlyArray<number> = [
   Number.NaN,
 ]
 
-export const sweepAt = (distanceBlocks: number, persistent: boolean): DespawnVerdict =>
+export const sweepAt = (
+  distanceBlocks: number,
+  persistent: boolean,
+): Result.Result<DespawnVerdict, DespawnVerdictFailure> =>
   despawnVerdict({ distanceToPlayerBlocks: distanceBlocks, persistent })
 
-export const sweepLabel = (verdict: DespawnVerdict): string =>
-  verdict._tag === 'Keep' ? 'Keep' : `Despawn: ${verdict.reason}`
+export const sweepLabel = (result: Result.Result<DespawnVerdict, DespawnVerdictFailure>): string => {
+  if (Result.isFailure(result)) return `Invalid candidate: ${JSON.stringify(result.failure)}`
+  return result.success._tag === 'Keep' ? 'Keep' : `Despawn: ${result.success.reason}`
+}
 
 export const DESPAWN_RADIUS: number = DESPAWN_DISTANCE_BLOCKS
 
@@ -1001,8 +1101,14 @@ export const fuseFraction = (fuse: CreeperFuse): number =>
  * seeing side by side: ignition is 3 blocks and the blast reaches 6, so backing
  * out of the range that lights the fuse is not the same as being safe.
  */
-export const blastCurve = (power: number): ReadonlyArray<readonly [number, number]> =>
-  [0, 1, 2, 3, 4, 5, 6, 7].map((distance) => [distance, explosionDamageAmount(power, distance)] as const)
+export const blastCurve = (power: number): ReadonlyArray<readonly [number, number | string]> =>
+  [0, 1, 2, 3, 4, 5, 6, 7].map((distance) => {
+    const damage = explosionDamageAmount(power, distance)
+    return [
+      distance,
+      Result.isFailure(damage) ? `failure: ${JSON.stringify(damage.failure)}` : damage.success,
+    ] as const
+  })
 
 export const blastRadius: typeof explosionRadius = explosionRadius
 
@@ -1025,8 +1131,11 @@ export const healthBar = (vitals: Vitals, width: number): string => {
 
 export const arenaVerdict = (vitals: Vitals): string => {
   const message = deathMessage(vitals)
-  if (message !== undefined) {
-    return message
+  if (Result.isFailure(message)) {
+    return `invalid death-message input: ${JSON.stringify(message.failure)}`
+  }
+  if (message.success !== undefined) {
+    return message.success
   }
   if (!Number.isFinite(vitals.healthPoints)) {
     return 'alive — isDead() is false, and no further damage can change that'

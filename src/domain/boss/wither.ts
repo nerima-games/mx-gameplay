@@ -37,7 +37,7 @@ import {
   type WitherSnapshot,
   type WitherState,
 } from '@nerima-games/mc-sim'
-import { PositionAxis, position as kernelPosition, type Position } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, PositionAxis, position as kernelPosition, type Position } from '@nerima-games/mc-kernel'
 import { Brand, Result } from 'effect'
 
 export type RuntimeWither = Readonly<{
@@ -337,7 +337,7 @@ export const advanceWitherRuntime = (
   deltaSecs: number,
   skullHitsWorld: (from: RuntimeWitherSkull, to: Position) => boolean,
 ): Result.Result<WitherRuntimeAdvance, Brand.BrandError> => Result.gen(function* () {
-  const delta = Math.max(0, Number.isFinite(deltaSecs) ? deltaSecs : 0)
+  const delta = yield* DeltaTimeSecs.result(deltaSecs)
   const explosions: WitherExplosion[] = []
   const withers: RuntimeWither[] = []
   const launched: RuntimeWitherSkull[] = []

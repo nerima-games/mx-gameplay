@@ -65,6 +65,7 @@
  * `../death-cause` does.
  */
 import type { Damage } from '../death-cause.js'
+import { Result } from 'effect'
 
 /**
  * What set the blast off.
@@ -110,7 +111,23 @@ export const TNT_EXPLOSION_POWER = 4
  * ignition range, which is why backing out of ignition range is not the same as
  * being safe.
  */
-export const explosionRadius = (power: number): number => power * 2
+export type ExplosionInputFailure = Readonly<{
+  _tag: 'InvalidExplosionInput'
+  field: 'power' | 'radius' | 'distanceToCentre' | 'exposure' | 'damageAmount'
+}>
+
+const invalidExplosionInput = (field: ExplosionInputFailure['field']): ExplosionInputFailure => ({
+  _tag: 'InvalidExplosionInput',
+  field,
+})
+
+export const explosionRadius = (power: number): Result.Result<number, ExplosionInputFailure> => {
+  if (!Number.isFinite(power) || power < 0) return Result.fail(invalidExplosionInput('power'))
+  const radius = power * 2
+  return Number.isFinite(radius)
+    ? Result.succeed(radius)
+    : Result.fail(invalidExplosionInput('radius'))
+}
 
 /**
  * The reference's curve, unchanged.
@@ -122,28 +139,37 @@ export const explosionRadius = (power: number): number => power * 2
  * it would silently change the curve for whoever ports raycast exposure, and
  * because `packages/entity/test/explosion.test.ts` pins a value at 0.5.
  *
- * TOTAL. A non-finite distance is outside every radius (`NaN > 1` is `false`,
- * so the guard is written to catch it explicitly rather than by luck), and a
- * power of zero has a zero radius and does nothing.
+ * A finite non-negative distance, finite non-negative power and exposure in
+ * [0, 1] produce the reference curve. A zero power has a zero radius.
  */
 export const explosionDamageAmount = (
   power: number,
   distanceToCentre: number,
-  exposure: number = 1,
-): number => {
-  const diameter = explosionRadius(power)
-  if (!Number.isFinite(distanceToCentre) || diameter <= 0) {
-    return 0
+  ...exposureInput: readonly [] | readonly [number]
+): Result.Result<number, ExplosionInputFailure> => {
+  const exposure = exposureInput.length === 0 ? 1 : exposureInput[0]
+  if (!Number.isFinite(distanceToCentre) || distanceToCentre < 0) {
+    return Result.fail(invalidExplosionInput('distanceToCentre'))
   }
+  if (exposure === undefined || !Number.isFinite(exposure) || exposure < 0 || exposure > 1) {
+    return Result.fail(invalidExplosionInput('exposure'))
+  }
+  const radius = explosionRadius(power)
+  if (Result.isFailure(radius)) return Result.fail(radius.failure)
+  const diameter = radius.success
+  if (diameter === 0) return Result.succeed(0)
 
-  const normalised = Math.max(0, distanceToCentre) / diameter
+  const normalised = distanceToCentre / diameter
   if (normalised > 1) {
-    return 0
+    return Result.succeed(0)
   }
 
   const impact = (1 - normalised) * exposure
 
-  return Math.floor(((impact * impact + impact) / 2) * 7 * diameter + 1)
+  const damageAmount = Math.floor(((impact * impact + impact) / 2) * 7 * diameter + 1)
+  return Number.isFinite(damageAmount)
+    ? Result.succeed(damageAmount)
+    : Result.fail(invalidExplosionInput('damageAmount'))
 }
 
 /**
@@ -157,8 +183,13 @@ export const explosionDamageAmount = (
 export const explosionDamageAt = (
   explosion: Explosion,
   distanceToCentre: number,
-  exposure: number = 1,
-): Damage => ({
-  amount: explosionDamageAmount(explosion.power, distanceToCentre, exposure),
-  cause: 'explosion',
-})
+  ...exposureInput: readonly [] | readonly [number]
+): Result.Result<Damage, ExplosionInputFailure> => {
+  if (typeof explosion !== 'object' || explosion === null) {
+    return Result.fail(invalidExplosionInput('power'))
+  }
+  const amount = explosionDamageAmount(explosion.power, distanceToCentre, ...exposureInput)
+  return Result.isFailure(amount)
+    ? Result.fail(amount.failure)
+    : Result.succeed({ amount: amount.success, cause: 'explosion' })
+}

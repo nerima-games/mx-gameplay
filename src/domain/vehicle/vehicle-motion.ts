@@ -1,7 +1,12 @@
 import type { OccupantId, Vehicle } from '@nerima-games/mc-sim'
 import { AngleRadians, VehicleVelocityComponent } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
 import { directionComponent, normalizeDirection2 } from '../math/direction.js'
-import { projectMinecartVelocity, type RailShape } from './rail-shape.js'
+import {
+  projectMinecartVelocity,
+  type RailShape,
+  type RailShapeFailure,
+} from './rail-shape.js'
 
 export type VehicleExitReason = 'requested' | 'collision' | 'destroyed'
 
@@ -9,6 +14,12 @@ export type VehicleTransition = Readonly<{
   vehicle: Vehicle
   exited?: Readonly<{ occupant: OccupantId; reason: VehicleExitReason }>
 }>
+
+export type VehicleMotionFailure =
+  | Readonly<{ _tag: 'InvalidImpactSpeed' }>
+  | Readonly<{ _tag: 'InvalidVehicleDeltaTime' }>
+  | Readonly<{ _tag: 'InvalidBoatControl'; field: 'controls' | 'throttle' | 'steering' }>
+  | RailShapeFailure
 
 export type VehicleCollision = Readonly<{
   collided?: boolean
@@ -38,9 +49,7 @@ export const MINECART_CLIMB_SPEED = 2
 export const COLLISION_EXIT_SPEED = 6
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
-  Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : 0))
-
-const safeDt = (dt: number): number => clamp(dt, 0, 0.1)
+  Math.min(maximum, Math.max(minimum, value))
 
 const speed = (vehicle: Vehicle): number =>
   Math.hypot(vehicle.velocity.x, vehicle.velocity.y, vehicle.velocity.z)
@@ -57,24 +66,29 @@ const withoutOccupant = (vehicle: Vehicle): Vehicle => {
   return unoccupied
 }
 
-const applyCollision = (vehicle: Vehicle, collision: VehicleCollision): VehicleTransition => {
+const applyCollision = (
+  vehicle: Vehicle,
+  collision: VehicleCollision,
+): Result.Result<VehicleTransition, VehicleMotionFailure> => {
+  const hasImpactSpeed = Object.hasOwn(collision, 'impactSpeed')
+  if (hasImpactSpeed && (collision.impactSpeed === undefined || !Number.isFinite(collision.impactSpeed))) {
+    return Result.fail({ _tag: 'InvalidImpactSpeed' })
+  }
+
   const occupant = vehicle.occupant
   if (collision.destroyed) {
     const stopped = withoutOccupant({ ...vehicle, velocity: vehicleVelocity(0, 0, 0) })
     return occupant === undefined
-      ? { vehicle: stopped }
-      : { vehicle: stopped, exited: { occupant, reason: 'destroyed' } }
+      ? Result.succeed({ vehicle: stopped })
+      : Result.succeed({ vehicle: stopped, exited: { occupant, reason: 'destroyed' } })
   }
-  if (!collision.collided) return { vehicle }
+  if (!collision.collided) return Result.succeed({ vehicle })
 
-  // The non-null assertion, not `?? 0`, is deliberate: `impactSpeed?: number`
-  // is not narrowed to `number` by `Number.isFinite`, but the guard above still
-  // forbids `undefined` here (`Number.isFinite(undefined)` is `false`), so a
-  // runtime fallback can never fire and would be dead code purely to satisfy
-  // the type checker.
-  const impactSpeed = Number.isFinite(collision.impactSpeed)
-    ? Math.max(0, collision.impactSpeed!)
-    : speed(vehicle)
+  const impactSpeed = hasImpactSpeed ? collision.impactSpeed : speed(vehicle)
+  if (impactSpeed === undefined || !Number.isFinite(impactSpeed)) {
+    return Result.fail({ _tag: 'InvalidImpactSpeed' })
+  }
+  const resolvedImpactSpeed = Math.max(0, impactSpeed)
   const collided: Vehicle = {
     ...vehicle,
     velocity: vehicleVelocity(
@@ -83,9 +97,9 @@ const applyCollision = (vehicle: Vehicle, collision: VehicleCollision): VehicleT
       vehicle.velocity.z * 0.2,
     ),
   }
-  return occupant !== undefined && impactSpeed >= COLLISION_EXIT_SPEED
-    ? { vehicle: withoutOccupant(collided), exited: { occupant, reason: 'collision' } }
-    : { vehicle: collided }
+  return occupant !== undefined && resolvedImpactSpeed >= COLLISION_EXIT_SPEED
+    ? Result.succeed({ vehicle: withoutOccupant(collided), exited: { occupant, reason: 'collision' } })
+    : Result.succeed({ vehicle: collided })
 }
 
 export const boardVehicle = (
@@ -103,9 +117,20 @@ export const exitVehicle = (vehicle: Vehicle): VehicleTransition => {
   return { vehicle: withoutOccupant(vehicle), exited: { occupant, reason: 'requested' } }
 }
 
-export const stepBoat = (vehicle: Vehicle, control: BoatControl, dt: number): VehicleTransition => {
-  if (vehicle.type !== 'boat') return { vehicle }
-  const elapsed = safeDt(dt)
+export const stepBoat = (
+  vehicle: Vehicle,
+  control: BoatControl,
+  dt: number,
+): Result.Result<VehicleTransition, VehicleMotionFailure> => {
+  if (vehicle.type !== 'boat') return Result.succeed({ vehicle })
+  if (!Number.isFinite(dt)) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
+  if (!Number.isFinite(control.throttle)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
+  }
+  if (!Number.isFinite(control.steering)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
+  }
+  const elapsed = clamp(dt, 0, 0.1)
   const steering = vehicle.occupant === undefined ? 0 : clamp(control.steering, -1, 1)
   const throttle = vehicle.occupant === undefined ? 0 : clamp(control.throttle, -1, 1)
   const yawRadians = AngleRadians(vehicle.yawRadians + steering * BOAT_TURN_RATE * elapsed)
@@ -126,12 +151,17 @@ export const stepMinecart = (
   track: MinecartTrack,
   collision: VehicleCollision,
   dt: number,
-): VehicleTransition => {
-  if (vehicle.type !== 'minecart') return { vehicle }
-  const elapsed = safeDt(dt)
-  let { vx, vz } = track.kind === 'none'
-    ? { vx: vehicle.velocity.x, vz: vehicle.velocity.z }
-    : projectMinecartVelocity(track.shape, vehicle.velocity.x, vehicle.velocity.z)
+): Result.Result<VehicleTransition, VehicleMotionFailure> => {
+  if (vehicle.type !== 'minecart') return Result.succeed({ vehicle })
+  if (!Number.isFinite(dt)) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
+  const elapsed = clamp(dt, 0, 0.1)
+  const projected = projectMinecartVelocity(
+    track.kind === 'none' ? 'isolated' : track.shape,
+    vehicle.velocity.x,
+    vehicle.velocity.z,
+  )
+  if (Result.isFailure(projected)) return Result.fail(projected.failure)
+  let { vx, vz } = projected.success
   const velocity = {
     x: VehicleVelocityComponent(vx),
     y: VehicleVelocityComponent(vehicle.velocity.y),

@@ -66,6 +66,7 @@ import {
   blockTypeOfId,
   type BlockDrop,
   type BlockType,
+  type BlockRegistryResolutionFailure,
   type HarvestContext,
 } from '@nerima-games/mc-kernel'
 import type { BlockId } from '@nerima-games/mc-kernel'
@@ -91,6 +92,13 @@ export type MinedItem = {
   readonly item: ItemType
   readonly count: number
 }
+
+export type BlockLootFailure = Readonly<{
+  _tag: 'BlockLootRegistryFailure'
+  block: BlockId
+  lookup: 'drop' | 'type'
+  failure: BlockRegistryResolutionFailure
+}>
 
 /**
  * Everything about the tool, as far as the loot is concerned.
@@ -309,12 +317,11 @@ const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): 
 /**
  * What breaking this block yields, base drop and bonus lines together.
  *
- * TOTAL. Every failure mode is an EMPTY LIST rather than a throw or a
- * zero-count stack, because `StageRegistration.run` has no error channel to put
- * a fifth answer in and a stack of zero is an item that exists and weighs
- * nothing:
+ * A successful lookup may produce an EMPTY LIST rather than a throw or a
+ * zero-count stack. Registry lookup failures remain typed so the interaction
+ * stage can record them instead of treating corrupt block data as no loot:
  *
- *   - a byte this build cannot name yields nothing (kernel's own
+ *   - a valid id this build cannot name yields nothing (kernel's own
  *     rule: minting an item out of an unknown id is how a save from a newer
  *     build prints items into inventories);
  *   - stone swung at bare-handed yields nothing (the tool gate);
@@ -335,9 +342,27 @@ export const blockLoot = (
   block: BlockId,
   context: BlockLootContext = NO_TOOL,
   rolls: ReadonlyArray<number> = NO_LOOT,
-): ReadonlyArray<MinedItem> => {
-  const drop = Result.getOrUndefined(dropOfBlockId(block, context))
-  const type = Result.getOrUndefined(blockTypeOfId(block))
+): Result.Result<ReadonlyArray<MinedItem>, BlockLootFailure> => {
+  const dropResult = dropOfBlockId(block, context)
+  if (Result.isFailure(dropResult)) {
+    return Result.fail({
+      _tag: 'BlockLootRegistryFailure',
+      block,
+      lookup: 'drop',
+      failure: dropResult.failure,
+    })
+  }
+  const typeResult = blockTypeOfId(block)
+  if (Result.isFailure(typeResult)) {
+    return Result.fail({
+      _tag: 'BlockLootRegistryFailure',
+      block,
+      lookup: 'type',
+      failure: typeResult.failure,
+    })
+  }
+  const drop = dropResult.success
+  const type = typeResult.success
   const roll = rolls[0] ?? 0
 
   const items: Array<MinedItem> = []
@@ -387,5 +412,5 @@ export const blockLoot = (
     })
   }
 
-  return items.length === 0 ? NO_LOOT : items
+  return Result.succeed(items.length === 0 ? NO_LOOT : items)
 }

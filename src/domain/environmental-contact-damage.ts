@@ -1,4 +1,5 @@
 import type { Damage } from './death-cause.js'
+import { Result } from 'effect'
 
 export const ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS = 0.5
 
@@ -19,19 +20,31 @@ export type EnvironmentalContactDamageStep = {
   readonly damages: ReadonlyArray<Damage>
 }
 
+export type EnvironmentalContactDamageFailure = Readonly<{
+  _tag: 'InvalidEnvironmentalContactDamageInput'
+  field: 'contacts' | 'contacts.block' | 'contacts.contactDamage' | 'state.lastDamageElapsedSecs' | 'simulationElapsedSecs'
+}>
+
 export const INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE: EnvironmentalContactDamageState = {
   lastDamageElapsedSecs: undefined,
 }
 
 const strongestContact = (
   contacts: ReadonlyArray<EnvironmentalContact>,
-): EnvironmentalContact | undefined => {
+): Result.Result<EnvironmentalContact | undefined, EnvironmentalContactDamageFailure> => {
   let strongest: EnvironmentalContact | undefined
 
   for (const contact of contacts) {
-    if (!Number.isFinite(contact.contactDamage) || contact.contactDamage <= 0) {
-      continue
+    if (typeof contact !== 'object' || contact === null) {
+      return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'contacts' })
     }
+    if (contact.block !== 'lava' && contact.block !== 'cactus') {
+      return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'contacts.block' })
+    }
+    if (!Number.isFinite(contact.contactDamage) || contact.contactDamage < 0) {
+      return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'contacts.contactDamage' })
+    }
+    if (contact.contactDamage === 0) continue
 
     if (
       strongest === undefined ||
@@ -44,7 +57,7 @@ const strongestContact = (
     }
   }
 
-  return strongest
+  return Result.succeed(strongest)
 }
 
 /**
@@ -58,14 +71,34 @@ export const resolveEnvironmentalContactDamage = (
   state: EnvironmentalContactDamageState,
   contacts: ReadonlyArray<EnvironmentalContact>,
   simulationElapsedSecs: number,
-): EnvironmentalContactDamageStep => {
-  const strongest = strongestContact(contacts)
+): Result.Result<EnvironmentalContactDamageStep, EnvironmentalContactDamageFailure> => {
+  if (typeof state !== 'object' || state === null) {
+    return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'state.lastDamageElapsedSecs' })
+  }
+  if (!Object.hasOwn(state, 'lastDamageElapsedSecs')) {
+    return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'state.lastDamageElapsedSecs' })
+  }
+  if (!Array.isArray(contacts)) {
+    return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'contacts' })
+  }
+  if (!Number.isFinite(simulationElapsedSecs) || simulationElapsedSecs < 0) {
+    return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'simulationElapsedSecs' })
+  }
+  const lastDamageElapsedSecs = state.lastDamageElapsedSecs
+  if (
+    lastDamageElapsedSecs !== undefined &&
+    (!Number.isFinite(lastDamageElapsedSecs) || lastDamageElapsedSecs < 0)
+  ) {
+    return Result.fail({ _tag: 'InvalidEnvironmentalContactDamageInput', field: 'state.lastDamageElapsedSecs' })
+  }
+  const selected = strongestContact(contacts)
+  if (Result.isFailure(selected)) return Result.fail(selected.failure)
+  const strongest = selected.success
 
-  if (strongest === undefined || !Number.isFinite(simulationElapsedSecs) || simulationElapsedSecs < 0) {
-    return { state: INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE, damages: [] }
+  if (strongest === undefined) {
+    return Result.succeed({ state: INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE, damages: [] })
   }
 
-  const lastDamageElapsedSecs = state.lastDamageElapsedSecs
   const contactStarted = lastDamageElapsedSecs === undefined
   const clockRewound = lastDamageElapsedSecs !== undefined && simulationElapsedSecs < lastDamageElapsedSecs
   const cadenceElapsed =
@@ -73,11 +106,11 @@ export const resolveEnvironmentalContactDamage = (
     simulationElapsedSecs - lastDamageElapsedSecs >= ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS
 
   if (!contactStarted && !clockRewound && !cadenceElapsed) {
-    return { state, damages: [] }
+    return Result.succeed({ state, damages: [] })
   }
 
-  return {
+  return Result.succeed({
     state: { lastDamageElapsedSecs: simulationElapsedSecs },
     damages: [{ amount: strongest.contactDamage, cause: strongest.block }],
-  }
+  })
 }

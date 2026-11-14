@@ -60,8 +60,8 @@
  * down. That ordering is the whole of the cost argument and it is why the gate
  * below takes the block rather than the store deciding.
  */
-import { Effect, Option, Result } from 'effect'
-import { blockIdOf, blockTypeOfId, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Effect, Option } from 'effect'
+import { blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
@@ -85,8 +85,7 @@ export const MAX_MUSHROOM_PLACEMENT_LIGHT = 12
  * unknown id through rather than refusing it for a reason nobody can state.
  */
 export const isMushroomBlock = (block: BlockId): boolean => {
-  const type = Result.getOrUndefined(blockTypeOfId(block))
-  return type === 'brown_mushroom' || type === 'red_mushroom'
+  return block === BROWN_MUSHROOM_BLOCK_ID || block === RED_MUSHROOM_BLOCK_ID
 }
 
 /**
@@ -160,14 +159,6 @@ export const mushroomLightObjection = (
     return isMushroomPlacementLightAllowed(block, light) ? undefined : { _tag: 'TooBright', light }
   })
 
-/**
- * The two ids this rule is about, for a caller that wants to demonstrate it.
- *
- * `BlockId | undefined` and not a filtered array, because `blockIdOf` is PARTIAL
- * on this mirror (see its comment) and a filter would introduce an arm no test
- * can reach — kernel's own type declaration pins `blockIdOf` total over
- * all 120 block types, so in a green tree neither of these is ever `undefined`.
- * The type says what the mirror can promise; the test says what is true today.
- */
-export const BROWN_MUSHROOM_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('brown_mushroom'))
-export const RED_MUSHROOM_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('red_mushroom'))
+/** The two registered mushroom block ids used by `isMushroomBlock`. */
+export const BROWN_MUSHROOM_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('brown_mushroom'))
+export const RED_MUSHROOM_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('red_mushroom'))

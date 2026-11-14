@@ -13,8 +13,6 @@ import {
   HungerPoints,
   itemStack,
   makeTimeService,
-  type Entity,
-  type EntityRoster,
 } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 import { CREEPER_KIND } from '../../src/domain/entities/mob-frame'
@@ -52,20 +50,43 @@ import { blockPosition, position } from '../support/coordinate-fixtures'
 
 const lowVitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
 
+type GameplayEntitiesInput = NonNullable<GameplayOwnerInitialState['entities']>
+type GameplayEntityInput = GameplayEntitiesInput['entities'][number]
+type PersistedGameplayEntitiesInput = Omit<GameplayEntitiesInput, 'entities'> & {
+  readonly entities: ReadonlyArray<Omit<GameplayEntityInput, 'behaviour'> | GameplayEntityInput>
+}
+type PersistedGameplayOwnerInitialState = Omit<GameplayOwnerInitialState, 'entities'> & {
+  readonly entities?: PersistedGameplayEntitiesInput
+}
+
 const makeSlice = (
   initialSlots = inventorySlots(),
-  ownerInitial: GameplayOwnerInitialState = {},
+  ownerInitial: PersistedGameplayOwnerInitialState = {},
   initialWorld = world([]),
 ) =>
   Effect.gen(function* () {
     const store = yield* makeTransactionalChunkStoreDouble(initialWorld, ['0,0'])
-    const roster = yield* makeEntityManagerDouble<MobBehaviour>(
-      ownerInitial.entities ?? { entities: [], nextSerial: EntitySerial(0) },
-    )
+    const runtimeEntities: GameplayEntitiesInput = ownerInitial.entities === undefined
+      ? { entities: [], nextSerial: EntitySerial(0) }
+      : {
+          ...ownerInitial.entities,
+          entities: ownerInitial.entities.entities.map((entity) => ({
+            ...entity,
+            behaviour: 'behaviour' in entity ? entity.behaviour : undefined,
+          })),
+        }
+    const { entities: persistedEntities, ...ownerFields } = ownerInitial
+    const commitInitial: GameplayOwnerInitialState = {
+      ...ownerFields,
+      ...(persistedEntities === undefined ? {} : {
+        entities: persistedEntities as unknown as GameplayEntitiesInput,
+      }),
+    }
+    const roster = yield* makeEntityManagerDouble<MobBehaviour>(runtimeEntities)
     const inventory = yield* makeInventoryDouble(initialSlots)
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
-    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, ownerInitial)
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, commitInitial)
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator: commit.coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
@@ -105,14 +126,13 @@ describe('item use and combat through gameplay stages', () => {
 
   it.effect('applies a melee hit to the registered target and drains its result once', () =>
     Effect.gen(function* () {
-      const target: Entity<MobBehaviour> = {
+      const target = {
         id: EntityId('melee-scenario-target'),
         kind: CREEPER_KIND,
         feetPosition: position(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
-        behaviour: undefined,
       }
-      const entities: EntityRoster<MobBehaviour> = { entities: [target], nextSerial: EntitySerial(1) }
+      const entities = { entities: [target], nextSerial: EntitySerial(1) }
       const slots = [...inventorySlots()]
       slots[0] = Result.getOrThrow(itemStack('wooden_sword', 1))
       const slice = yield* makeSlice(slots, {
@@ -146,14 +166,13 @@ describe('item use and combat through gameplay stages', () => {
 
   it.effect('a player melee kill of a zombie commits mob drops and experience through gameplay stages', () =>
     Effect.gen(function* () {
-      const zombie: Entity<MobBehaviour> = {
+      const zombie = {
         id: EntityId('zombie-drop-scenario-target'),
         kind: ZOMBIE_KIND,
         feetPosition: position(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
       }
-      const entities: EntityRoster<MobBehaviour> = { entities: [zombie], nextSerial: EntitySerial(1) }
+      const entities = { entities: [zombie], nextSerial: EntitySerial(1) }
       const slice = yield* makeSlice(undefined, {
         entities,
         playerPose: { feetPosition: position(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
@@ -192,14 +211,13 @@ describe('item use and combat through gameplay stages', () => {
 
   it.effect('a wooden-sword melee casualty drops raw beef from the prepared damage result', () =>
     Effect.gen(function* () {
-      const cow: Entity<MobBehaviour> = {
+      const cow = {
         id: EntityId('cow-drop-scenario-target'),
         kind: COW_KIND,
         feetPosition: position(0, 64.72, -2),
         healthPoints: EntityHealthPoints(3),
-        behaviour: undefined,
       }
-      const entities: EntityRoster<MobBehaviour> = { entities: [cow], nextSerial: EntitySerial(1) }
+      const entities = { entities: [cow], nextSerial: EntitySerial(1) }
       const slots = [...inventorySlots()]
       slots[0] = Result.getOrThrow(itemStack('wooden_sword', 1))
       const slice = yield* makeSlice(slots, {

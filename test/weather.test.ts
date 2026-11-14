@@ -31,8 +31,8 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { EntityKind, makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
-import { hostileSpawnsAllowed, NOON_FRACTION } from '../src/domain/day-night'
+import { Effect, Ref, Result } from 'effect'
+import { hostileSpawnsAllowed as hostileSpawnsAllowedResult, NOON_FRACTION } from '../src/domain/day-night'
 import {
   BlockId,
   DeltaTimeSecs,
@@ -51,28 +51,44 @@ import {
 } from '@nerima-games/mc-worldgen'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
-  advanceWeather,
+  advanceWeather as advanceWeatherResult,
   CLEAR_DURATION_RANGE_SECS,
-  createWeatherState,
+  createWeatherState as createWeatherStateResult,
   INITIAL_WEATHER,
   isPrecipitating,
   isThunderstorm,
   LOWEST_WEATHER_ROLLS,
   RAIN_AFTER_THUNDER_CHANCE,
   RAIN_DURATION_RANGE_SECS,
-  resolveNextWeatherState,
-  resolveWeatherDurationSecs,
+  resolveNextWeatherState as resolveNextWeatherStateResult,
+  resolveWeatherDurationSecs as resolveWeatherDurationSecsResult,
   THUNDER_AFTER_CLEAR_CHANCE,
   THUNDER_AFTER_RAIN_CHANCE,
   THUNDER_DURATION_RANGE_SECS,
-  weatherExpires,
+  weatherExpires as weatherExpiresResult,
   weatherLightScale,
   WEATHERS,
   WEATHER_TRANSITION_ROLLS,
   type Weather,
+  type WeatherRolls,
   type WeatherState,
 } from '../src/domain/weather'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+
+const advanceWeather = (...args: Parameters<typeof advanceWeatherResult>) =>
+  Result.getOrThrow(advanceWeatherResult(...args))
+
+const createWeatherState = (...args: Parameters<typeof createWeatherStateResult>) =>
+  Result.getOrThrow(createWeatherStateResult(...args))
+
+const resolveNextWeatherState = (...args: Parameters<typeof resolveNextWeatherStateResult>) =>
+  Result.getOrThrow(resolveNextWeatherStateResult(...args))
+
+const resolveWeatherDurationSecs = (...args: Parameters<typeof resolveWeatherDurationSecsResult>) =>
+  Result.getOrThrow(resolveWeatherDurationSecsResult(...args))
+
+const weatherExpires = (...args: Parameters<typeof weatherExpiresResult>) =>
+  Result.getOrThrow(weatherExpiresResult(...args))
 import {
   advanceWeatherGameplay,
   makeWeatherGameplayState,
@@ -85,6 +101,8 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
+
+const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 
 // ---------------------------------------------------------------------------
 // The reference's oracle
@@ -102,35 +120,18 @@ describe('the reference’s weather oracle, ported unchanged', () => {
     }),
   )
 
-  it.effect('REGRESSION: a duration roll that is not a number gives the SHORTEST stretch, never a NaN countdown', () =>
+  it.effect('rejects a non-finite weather duration roll', () =>
     Effect.sync(() => {
-      // `clampUnit`'s other half, and the half the reference's oracle does not
-      // reach: it passes -1 and 2, which are out of band but still numbers.
-      //
-      // The direction is chosen and it is the opposite of the one above. An
-      // out-of-band roll is clamped to the nearest END of the range, so -1 gives
-      // the minimum and 2 the maximum; a roll that is not a number at all is
-      // read as 0 and therefore ALWAYS gives the minimum, even for the roll that
-      // would otherwise have meant "a long one". That is deliberate: the
-      // arithmetic here is `min + floor(roll * span)`, so a `NaN` passed through
-      // would produce a `NaN` countdown — and `NaN > 0` is false, so
-      // `weatherExpires` would say the stretch had run out while
-      // `remainingSecs - dt` stayed `NaN` forever. Weather frozen for the life
-      // of the world, which is the failure the REGRESSION two describes below
-      // guards from the other side.
-      //
-      // The shortest stretch is the recoverable answer: the sky changes in ten
-      // minutes and the generator gets another chance.
       for (const broken of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-        expect(resolveWeatherDurationSecs('clear', broken)).toBe(CLEAR_DURATION_RANGE_SECS.min)
-        expect(resolveWeatherDurationSecs('rain', broken)).toBe(RAIN_DURATION_RANGE_SECS.min)
-        expect(resolveWeatherDurationSecs('thunder', broken)).toBe(THUNDER_DURATION_RANGE_SECS.min)
+        expect(resolveWeatherDurationSecsResult('clear', broken)).toStrictEqual(Result.fail({
+          _tag: 'InvalidWeatherInput',
+          field: 'roll',
+        }))
       }
-
-      // …and the state built from one is a state that can still expire.
-      const state = createWeatherState('thunder', Number.NaN)
-      expect(Number.isFinite(state.remainingSecs)).toBe(true)
-      expect(state.remainingSecs).toBeGreaterThan(0)
+      expect(createWeatherStateResult('thunder', Number.NaN)).toStrictEqual(Result.fail({
+        _tag: 'InvalidWeatherInput',
+        field: 'roll',
+      }))
     }),
   )
 
@@ -340,32 +341,51 @@ describe('the weather rule holds nothing', () => {
     }),
   )
 
-  // A corrupt countdown must RESOLVE itself rather than freeze the sky. `NaN > 0`
-  // is `false`, so the recoverable reading is the one that expires — the
-  // alternative reads as "not expired" and is weather frozen for the life of the
-  // world, which looks exactly like a working game.
-  it.effect('REGRESSION: a NaN countdown expires rather than freezing the weather forever', () =>
+  it.effect('rejects a non-finite weather countdown', () =>
     Effect.sync(() => {
-      expect(weatherExpires({ weather: 'clear', remainingSecs: Number.NaN }, 1)).toBe(true)
-      const next = advanceWeather(
+      expect(weatherExpiresResult({ weather: 'clear', remainingSecs: Number.NaN }, 1)).toStrictEqual(Result.fail({
+        _tag: 'InvalidWeatherInput',
+        field: 'state',
+      }))
+      expect(advanceWeatherResult(
         { weather: 'clear', remainingSecs: Number.NaN },
         1,
         LOWEST_WEATHER_ROLLS,
-      )
-      expect(Number.isFinite(next.remainingSecs)).toBe(true)
-      expect(next.remainingSecs).toBeGreaterThan(0)
+      )).toStrictEqual(Result.fail({
+        _tag: 'InvalidWeatherInput',
+        field: 'state',
+      }))
     }),
   )
 
-  // The frame's delta comes from mc-compose and `DeltaTimeSecs` is a brand
-  // rather than a refinement, so it is not this repository's to trust. One NaN
-  // frame must not poison the countdown for good — the preview's finding F5 in a
-  // second place.
-  it.effect('REGRESSION: a NaN delta advances nothing rather than poisoning the countdown', () =>
+  it.effect('rejects missing or explicitly undefined required weather fields', () =>
+    Effect.sync(() => {
+      expect(resolveNextWeatherStateResult('clear', { transition: 0 } as WeatherRolls)).toStrictEqual(
+        Result.fail({ _tag: 'InvalidWeatherInput', field: 'duration' }),
+      )
+      expect(resolveNextWeatherStateResult('clear', {
+        transition: 0,
+        duration: undefined as unknown as number,
+      })).toStrictEqual(Result.fail({ _tag: 'InvalidWeatherInput', field: 'duration' }))
+
+      const inheritedState = Object.create({ weather: 'clear', remainingSecs: 5 }) as WeatherState
+      expect(weatherExpiresResult(inheritedState, 1)).toStrictEqual(
+        Result.fail({ _tag: 'InvalidWeatherInput', field: 'state' }),
+      )
+    }),
+  )
+
+  it.effect('rejects a non-finite frame delta without publishing a countdown', () =>
     Effect.sync(() => {
       const state: WeatherState = { weather: 'clear', remainingSecs: 100 }
-      const next = advanceWeather(state, Number.NaN, LOWEST_WEATHER_ROLLS)
-      expect(Number.isFinite(next.remainingSecs)).toBe(true)
+      expect(weatherExpiresResult(state, Number.NaN)).toStrictEqual(Result.fail({
+        _tag: 'InvalidWeatherInput',
+        field: 'deltaSeconds',
+      }))
+      expect(advanceWeatherResult(state, Number.NaN, LOWEST_WEATHER_ROLLS)).toStrictEqual(Result.fail({
+        _tag: 'InvalidWeatherInput',
+        field: 'deltaSeconds',
+      }))
     }),
   )
 })

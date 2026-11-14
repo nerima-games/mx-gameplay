@@ -49,17 +49,17 @@
  * DIVERGENCE FROM THE REFERENCE, stated rather than silent, and the test that
  * pins it says which behaviour is vanilla's.
  */
-import { Effect, Option, Result, Schema } from 'effect'
+import { Brand, Effect, Option, Result, Schema } from 'effect'
 import {
   BlockId,
   WorldWriteBatchSchema,
   adjacentBlockPosition,
   blockIdOf,
-  blockTypeOfId,
   type BlockType,
   type Dimension,
 } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { entityWorldBlockTypeAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 import type {
   ReplicatedOwnerCandidate,
   WorldCommitCoordinatorApi,
@@ -100,6 +100,7 @@ export type TillOutcome =
   | { readonly _tag: 'noHoe' }
   /** A hoe, but this ground is not tillable. */
   | { readonly _tag: 'notTillable'; readonly found: BlockType }
+  | { readonly _tag: 'worldUnavailable'; readonly cell: 'ground' | 'above' }
   /**
    * Tillable ground with something resting on it.
    *
@@ -110,6 +111,28 @@ export type TillOutcome =
   | { readonly _tag: 'invalidPosition' }
   | { readonly _tag: 'commitContextMissing' }
   | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
+
+export type TillWorldDataFailure = Readonly<{
+  _tag: 'TillWorldDataFailure'
+  cell: 'ground' | 'above'
+  failure: Brand.BrandError | EntityWorldQueryFailure
+}>
+
+const blockTypeAt = (
+  cell: TillWorldDataFailure['cell'],
+  position: BlockPosition,
+  blockId: number,
+): Result.Result<BlockType, TillWorldDataFailure> => {
+  const decodedId = BlockId.result(blockId)
+  if (Result.isFailure(decodedId)) {
+    return Result.fail({ _tag: 'TillWorldDataFailure', cell, failure: decodedId.failure })
+  }
+  const blockType = entityWorldBlockTypeAt(position, decodedId.success)
+  if (Result.isFailure(blockType)) {
+    return Result.fail({ _tag: 'TillWorldDataFailure', cell, failure: blockType.failure })
+  }
+  return Result.succeed(blockType.success)
+}
 
 /** The cell a hoe must find clear. */
 export const cellAbove = (ground: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
@@ -167,7 +190,7 @@ export const tillSoil = (
   held: TillingCapability,
   ground: BlockPosition,
   commitContext?: TillCommitContext,
-): Effect.Effect<TillOutcome> =>
+): Effect.Effect<TillOutcome, TillWorldDataFailure> =>
   Effect.gen(function* () {
     if (!held.tills) {
       // Answered without reading, which is the point of checking first: a
@@ -191,13 +214,17 @@ export const tillSoil = (
     const groundId = yield* port.blockAt(ground)
     const aboveId = yield* port.blockAt(abovePosition)
 
-    const groundBlockId = groundId === undefined ? undefined : Result.getOrUndefined(BlockId.result(groundId))
-    const aboveBlockId = aboveId === undefined ? undefined : Result.getOrUndefined(BlockId.result(aboveId))
-    const groundBlock = groundBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(groundBlockId))
-    const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
+    const groundBlockResult = groundId === undefined
+      ? Result.succeed(undefined)
+      : blockTypeAt('ground', ground, groundId)
+    const aboveBlockResult = aboveId === undefined
+      ? Result.succeed(undefined)
+      : blockTypeAt('above', abovePosition, aboveId)
+    const groundBlock = yield* Effect.fromResult(groundBlockResult)
+    const aboveBlock = yield* Effect.fromResult(aboveBlockResult)
 
     if (groundBlock === undefined || aboveBlock === undefined) {
-      return { _tag: 'notTillable' as const, found: 'air' as BlockType }
+      return { _tag: 'worldUnavailable', cell: groundBlock === undefined ? 'ground' : 'above' }
     }
 
     const verdict = tillingVerdict(held, ground, groundBlock, aboveBlock)

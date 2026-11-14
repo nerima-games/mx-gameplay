@@ -266,12 +266,30 @@ describe('melee target boundary property', () => {
           behaviour: undefined,
         }
         const candidates = [target]
-        const hit = meleeTarget(candidates, request)
-        if (hit === undefined) return false
+        const hitResult = meleeTarget(candidates, request)
+        if (Result.isFailure(hitResult) || hitResult.success === undefined) return false
+        const hit = hitResult.success
 
         const tied = meleeTarget(candidates, { ...request, hitDistance: hit.distance })
         const clear = meleeTarget(candidates, { ...request, hitDistance: hit.distance + 0.001 })
-        return tied === undefined && clear?.id === target.id
+        return Result.isSuccess(tied) && tied.success === undefined &&
+          Result.isSuccess(clear) && clear.success?.id === target.id
+      }),
+    )
+  })
+
+  it('returns a typed failure for every present invalid hit-distance value', () => {
+    const arbitraryHitDistance = FastCheck.oneof(
+      FastCheck.double({ noNaN: false, noDefaultInfinity: false }),
+      FastCheck.anything(),
+    )
+    FastCheck.assert(
+      FastCheck.property(arbitraryHitDistance, (hitDistance) => {
+        const result = meleeTarget([], { ...request, hitDistance } as MeleeAttackRequest)
+        const valid = typeof hitDistance === 'number' && Number.isFinite(hitDistance) && hitDistance >= 0
+        if (valid) return Result.isSuccess(result)
+        return Result.isFailure(result) && result.failure._tag === 'InvalidMeleeTargetInput' &&
+          result.failure.field === 'hitDistance'
       }),
     )
   })

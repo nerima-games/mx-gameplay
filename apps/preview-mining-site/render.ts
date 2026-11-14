@@ -9,6 +9,7 @@
  * gives.
  */
 import { padEnd, padStart, type Rgb, type Style } from './ansi'
+import { Result } from 'effect'
 import {
   DAWN_FRACTION,
   DUSK_FRACTION,
@@ -441,8 +442,9 @@ export const renderTimeScreen = (
  * thing this drawing exists to make obvious.
  */
 const approachLane = (distance: number, style: Style): string => {
+  const radius = Result.getOrThrow(blastRadius(CREEPER_EXPLOSION_POWER))
   const cells = Array.from({ length: 13 }, (_, index) =>
-    index === 0 ? '@' : index <= IGNITION_RANGE ? '=' : index <= blastRadius(CREEPER_EXPLOSION_POWER) ? '-' : '.',
+    index === 0 ? '@' : index <= IGNITION_RANGE ? '=' : index <= radius ? '-' : '.',
   )
   const at = Math.min(cells.length - 1, Math.max(0, Math.round(distance)))
   const drawn = cells.map((cell, index) => (index === at && at > 0 ? 'C' : cell)).join('')
@@ -466,10 +468,10 @@ const renderCreeper = (state: ArenaState, style: Style): ReadonlyArray<string> =
   return [
     approachLane(creeper.distanceBlocks, style),
     '',
-    `    distance   ${style.bold(creeper.distanceBlocks.toFixed(2))} blocks${style.dim(`   (ignition <= ${String(IGNITION_RANGE)}, blast < ${String(blastRadius(CREEPER_EXPLOSION_POWER))})`)}`,
+    `    distance   ${style.bold(creeper.distanceBlocks.toFixed(2))} blocks${style.dim(`   (ignition <= ${String(IGNITION_RANGE)}, blast < ${String(Result.getOrThrow(blastRadius(CREEPER_EXPLOSION_POWER)))})`)}`,
     `    fuse       ${creeper.fuse._tag === 'Lit' ? style.paint(bar, [235, 160, 90]) : style.dim(bar)}  ${fuseLabel(creeper.fuse)}`,
     `    steps      ${String(creeper.steps)} × ${String(ARENA_STEP_SECS)}s${style.dim(`   alive=${String(creeper.alive)}`)}`,
-    `    if it went off now: ${style.bold(String(damageNow))} damage${style.dim('  (explosionDamageAmount, measured at this distance)')}`,
+    `    if it went off now: ${style.bold(Result.isFailure(damageNow) ? JSON.stringify(damageNow.failure) : String(damageNow.success))} damage${style.dim('  (explosionDamageAmount, measured at this distance)')}`,
   ]
 }
 
@@ -554,7 +556,7 @@ const renderSweep = (state: ArenaState, style: Style): ReadonlyArray<string> => 
   `    ${DESPAWN_PROBES.map((distance) => {
     const verdict = sweepAt(distance, false)
     const label = Number.isNaN(distance) ? 'NaN' : `${String(distance)}b`
-    return `${label}:${verdict._tag === 'Keep' ? 'keep' : verdict.reason}`
+    return `${label}:${sweepLabel(verdict)}`
   }).join('  ')}`,
   `    at the spawn site (${String(state.site.distanceBlocks)} blocks): ${style.bold(sweepLabel(sweepAt(state.site.distanceBlocks, false)))}${style.dim(`   persistent: ${sweepLabel(sweepAt(state.site.distanceBlocks, true))}`)}`,
   style.dim(

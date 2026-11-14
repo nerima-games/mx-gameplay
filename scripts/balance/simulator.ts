@@ -38,8 +38,8 @@ import {
   miningLootContextForItem,
 } from '../../src/index.js'
 import {
-  dayPhase,
-  hostileSpawnsAllowed,
+  dayPhase as dayPhaseResult,
+  hostileSpawnsAllowed as hostileSpawnsAllowedResult,
   NIGHT_END_FRACTION,
   NIGHT_START_FRACTION,
 } from '../../src/domain/day-night.js'
@@ -65,6 +65,9 @@ import {
   setBlockBreakRequest,
   type BalanceTimeServiceReading,
 } from './gameplay-harness.js'
+
+const dayPhase = (fraction: number) => Result.getOrThrow(dayPhaseResult(fraction))
+const hostileSpawnsAllowed = (fraction: number) => Result.getOrThrow(hostileSpawnsAllowedResult(fraction))
 
 export type BalanceEffectRunner = typeof Effect.runPromise
 
@@ -108,7 +111,7 @@ export type BalanceDamageEvent = Readonly<{
     spawnPosition: Readonly<{ x: number; y: number; z: number }> | null
     spawnTick: number | null
     spawnTimeService: BalanceTimeServiceReading | null
-    spawnCandidateBlockLight:
+    spawnPositionBlockLight:
       | Readonly<{ status: 'observed'; block: number }>
       | Readonly<{ status: 'unavailable'; reason: string }>
   }>

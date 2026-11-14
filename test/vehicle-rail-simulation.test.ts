@@ -65,7 +65,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Result } from 'effect'
-import { AngleRadians, blockIdOf, VehicleVelocityComponent, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AngleRadians, ChunkAxis, blockIdOf, chunkCoord, VehicleVelocityComponent, type BlockPosition } from '@nerima-games/mc-kernel'
 import { makeVehicleService, type Vehicle, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
@@ -88,6 +88,22 @@ const velocity = (x: number, y: number, z: number): Vehicle['velocity'] => ({
   z: Result.getOrThrow(VehicleVelocityComponent.result(z)),
 })
 
+const loadedChunksAround = (positions: ReadonlyArray<BlockPosition>): ReadonlyArray<string> => {
+  const loaded = new Set<string>()
+  for (const position of positions) {
+    const centre = chunkOf(position)
+    for (const offsetX of [-1, 0, 1]) {
+      for (const offsetZ of [-1, 0, 1]) {
+        loaded.add(chunkKey(chunkCoord(
+          ChunkAxis(centre.cx + offsetX),
+          ChunkAxis(centre.cz + offsetZ),
+        )))
+      }
+    }
+  }
+  return [...loaded]
+}
+
 /** A straight east-west powered-rail strip at y=64, z=0, covering `[-margin, length + margin]` on x. */
 const straightPoweredTrack = (length: number, margin = 5): WorldContents => {
   const cells: Array<readonly [BlockPosition, typeof POWERED_RAIL]> = []
@@ -96,7 +112,7 @@ const straightPoweredTrack = (length: number, margin = 5): WorldContents => {
   }
   return {
     blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
-    loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
+    loaded: loadedChunksAround(cells.map(([position]) => position)),
   }
 }
 
@@ -129,7 +145,7 @@ const singleCornerTrack = (legLength: number): WorldContents => {
   for (let x = 0; x <= legLength; x += 1) cells.push([blockPosition(x, 64, 0), RAIL])
   return {
     blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
-    loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
+    loaded: loadedChunksAround(cells.map(([position]) => position)),
   }
 }
 
@@ -141,7 +157,7 @@ const rectangularPoweredTrack = (width: number, height: number): WorldContents =
   ).map(([x, z]) => [blockPosition(x, 64, z), POWERED_RAIL] as const)
   return {
     blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
-    loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
+    loaded: loadedChunksAround(cells.map(([position]) => position)),
   }
 }
 

@@ -4,9 +4,10 @@ import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import { SCENARIOS } from '../apps/preview-mining-site/scenarios'
 import { buildStatsReport, isFallingMassConserved } from '../apps/preview-mining-site/stats'
 import { GRAVEL, SAND, type WorldSpec } from '../apps/preview-mining-site/world'
-import { blockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
+import { blockLoot as resolveBlockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
 
 const FALLING_TARGET_COUNT = 3
+const blockLoot = (...args: Parameters<typeof resolveBlockLoot>) => Result.getOrThrow(resolveBlockLoot(...args))
 
 const expectedItemCount = (cells: WorldSpec['cells']): number => {
   const targets = [...cells]

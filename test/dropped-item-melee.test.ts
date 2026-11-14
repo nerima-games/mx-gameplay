@@ -25,12 +25,16 @@ import {
 } from '../src/domain/entities/mob-frame'
 import {
   appendDroppedItemSpawns,
+  DROPPED_ITEM_PICKUP_RADIUS,
   DroppedItemOwnerSnapshotSchema,
   DroppedItemPickupCommitIncompleteSchema,
   DroppedItemPickupRequestSchema,
   DroppedItemPickupSchema,
   DroppedItemPickupResultSchema,
+  type DroppedItemSpawn,
   droppedItemPickupOwnerRegistrations,
+  droppedItemPickupResultAfterCommit,
+  planDroppedItemPickup,
   pickupDroppedItemsCommitted,
   pickupDroppedItems,
   spawnDroppedItems,
@@ -70,9 +74,9 @@ const makePickupCoordinator = (
 ) =>
   makeWorldCommitCoordinator({
     world: Schema.decodeUnknownSync(WorldIdSchema)('dropped-item-pickup-tests'),
-    owners: droppedItemPickupOwnerRegistrations(committedPickupOwners, playerStorage, {
+    owners: Result.getOrThrow(droppedItemPickupOwnerRegistrations(committedPickupOwners, playerStorage, {
       items: droppedItems,
-    }),
+    })),
   })
 
 describe('dropped item entities', () => {
@@ -168,6 +172,41 @@ describe('dropped item entities', () => {
     if (Result.isFailure(outcome)) expect(outcome.failure).toStrictEqual({ _tag: 'InvalidStack' })
   })
 
+  it('returns typed failures for explicitly undefined drop fields', () => {
+    const expectedRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(12)
+    const malformedDrops = [
+      { item: 'gunpowder', count: 1, at: origin, durability: undefined },
+      { item: 'gunpowder', count: 1, at: origin, eligibleFromFrame: undefined },
+      { item: 'gunpowder', count: 1, at: origin, customName: undefined },
+      { item: 'gunpowder', count: 1, at: origin, enchantments: undefined },
+    ] as unknown as ReadonlyArray<DroppedItemSpawn>
+    const fields = ['durability', 'eligibleFromFrame', 'customName', 'enchantments'] as const
+
+    for (const [index, drop] of malformedDrops.entries()) {
+      const outcome = appendDroppedItemSpawns({ items: [] }, [drop], expectedRevision)
+      expect(outcome).toStrictEqual(Result.fail({
+        _tag: 'InvalidDroppedItemSpawnField',
+        field: fields[index]!,
+      }))
+    }
+  })
+
+  it.effect('does not spawn an item when a public spawn field is explicitly undefined', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const malformed = {
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+        durability: undefined,
+      } as unknown as DroppedItemSpawn
+
+      const error = yield* Effect.flip(spawnDroppedItem(roster.api, malformed))
+      expect(error).toStrictEqual({ _tag: 'InvalidDroppedItemSpawnField', field: 'durability' })
+      expect(yield* roster.api.count).toBe(0)
+    }),
+  )
+
   it.effect('preserves the item stack in snapshots and despawns it after a full pickup', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
@@ -224,7 +263,7 @@ describe('dropped item entities', () => {
     }),
   )
 
-  it.effect('preserves a restored non-dropped entity after inventory leaves a stack over', () =>
+  it.effect('preserves an invalid restored entity as a typed repair fault after inventory leaves a stack over', () =>
     Effect.gen(function* () {
       const roster = yield* Effect.orDie(
         makeEntityManager<MobBehaviour>(undefined, repairMobBehaviour),
@@ -262,7 +301,10 @@ describe('dropped item entities', () => {
 
       expect(yield* roster.find(spawned.id)).toStrictEqual({
         ...spawned,
-        behaviour: undefined,
+        behaviour: {
+          _tag: 'MobBehaviourRepairFault',
+          failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'dropped-item' },
+        },
       })
       expect(yield* inventory.deposits).toStrictEqual([
         { item: 'gunpowder', count: 1, leftover: 1 },
@@ -270,20 +312,93 @@ describe('dropped item entities', () => {
     }),
   )
 
-  it.effect('does nothing without a player position, and rejects an invalid radius', () =>
+  it.effect('does nothing without a player position and reports invalid pickup radii', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const inventory = yield* makeInventoryDouble()
       yield* spawnDroppedItem(roster.api, { item: 'gunpowder', count: 1, at: origin })
 
       yield* pickupDroppedItems(roster.api, inventory.api, undefined)
-      yield* pickupDroppedItems(roster.api, inventory.api, origin, Number.NaN)
-      yield* pickupDroppedItems(roster.api, inventory.api, origin, -1)
+      const failures = [
+        yield* Effect.flip(pickupDroppedItems(roster.api, inventory.api, origin, Number.NaN)),
+        yield* Effect.flip(pickupDroppedItems(roster.api, inventory.api, origin, Number.POSITIVE_INFINITY)),
+        yield* Effect.flip(pickupDroppedItems(roster.api, inventory.api, origin, -1)),
+        yield* Effect.flip(pickupDroppedItems(roster.api, inventory.api, origin, undefined as unknown as number)),
+      ]
 
+      expect(failures).toStrictEqual([
+        { _tag: 'InvalidDroppedItemPickupRadius' },
+        { _tag: 'InvalidDroppedItemPickupRadius' },
+        { _tag: 'InvalidDroppedItemPickupRadius' },
+        { _tag: 'InvalidDroppedItemPickupRadius' },
+      ])
       expect(yield* roster.api.count).toBe(1)
       expect(yield* inventory.deposits).toStrictEqual([])
     }),
   )
+
+  it.effect('keeps omitted and zero pickup-radius semantics while rejecting own undefined', () =>
+    Effect.gen(function* () {
+      const snapshot = { items: [committedDroppedItem(1)] }
+      const request = { actor: pickupActor, tick: 1, position: origin }
+      const omitted = yield* planDroppedItemPickup(request, emptyPlayerStorage(), snapshot)
+      const zero = yield* planDroppedItemPickup(
+        { ...request, radius: 0 },
+        emptyPlayerStorage(),
+        snapshot,
+      )
+      const invalid = yield* Effect.flip(planDroppedItemPickup(
+        { ...request, radius: undefined },
+        emptyPlayerStorage(),
+        snapshot,
+      ))
+
+      expect(omitted.planned).toHaveLength(1)
+      expect(zero.planned).toHaveLength(1)
+      expect(invalid).toStrictEqual({ _tag: 'InvalidDroppedItemPickupRadius' })
+    }),
+  )
+
+  it.effect('uses the default radius when omitted and accepts zero for exact overlap', () =>
+    Effect.gen(function* () {
+      const defaultRoster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const defaultInventory = yield* makeInventoryDouble()
+      yield* spawnDroppedItem(defaultRoster.api, { item: 'gunpowder', count: 1, at: atPosition(1, 0, 0) })
+      yield* pickupDroppedItems(defaultRoster.api, defaultInventory.api, origin)
+      expect(yield* defaultRoster.api.count).toBe(0)
+      expect(yield* defaultInventory.deposits).toStrictEqual([
+        { item: 'gunpowder', count: 1, leftover: 0 },
+      ])
+
+      const zeroRadiusRoster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const zeroRadiusInventory = yield* makeInventoryDouble()
+      yield* spawnDroppedItem(zeroRadiusRoster.api, { item: 'gunpowder', count: 1, at: origin })
+      yield* spawnDroppedItem(zeroRadiusRoster.api, { item: 'stick', count: 1, at: atPosition(0.5, 0, 0) })
+      yield* pickupDroppedItems(zeroRadiusRoster.api, zeroRadiusInventory.api, origin, 0)
+      expect(yield* zeroRadiusRoster.api.count).toBe(1)
+      expect(yield* zeroRadiusInventory.deposits).toStrictEqual([
+        { item: 'gunpowder', count: 1, leftover: 0 },
+      ])
+
+    }),
+  )
+
+  it('returns a typed outcome across the full pickup-radius input domain', async () => {
+    const roster = await Effect.runPromise(makeEntityManagerDouble<MobBehaviour>())
+    const inventory = await Effect.runPromise(makeInventoryDouble())
+
+    await FastCheck.assert(
+      FastCheck.asyncProperty(FastCheck.double(), async (radius) => {
+        const outcome = await Effect.runPromise(Effect.result(
+          pickupDroppedItems(roster.api, inventory.api, undefined, radius),
+        ))
+        const shouldFail = !Number.isFinite(radius) || radius < 0
+        return Result.isFailure(outcome) === shouldFail &&
+          (!Result.isFailure(outcome) || outcome.failure._tag === 'InvalidDroppedItemPickupRadius')
+      }),
+      { numRuns: 100, seed: 70402 },
+    )
+  })
 
   it.effect('leaves an out-of-radius dropped item untouched while a nearer one is picked up', () =>
     Effect.gen(function* () {
@@ -343,30 +458,30 @@ describe('dropped item entities', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const invalidDrops = [
-        { item: 'gunpowder' as const, count: 0 },
-        { item: 'wooden_pickaxe' as const, count: 1, durability: null },
+        { drop: { item: 'gunpowder' as const, count: 0 }, failureTag: 'InvalidStack' },
+        { drop: { item: 'wooden_pickaxe' as const, count: 1, durability: null }, failureTag: 'InvalidStack' },
         {
-          item: 'wooden_pickaxe' as const,
-          count: 1,
-          durability: { current: 0, max: 59 },
+          drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 0, max: 59 } },
+          failureTag: 'SchemaError',
         },
         {
-          item: 'wooden_pickaxe' as const,
-          count: 1,
-          durability: { current: 12, max: 60 },
+          drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 12, max: 60 } },
+          failureTag: 'InvalidStack',
         },
         {
-          item: 'wooden_pickaxe' as const,
-          count: 1,
-          durability: { current: 60, max: 59 },
+          drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 60, max: 59 } },
+          failureTag: 'SchemaError',
         },
-        { item: 'wooden_pickaxe' as const, count: 2 },
-        { item: 'gunpowder' as const, count: 1, durability: { current: 1, max: 1 } },
-      ]
+        { drop: { item: 'wooden_pickaxe' as const, count: 2 }, failureTag: 'InvalidStack' },
+        {
+          drop: { item: 'gunpowder' as const, count: 1, durability: { current: 1, max: 1 } },
+          failureTag: 'InvalidStack',
+        },
+      ] as const
 
-      for (const drop of invalidDrops) {
+      for (const { drop, failureTag } of invalidDrops) {
         const error = yield* Effect.flip(spawnDroppedItem(roster.api, { ...drop, at: origin }))
-        expect(error).toStrictEqual({ _tag: 'InvalidStack' })
+        expect(error._tag).toBe(failureTag)
       }
       expect(yield* roster.api.count).toBe(0)
     }),
@@ -484,12 +599,12 @@ describe('dropped item entities', () => {
         eligibleFromFrame: 8,
       })
 
-      yield* pickupDroppedItems(roster.api, inventory.api, origin, undefined, 7)
+      yield* pickupDroppedItems(roster.api, inventory.api, origin, DROPPED_ITEM_PICKUP_RADIUS, 7)
 
       expect(yield* roster.api.count).toBe(1)
       expect(yield* inventory.deposits).toStrictEqual([])
 
-      yield* pickupDroppedItems(roster.api, inventory.api, origin, undefined, 8)
+      yield* pickupDroppedItems(roster.api, inventory.api, origin, DROPPED_ITEM_PICKUP_RADIUS, 8)
 
       expect(yield* roster.api.count).toBe(0)
       expect(yield* inventory.deposits).toStrictEqual([
@@ -618,6 +733,26 @@ describe('dropped item entities', () => {
     }),
   )
 
+  it.effect('returns a typed failure when the committed stack count contradicts its pickup plan', () =>
+    Effect.gen(function* () {
+      const plan = {
+        request: Schema.decodeUnknownSync(DroppedItemPickupRequestSchema)({
+          actor: pickupActor,
+          tick: 5,
+          position: origin,
+        }),
+        playerStorage: emptyPlayerStorage(),
+        droppedItems: { items: [] },
+        planned: [{ source: dropSource, item: 'gunpowder' as const, countBefore: 1 }],
+      }
+      const failure = yield* Effect.flip(droppedItemPickupResultAfterCommit(plan, {
+        items: [committedDroppedItem(2)],
+      }))
+
+      expect(failure).toBeInstanceOf(Error)
+    }),
+  )
+
   it.effect('does not commit or emit when the inventory accepts nothing', () =>
     Effect.gen(function* () {
       const emptyStorage = emptyPlayerStorage()
@@ -671,8 +806,17 @@ describe('dropped item entities', () => {
       const noPosition = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
         actor: pickupActor,
         tick: 8,
-        position: undefined,
       })
+      const explicitUndefinedPosition = yield* Effect.flip(pickupDroppedItemsCommitted(
+        coordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 8, position: undefined },
+      ))
+      const explicitUndefinedFrame = yield* Effect.flip(pickupDroppedItemsCommitted(
+        coordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 8, currentFrame: undefined },
+      ))
       const ineligible = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
         actor: pickupActor,
         tick: 8,
@@ -685,6 +829,14 @@ describe('dropped item entities', () => {
       )
 
       expect(noPosition).toStrictEqual([])
+      expect(explicitUndefinedPosition).toStrictEqual({
+        _tag: 'InvalidDroppedItemPickupField',
+        field: 'position',
+      })
+      expect(explicitUndefinedFrame).toStrictEqual({
+        _tag: 'InvalidDroppedItemPickupField',
+        field: 'currentFrame',
+      })
       expect(ineligible).toStrictEqual([])
       expect(snapshot.state.items.map(({ id }) => id)).toStrictEqual([
         dropSource,
@@ -962,6 +1114,15 @@ describe('dropped item entities', () => {
         }],
       }),
     )).toBe(true)
+    for (const field of ['eligibleFromFrame', 'customName', 'enchantments'] as const) {
+      const item = committedDroppedItem(1)
+      expect(Result.isFailure(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        items: [{
+          ...item,
+          behaviour: { ...item.behaviour, [field]: undefined },
+        }],
+      }))).toBe(true)
+    }
   })
 
   it('rejects missing required owner and result fields and null for every public pickup schema', () => {
@@ -1050,14 +1211,16 @@ describe('melee targeting', () => {
         damage: 4,
       }
 
-      const target = meleeTarget(candidates, request)
-      expect(target?.id).toBe(passive.id)
-      if (target === undefined) return
+      const targetResult = meleeTarget(candidates, request)
+      expect(Result.isSuccess(targetResult) && targetResult.success?.id).toBe(passive.id)
+      if (Result.isFailure(targetResult) || targetResult.success === undefined) return
+      const target = targetResult.success
 
-      expect(meleeTargetBeforeBlock(candidates, request, target.distance - 0.01)).toBeUndefined()
-      expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toBeUndefined()
-      expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)?.id).toBe(passive.id)
-      expect(meleeTarget(candidates.filter(({ id }) => id !== passive.id), request)?.id).toBe(near.id)
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance - 0.01)).toStrictEqual(Result.succeed(undefined))
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toStrictEqual(Result.succeed(undefined))
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)).toStrictEqual(Result.succeed(target))
+      const nextTarget = meleeTarget(candidates.filter(({ id }) => id !== passive.id), request)
+      expect(Result.isSuccess(nextTarget) && nextTarget.success?.id).toBe(near.id)
     }),
   )
 
@@ -1078,8 +1241,9 @@ describe('melee targeting', () => {
         damage: 4,
       }
 
-      expect(meleeTarget(candidates, { ...request, hitDistance: Number.NaN })).toBeUndefined()
-      expect(meleeTarget(candidates, { ...request, hitDistance: -1 })).toBeUndefined()
+      const invalid = Result.fail({ _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' })
+      expect(meleeTarget(candidates, { ...request, hitDistance: Number.NaN })).toStrictEqual(invalid)
+      expect(meleeTarget(candidates, { ...request, hitDistance: -1 })).toStrictEqual(invalid)
     }),
   )
 })

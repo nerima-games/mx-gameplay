@@ -13,6 +13,7 @@ export {
   type BlockPlacementRequestId,
   type BlockPlacementMode,
   type BlockPlacementCommand,
+  type BlockPlacementCommandFailure,
   type BlockPlacementCommandOutcome,
   type BlockPlacementResult,
   type BlockUseRequestId,
@@ -47,6 +48,8 @@ export {
   EnderPearlOutcomeSchema,
   makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
+  type EntityStageFault,
+  drainGameplayEntityStageFaults,
   requestCollectBrewingBottle,
   type CollectBrewingBottleRequest,
   CollectBrewingBottleRequestSchema,
@@ -63,6 +66,7 @@ export {
   requestTargetedBlockBreak,
   requestBlockPlacement,
   requestBlockPlacementCommand,
+  validateBlockPlacementCommand,
   drainBlockPlacementResults,
   requestBlockUse,
   drainBlockUseResults,
@@ -134,7 +138,6 @@ export {
   requestTargetedPotatoPlanting,
   type GameplayStageOptions,
 } from './registration-core.js'
-
 import {
   ChunkStore,
   TimeService,

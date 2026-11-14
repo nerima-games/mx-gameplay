@@ -330,7 +330,7 @@ describe('plantCrop', () => {
 
       const outcome = yield* plantCrop(port, request('wheat_seeds'), context)
 
-      expect(outcome._tag).not.toBe('planted')
+      expect(outcome).toStrictEqual({ _tag: 'worldUnavailable', cell: 'soil' })
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
@@ -341,7 +341,7 @@ describe('plantCrop', () => {
 
       const outcome = yield* plantCrop(port, request('wheat_seeds'), context)
 
-      expect(outcome._tag).not.toBe('planted')
+      expect(outcome).toStrictEqual({ _tag: 'worldUnavailable', cell: 'above' })
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
@@ -402,6 +402,32 @@ describe('plantCrop', () => {
       expect(outcome).toStrictEqual({ _tag: 'invalidPosition' })
       expect(yield* Ref.get(reads)).toBe(0)
       expect(yield* Ref.get(written)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('propagates invalid and unregistered world block ids as typed data failures', () =>
+    Effect.gen(function* () {
+      const invalidPort: PlantPort = {
+        blockAt: (position) => Effect.succeed(keyOf(position) === keyOf(SOIL) ? 65_536 : 0),
+      }
+      const invalid = yield* Effect.result(plantCrop(invalidPort, request('wheat_seeds')))
+      expect(invalid).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'PlantWorldDataFailure', cell: 'soil', failure: { _tag: 'BrandError' } },
+      })
+
+      const unregisteredPort: PlantPort = {
+        blockAt: (position) => Effect.succeed(keyOf(position) === keyOf(SOIL) ? 65_535 : 0),
+      }
+      const unregistered = yield* Effect.result(plantCrop(unregisteredPort, request('wheat_seeds')))
+      expect(unregistered).toMatchObject({
+        _tag: 'Failure',
+        failure: {
+          _tag: 'PlantWorldDataFailure',
+          cell: 'soil',
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', blockId: 65_535 },
+        },
+      })
     }),
   )
 })

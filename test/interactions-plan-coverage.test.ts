@@ -75,6 +75,7 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   drainItemUseResults,
+  drainGameplayEntityStageFaults,
   drainBlockPlacementResults,
   drainBlockUseResults,
   drainBowShotResults,
@@ -85,6 +86,7 @@ import {
   requestBlockBreak,
   requestBoneMeal,
   requestBlockPlacementCommand,
+  validateBlockPlacementCommand,
   requestBlockUse,
   requestBowShot,
   requestEnderPearlThrow,
@@ -128,12 +130,17 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import { INITIAL_DIMENSION, INITIAL_PLAYER_POSE } from '../src/domain/in-memory-player.js'
-import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import { ENDERMITE_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import { MOB_MOVEMENT_POLICIES } from '../src/domain/mob/mob-ecosystem.js'
 import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item.js'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
 import { makeVillager, type VillagerTradeState } from '../src/domain/villager-trade.js'
-import { BOW_FULL_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
+import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot.js'
+import { placeBlock } from '../src/domain/interactions/place-block.js'
+import { cactusSidesObjection } from '../src/domain/interactions/place-cactus-sides.js'
+import { doorUpperBreakCell } from '../src/domain/interactions/place-door-upper.js'
+import { sugarCaneWaterObjection } from '../src/domain/interactions/place-sugar-cane-water.js'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import { FrameServicesLayer } from './support/frame-services.js'
 import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
@@ -171,6 +178,7 @@ const projectileStateWithBobber = () =>
   })
 
 const combatTarget = (id: string, healthPoints = 20) => ({
+  behaviour: undefined,
   id: EntityId(id),
   kind: EntityKind('creeper'),
   dimension: DIMENSION,
@@ -180,7 +188,6 @@ const combatTarget = (id: string, healthPoints = 20) => ({
     PositionAxis(2),
   ),
   healthPoints: EntityHealthPoints(healthPoints),
-  behaviour: undefined,
 })
 
 const meleePlayerPose = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
@@ -253,7 +260,9 @@ const makeHarness = (options: Readonly<{
   readonly playerStorage?: PlayerStorage
   readonly vitals?: Vitals
   readonly villagerTrades?: VillagerTradeState
-  readonly entities?: EntityRoster<MobBehaviour>
+  readonly entities?: Omit<EntityRoster<MobBehaviour>, 'entities'> & {
+    readonly entities: ReadonlyArray<Omit<EntityRoster<MobBehaviour>['entities'][number], 'behaviour'> | EntityRoster<MobBehaviour>['entities'][number]>
+  }
   readonly blocks?: ReadonlyArray<readonly [BlockPosition, BlockId]>
   readonly loadedChunks?: ReadonlyArray<string>
   readonly omitProjectileOwnerId?: boolean
@@ -286,8 +295,10 @@ const makeHarness = (options: Readonly<{
     options.loadedChunks ?? ['0,0'],
   )
   const chunkStore = store.api
-  const registrations = gameplayOwnerRegistrations({
-    playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
+  const registrationResult = gameplayOwnerRegistrations({
+    ...(Object.hasOwn(options, 'playerPose')
+      ? { playerPose: options.playerPose }
+      : { playerPose: INITIAL_PLAYER_POSE }),
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
     ...(options.projectiles === undefined ? {} : { projectiles: options.projectiles }),
     ...(options.brewing === undefined ? {} : { brewing: options.brewing }),
@@ -297,7 +308,11 @@ const makeHarness = (options: Readonly<{
     ...(options.entities === undefined ? {} : { entities: options.entities }),
     ...(options.crops === undefined ? {} : { crops: options.crops }),
     ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
-  })
+  } as unknown as GameplayOwnerInitialState)
+  if (Result.isFailure(registrationResult)) {
+    throw new Error(`test fixture: invalid gameplay owner registrations: ${JSON.stringify(registrationResult.failure)}`)
+  }
+  const registrations = registrationResult.success
   const owners = registrations.filter(({ ownerId }) =>
     !(options.omitPlayerRegistration && ownerId === GAMEPLAY_PLAYER_OWNER_ID) &&
     !(options.omitVitalsRegistration && ownerId === GAMEPLAY_VITALS_OWNER_ID) &&
@@ -507,6 +522,45 @@ const coordinatorWithObserveRevisionBump = (
       yield* bumpVillagerTradeRevision(coordinator).pipe(Effect.orDie)
     }
     return yield* coordinator.observe(ownerId, schema, reads)
+  })
+  return { ...coordinator, observe }
+}
+
+const coordinatorWithOmittedWorldReads = (coordinator: WorldCommitCoordinatorApi): WorldCommitCoordinatorApi => {
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => ({ ...snapshot, blocks: [] }))
+  return { ...coordinator, observe }
+}
+
+const coordinatorWithOutOfWorldRead = (
+  coordinator: WorldCommitCoordinatorApi,
+  target: BlockPosition,
+): WorldCommitCoordinatorApi => {
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => {
+    if (!('blocks' in snapshot)) return snapshot
+    return {
+      ...snapshot,
+      blocks: snapshot.blocks.map((block) =>
+        block.position.x === target.x && block.position.y === target.y && block.position.z === target.z
+          ? { ...block, reading: { _tag: 'OutOfWorld' as const } }
+          : block,
+      ),
+    }
   })
   return { ...coordinator, observe }
 }
@@ -2877,6 +2931,81 @@ describe('retrying item-use intents after owner revision conflicts', () => {
 })
 
 describe('registered block-use and placement requests in the interactions stage', () => {
+  it('requires an own request id and preserves the omitted-mode default', () => {
+    const base = {
+      positionKey: blockPositionKeyOf(blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))),
+      heldItem: 'stone' as const,
+    }
+    const omittedMode = { ...base, requestId: 'valid-placement' }
+    expect(validateBlockPlacementCommand(omittedMode)).toStrictEqual(Result.succeed(omittedMode))
+    expect(validateBlockPlacementCommand(base)).toMatchObject({
+      _tag: 'Failure', failure: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' },
+    })
+    expect(validateBlockPlacementCommand({ ...omittedMode, requestId: undefined })).toMatchObject({
+      _tag: 'Failure', failure: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' },
+    })
+    expect(validateBlockPlacementCommand({ ...omittedMode, mode: undefined })).toMatchObject({
+      _tag: 'Failure', failure: { _tag: 'InvalidBlockPlacementCommand', field: 'mode' },
+    })
+
+    FastCheck.assert(FastCheck.property(FastCheck.anything(), (requestId) => {
+      const result = validateBlockPlacementCommand({ ...base, requestId })
+      expect(Result.isFailure(result)).toBe(typeof requestId !== 'string')
+    }))
+    FastCheck.assert(FastCheck.property(FastCheck.anything(), (mode) => {
+      const result = validateBlockPlacementCommand({ ...omittedMode, mode })
+      expect(Result.isFailure(result)).toBe(mode !== 'survival' && mode !== 'creative')
+    }))
+  })
+
+  it('records malformed placement commands and processes the next valid request', async () => {
+    const target = blockPosition(BlockAxis(11), BlockAxis(64), BlockAxis(3))
+    const harness = await Effect.runPromise(makeHarness())
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: undefined,
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'placement-own-undefined-mode',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+      mode: undefined,
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'placement-invalid-mode',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+      mode: 'adventure',
+    } as never))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'placement-after-invalid-input',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+      mode: 'creative',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' } },
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'requestId' } },
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'mode' } },
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { _tag: 'InvalidBlockPlacementCommand', field: 'mode' } },
+    ])
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toMatchObject([{
+      requestId: 'placement-after-invalid-input',
+      success: true,
+      outcome: { _tag: 'Placed' },
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(Option.getOrThrow(blockIdOf('stone')))
+    expect(harness.commitCalls()).toBe(1)
+  })
+
   it('reports dead-player refusals for placement, bow, and melee intents', async () => {
     const harness = await Effect.runPromise(makeHarness({
       vitals: { ...SPAWN_VITALS, healthPoints: EntityHealthPoints(0) },
@@ -3981,7 +4110,13 @@ describe('registered combat and teleport requests in the interactions stage', ()
       GameplayEntityRosterSchema,
     ))
     expect(entities.state.entities).toHaveLength(1)
-    expect(entities.state.entities[0]?.kind).toBe(EntityKind('endermite'))
+    const spawnedEndermite = entities.state.entities[0]
+    expect(spawnedEndermite?.kind).toBe(ENDERMITE_KIND)
+    expect(spawnedEndermite?.behaviour).toMatchObject({
+      _tag: 'HostileMob',
+      behaviour: { _tag: 'EcosystemMob' },
+    })
+    expect(MOB_MOVEMENT_POLICIES.has(ENDERMITE_KIND)).toBe(true)
     expect(harness.commitCalls()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toEqual(expect.arrayContaining([
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -4665,7 +4800,7 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('maps schema-valid unregistered block IDs to air across farming actions', async () => {
+  it('records schema-valid unregistered block IDs across farming actions', async () => {
     const tillPosition = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
     const plantPosition = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
     const harvestPosition = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
@@ -4687,16 +4822,18 @@ describe('schema-valid interaction edge paths', () => {
 
     await harness.run()
 
-    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
-      { action: 'TillSoil', requestId: 'unknown-till-block', success: false, durabilityDamage: 0, outcome: { _tag: 'notTillable', found: 'air' } },
-      { action: 'PlantPotato', requestId: 'unknown-plant-block', success: false, consumedCount: 0, outcome: { _tag: 'wrongSoil', found: 'air' } },
-      {
-        action: 'HarvestPotato',
-        requestId: 'unknown-harvest-block',
-        success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
-      },
-    ])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toHaveLength(3)
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject(
+      [tillPosition, blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), plantPosition,
+        blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), harvestPosition]
+        .map((cell) => ({
+          _tag: 'EntityWorldDataFault',
+          source: 'ItemUse',
+          target: { _tag: 'Cell', cell },
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+        })),
+    )
     expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
   })
@@ -5592,6 +5729,301 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('records unregistered block ids in mining and placement reads and leaves the world unchanged', async () => {
+    const unknownBlock = BlockId(65_535)
+    const miningCell = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(1))
+    const occupiedTarget = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const torchTarget = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const torchSupport = blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(1))
+    const caneTarget = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const caneSupport = blockPosition(BlockAxis(6), BlockAxis(63), BlockAxis(1))
+    const caneNeighbour = blockPosition(BlockAxis(7), BlockAxis(63), BlockAxis(1))
+    const cactusTarget = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(1))
+    const cactusSupport = blockPosition(BlockAxis(9), BlockAxis(63), BlockAxis(1))
+    const cactusNeighbour = blockPosition(BlockAxis(10), BlockAxis(64), BlockAxis(1))
+    const doorTarget = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
+    const doorSupport = blockPosition(BlockAxis(12), BlockAxis(63), BlockAxis(1))
+    const doorUpper = blockPosition(BlockAxis(12), BlockAxis(65), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const sand = Option.getOrThrow(blockIdOf('sand'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [
+        [miningCell, unknownBlock],
+        [occupiedTarget, unknownBlock],
+        [torchSupport, unknownBlock],
+        [caneSupport, sand],
+        [caneNeighbour, unknownBlock],
+        [cactusSupport, sand],
+        [cactusNeighbour, unknownBlock],
+        [doorSupport, stone],
+        [doorUpper, unknownBlock],
+      ],
+      playerStorage: playerStorageWithItems([
+        ['stone', 1],
+        ['torch', 1],
+        ['sugar_cane', 1],
+        ['cactus', 1],
+        ['door', 1],
+      ]),
+    }))
+
+    await Effect.runPromise(requestBlockBreak(harness.state, miningCell, undefined, {
+      dimension: DIMENSION,
+      toolLocation: undefined,
+    }))
+    const placementRequests = [
+      [occupiedTarget, 'stone'],
+      [torchTarget, 'torch'],
+      [caneTarget, 'sugar_cane'],
+      [cactusTarget, 'cactus'],
+      [doorTarget, 'door'],
+    ] as const
+    await Promise.all(
+      placementRequests.map(([targetPosition, heldItem]) =>
+        Effect.runPromise(requestBlockPlacement(harness.state, {
+          positionKey: blockPositionKeyOf(targetPosition),
+          heldItem,
+        })),
+      ),
+    )
+
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    const faultFor = (source: 'Mining' | 'ItemUse', cell: BlockPosition) => ({
+      _tag: 'EntityWorldDataFault',
+      source,
+      target: { _tag: 'Cell', cell },
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+    })
+    expect(faults).toEqual(expect.arrayContaining([
+      faultFor('Mining', miningCell),
+      faultFor('ItemUse', occupiedTarget),
+      faultFor('ItemUse', torchSupport),
+      faultFor('ItemUse', caneNeighbour),
+      faultFor('ItemUse', cactusNeighbour),
+      faultFor('ItemUse', doorUpper),
+    ]))
+    expect(await Effect.runPromise(harness.store.blockAt(miningCell))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(occupiedTarget))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(torchSupport))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(caneNeighbour))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(cactusNeighbour))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(doorUpper))).toBe(unknownBlock)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('returns a typed fault when a door placement cannot decode its upper cell', async () => {
+    const target = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
+    const support = blockPosition(BlockAxis(12), BlockAxis(63), BlockAxis(1))
+    const upper = blockPosition(BlockAxis(12), BlockAxis(65), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const unknownBlock = BlockId(65_535)
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(
+      world([[support, stone], [upper, unknownBlock]]),
+      ['0,0'],
+    ))
+
+    const outcome = await Effect.runPromise(placeBlock(store.api, { position: target, heldItem: 'door' }))
+
+    expect(outcome).toStrictEqual({
+      _tag: 'WorldDataFault',
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: upper, blockId: unknownBlock },
+    })
+    expect(await Effect.runPromise(store.blockAt(target))).toBeUndefined()
+    expect(await Effect.runPromise(store.blockAt(upper))).toBe(unknownBlock)
+    expect((await Effect.runPromise(store.calls)).writes).toBe(0)
+  })
+
+  it('keeps an unloaded cactus side blocked without treating it as a block id', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(4))
+    const cactus = Option.getOrThrow(blockIdOf('cactus'))
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([]), ['0,0']))
+
+    const refusal = await Effect.runPromise(cactusSidesObjection(store.api, cactus, target))
+
+    expect(refusal).toStrictEqual({ _tag: 'SidesBlocked' })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(4)
+  })
+
+  it('leaves a door lower-half break alone when the upper cell is unreadable', async () => {
+    const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(4))
+    const door = Option.getOrThrow(blockIdOf('door'))
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([]), []))
+
+    const upper = await Effect.runPromise(doorUpperBreakCell(store.api, door, target))
+
+    expect(upper).toStrictEqual({ _tag: 'NoDoorAbove' })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(1)
+    expect((await Effect.runPromise(store.calls)).writes).toBe(0)
+  })
+
+  it('reports an invalid sugar-cane support before reading water neighbors', async () => {
+    const target = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const support = blockPosition(BlockAxis(6), BlockAxis(63), BlockAxis(1))
+    const cane = Option.getOrThrow(blockIdOf('sugar_cane'))
+    const unknownBlock = BlockId(65_535)
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([]), ['0,0']))
+
+    const refusal = await Effect.runPromise(sugarCaneWaterObjection(store.api, cane, target, {
+      _tag: 'Block', block: unknownBlock,
+    }))
+
+    expect(refusal).toStrictEqual({
+      _tag: 'WorldDataFault',
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: support, blockId: unknownBlock },
+    })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(0)
+  })
+
+  it('does not treat an unloaded sugar-cane neighbor as water', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(4))
+    const support = blockPosition(BlockAxis(0), BlockAxis(63), BlockAxis(4))
+    const sand = Option.getOrThrow(blockIdOf('sand'))
+    const cane = Option.getOrThrow(blockIdOf('sugar_cane'))
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([[support, sand]]), ['0,0']))
+
+    const refusal = await Effect.runPromise(sugarCaneWaterObjection(store.api, cane, target, { _tag: 'Block', block: sand }))
+
+    expect(refusal).toStrictEqual({ _tag: 'NoAdjacentWater' })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(4)
+  })
+
+  it('records and requeues bone meal when its observed block id is unregistered', async () => {
+    const target = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const unknownBlock = BlockId(65_535)
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, unknownBlock]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-unregistered-target', target))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
+      _tag: 'EntityWorldDataFault',
+      source: 'ItemUse',
+      target: { _tag: 'Cell', cell: target },
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: target, blockId: unknownBlock },
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-unregistered-target',
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records and requeues bone meal when the owner snapshot omits its requested block read', async () => {
+    const target = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const wheat = Option.getOrThrow(blockIdOf('wheat_crop'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, wheat]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-missing-read', target))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithOmittedWorldReads(harness.coordinator),
+    )
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
+      _tag: 'EntityWorldDataFault',
+      source: 'ItemUse',
+      target: { _tag: 'Cell', cell: target },
+      failure: { _tag: 'EntityWorldWindowUnavailable', cell: target },
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-missing-read',
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records an invalid item-use position and continues with the next queued request', async () => {
+    const validTarget = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[validTarget, stone]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'invalid-position', validTarget))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'after-invalid-position', validTarget))
+    await Effect.runPromise(Ref.update(harness.state.pendingItemUses, (requests) => requests.map((request) =>
+      request.requestId === 'invalid-position' && 'positionKey' in request
+        ? { ...request, positionKey: 'malformed-position-key' as typeof request.positionKey }
+        : request,
+    )))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
+      _tag: 'GameplayRequestFault',
+      source: 'ItemUse',
+      requestId: 'invalid-position',
+      reason: 'InvalidBlockPositionKey',
+    })
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'after-invalid-position',
+      success: false,
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+  })
+
+  it('requeues bone meal when its target chunk is not loaded', async () => {
+    const target = blockPosition(BlockAxis(16), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+      loadedChunks: ['0,0'],
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-unloaded-target', target))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-unloaded-target',
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('returns a named refusal when the bone-meal target is outside the world', async () => {
+    const target = blockPosition(BlockAxis(5), BlockAxis(320), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-out-of-world', target))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithOutOfWorldRead(harness.coordinator, target),
+    )
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-out-of-world',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'OutOfWorld', position: target },
+    }])
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('places at the lowest writable Y and tracks its lower neighbor', async () => {
     const target = blockPosition(BlockAxis(1), BlockAxis(0), BlockAxis(1))
     const below = blockPosition(BlockAxis(1), BlockAxis(-1), BlockAxis(1))
@@ -5651,5 +6083,273 @@ describe('schema-valid interaction edge paths', () => {
     expect(await Effect.runPromise(harvesting.store.blockAt(harvestPosition))).toBe(potatoCrop)
     expect(mining.commitCalls()).toBe(0)
     expect(harvesting.commitCalls()).toBe(0)
+  })
+
+  it('faults invalid crop rolls at registration and stage while harvesting boundary rolls', async () => {
+    const boundaryLow = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
+    const boundaryHigh = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const invalidNegative = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
+    const invalidOne = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const invalidNaN = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const injectedInvalid = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+    const cropState = (cropPosition: BlockPosition) => ({
+      dimension: DIMENSION,
+      position: cropPosition,
+      crop: 'potato_crop' as const,
+      growthSecs: POTATO_MATURITY_SECS,
+    })
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [boundaryLow, boundaryHigh, invalidNegative, invalidOne, invalidNaN, injectedInvalid]
+        .map((cropPosition) => [cropPosition, potatoCrop] as const),
+      crops: { crops: [boundaryLow, boundaryHigh, invalidNegative, invalidOne, invalidNaN, injectedInvalid].map(cropState) },
+      playerStorage: playerStorageWithItem('potato', 1),
+    }))
+
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-low-boundary', boundaryLow, 0))
+    await Effect.runPromise(requestPotatoHarvest(
+      harness.state,
+      'crop-roll-high-boundary',
+      boundaryHigh,
+      1 - Number.EPSILON,
+    ))
+    await Effect.runPromise(requestPotatoHarvest(
+      harness.state,
+      'crop-roll-negative-outside',
+      invalidNegative,
+      -Number.EPSILON,
+    ))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-one-outside', invalidOne, 1))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-nan', invalidNaN, Number.NaN))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'crop-roll-nan', invalidNaN, Number.NaN))
+    await Effect.runPromise(Ref.update(harness.state.pendingItemUses, (pending) => [
+      ...pending,
+      {
+        action: 'HarvestPotato' as const,
+        requestId: 'crop-roll-stage-injected',
+        positionKey: blockPositionKeyOf(injectedInvalid),
+        roll: Number.POSITIVE_INFINITY,
+      },
+    ]))
+
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual(
+      expect.arrayContaining([
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-negative-outside', reason: 'InvalidCropRoll' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-one-outside', reason: 'InvalidCropRoll' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-nan', reason: 'InvalidCropRoll' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'crop-roll-stage-injected', reason: 'InvalidCropRoll' },
+      ]),
+    )
+    expect(faults.filter((fault) =>
+      fault._tag === 'GameplayRequestFault' && fault.requestId === 'crop-roll-nan',
+    )).toHaveLength(1)
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
+      {
+        action: 'HarvestPotato',
+        requestId: 'crop-roll-low-boundary',
+        success: true,
+        outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 2 }] },
+      },
+      {
+        action: 'HarvestPotato',
+        requestId: 'crop-roll-high-boundary',
+        success: true,
+        outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 5 }] },
+      },
+    ])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_CROPS_OWNER_ID,
+      CropSnapshotSchema,
+    ))).state.crops.map(({ position: cropPosition }) => cropPosition)).toStrictEqual([
+      invalidNegative,
+      invalidOne,
+      invalidNaN,
+      injectedInvalid,
+    ])
+    expect(harness.commitCalls()).toBe(2)
+  })
+
+  it('faults invalid mining loot contexts and continues with valid and unrelated breaks', async () => {
+    const invalidUndefined = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const invalidNaN = blockPosition(BlockAxis(7), BlockAxis(64), BlockAxis(1))
+    const invalidNegative = blockPosition(BlockAxis(8), BlockAxis(64), BlockAxis(1))
+    const invalidFraction = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(1))
+    const invalidUnsafe = blockPosition(BlockAxis(10), BlockAxis(64), BlockAxis(1))
+    const invalidShape = blockPosition(BlockAxis(11), BlockAxis(64), BlockAxis(1))
+    const validBoundary = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
+    const validUpper = blockPosition(BlockAxis(13), BlockAxis(64), BlockAxis(1))
+    const injectedInvalid = blockPosition(BlockAxis(14), BlockAxis(64), BlockAxis(1))
+    const dirt = Option.getOrThrow(blockIdOf('dirt'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [
+        invalidUndefined,
+        invalidNaN,
+        invalidNegative,
+        invalidFraction,
+        invalidUnsafe,
+        invalidShape,
+        validBoundary,
+        validUpper,
+        injectedInvalid,
+      ]
+        .map((miningPosition) => [miningPosition, dirt] as const),
+    }))
+    const explicitUndefinedFortune = {}
+    Object.defineProperty(explicitUndefinedFortune, 'fortuneLevel', { value: undefined, enumerable: true })
+
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUndefined, explicitUndefinedFortune))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUndefined, explicitUndefinedFortune))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidNaN, { fortuneLevel: Number.NaN }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidNegative, { fortuneLevel: -1 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidFraction, { fortuneLevel: 1.5 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUnsafe, {
+      fortuneLevel: Number.MAX_SAFE_INTEGER + 1,
+    }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidShape, null as never))
+    await Effect.runPromise(requestBlockBreak(harness.state, validBoundary, { fortuneLevel: 0 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, validUpper, {
+      fortuneLevel: Number.MAX_SAFE_INTEGER,
+    }))
+
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks))).toStrictEqual([
+      blockPositionKeyOf(validBoundary),
+      blockPositionKeyOf(validUpper),
+    ])
+
+    await Effect.runPromise(Ref.set(harness.state.heldTool, { fortuneLevel: 1.5 }))
+    await Effect.runPromise(Ref.update(harness.state.pendingBreaks, (pending) => [
+      ...pending,
+      blockPositionKeyOf(injectedInvalid),
+    ]))
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual(
+      expect.arrayContaining([
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(invalidUndefined),
+          reason: 'InvalidBlockLootFortuneLevel',
+        },
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(invalidNaN),
+          reason: 'InvalidBlockLootFortuneLevel',
+        },
+        ...[invalidNegative, invalidFraction, invalidUnsafe].map((miningPosition) => ({
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(miningPosition),
+          reason: 'InvalidBlockLootFortuneLevel',
+        })),
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(invalidShape),
+          reason: 'InvalidBlockLootContext',
+        },
+        {
+          _tag: 'GameplayRequestFault',
+          source: 'Mining',
+          requestId: blockPositionKeyOf(injectedInvalid),
+          reason: 'InvalidBlockLootFortuneLevel',
+        },
+      ]),
+    )
+    expect(faults.filter((fault) =>
+      fault._tag === 'GameplayRequestFault' && fault.requestId === blockPositionKeyOf(invalidUndefined),
+    )).toHaveLength(1)
+    expect(await Effect.runPromise(harness.store.blockAt(validBoundary))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(validUpper))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(invalidUndefined))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidNaN))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidNegative))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidFraction))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidUnsafe))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidShape))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(injectedInvalid))).toBe(dirt)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(2)
+  })
+
+  it('faults invalid bow charge and Power requests at registration and stage', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    const shot = {
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      dirX: 0,
+      dirY: 0,
+      dirZ: 1,
+      inventory: { mode: 'creative' as const, slotIndex: 0 },
+    }
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-charge-nan', {
+      ...shot,
+      chargeSecs: Number.NaN,
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-charge-nan', {
+      ...shot,
+      chargeSecs: Number.NaN,
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-charge-negative', {
+      ...shot,
+      chargeSecs: -Number.EPSILON,
+    }))
+    const explicitUndefinedPower = { ...shot, chargeSecs: BOW_MIN_CHARGE_SECS }
+    Object.defineProperty(explicitUndefinedPower, 'powerLevel', { value: undefined, enumerable: true })
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-power-undefined', explicitUndefinedPower))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-power-fraction', {
+      ...shot,
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+      powerLevel: 1.5,
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-valid-boundary', {
+      ...shot,
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+      powerLevel: 0,
+    }))
+
+    const stageInvalidCharge = {
+      ...shot,
+      requestId: 'bow-charge-stage-injected',
+      chargeSecs: Number.POSITIVE_INFINITY,
+    }
+    const stageInvalidPower = {
+      ...shot,
+      requestId: 'bow-power-stage-injected',
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+    }
+    Object.defineProperty(stageInvalidPower, 'powerLevel', { value: undefined, enumerable: true })
+    await Effect.runPromise(Ref.update(harness.state.pendingBowShots, (pending) => [
+      ...pending,
+      stageInvalidCharge,
+      stageInvalidPower,
+    ]))
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual(
+      expect.arrayContaining([
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-nan', reason: 'InvalidBowChargeSecs' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-negative', reason: 'InvalidBowChargeSecs' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-undefined', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-fraction', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-stage-injected', reason: 'InvalidBowChargeSecs' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-stage-injected', reason: 'InvalidBowPowerLevel' },
+      ]),
+    )
+    expect(faults.filter((fault) =>
+      fault._tag === 'GameplayRequestFault' && fault.requestId === 'bow-charge-nan',
+    )).toHaveLength(1)
+    expect(await Effect.runPromise(drainBowShotResults(harness.state))).toStrictEqual([{
+      requestId: 'bow-valid-boundary',
+      success: true,
+      outcome: 'Fired',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBowShots))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
   })
 })

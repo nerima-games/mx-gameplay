@@ -58,6 +58,11 @@ const MELEE_TARGETS: EntityRoster<MobBehaviour> = {
   nextSerial: EntitySerial(1),
 }
 
+const LEGACY_MELEE_TARGETS = {
+  ...MELEE_TARGETS,
+  entities: MELEE_TARGETS.entities.map(({ behaviour: _behaviour, ...entity }) => entity),
+}
+
 const storageWith = (item?: ItemType): PlayerStorage => {
   const slots = [...emptySlots()]
   if (item !== undefined) slots[0] = Result.getOrThrow(itemStack(item, StackCount(1)))
@@ -129,7 +134,7 @@ const scene = (
     const inventory = yield* makeInventoryDouble(playerStorage.inventory.slots)
     const time = yield* makeTimeService()
     const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
-      entities: MELEE_TARGETS,
+      entities: LEGACY_MELEE_TARGETS as unknown as EntityRoster<MobBehaviour>,
       playerPose: { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
       playerStorage,
     })
@@ -313,7 +318,13 @@ describe('gameplay melee durability stage', () => {
         error: { _tag: 'WorldRevisionConflict' },
       }])
       const failure = failures[0]
-      if (failure === undefined || failure.error._tag !== 'WorldRevisionConflict') {
+      if (
+        failure === undefined ||
+        typeof failure.error !== 'object' ||
+        failure.error === null ||
+        !('_tag' in failure.error) ||
+        failure.error._tag !== 'WorldRevisionConflict'
+      ) {
         throw new Error('Expected the owner snapshots to have different revisions.')
       }
       expect(failure.error.actual).toBeGreaterThan(failure.error.expected)
@@ -463,6 +474,39 @@ describe('gameplay melee durability stage', () => {
       expect(yield* Ref.get(state.meleeLastAttackTick)).toBeNull()
       expect(yield* Ref.get(state.meleeTargetDamageStates)).toStrictEqual(new Map())
       expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* ownerStorage(commit)).toStrictEqual(initialStorage)
+    }),
+  )
+
+  it.effect('records an explicit undefined hit distance and skips only that melee request', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const { state, commit, stages } = yield* scene(initialStorage)
+      const request = { ...forgedMeleeRequest('undefined-hit-distance'), hitDistance: undefined } as unknown as MeleeAttackRequest
+      yield* requestMeleeAttack(state, request)
+      yield* requestMeleeAttack(state, {
+        requestId: 'valid-after-invalid',
+        origin: atPosition(80, 64, 80),
+        direction: atPosition(1, 0, 0),
+        reach: AttackRangeDistance(64),
+        damage: 999,
+        hitDistance: 64,
+      })
+
+      yield* runInteractions(stages)
+
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'Entities',
+        error: { _tag: 'InvalidMeleeTargetInput', field: 'hitDistance' },
+      }])
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+      expect(yield* drainMeleeAttackResults(state)).toMatchObject([
+        { requestId: 'undefined-hit-distance', success: false },
+        { requestId: 'valid-after-invalid', success: true },
+      ])
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(19)
       expect(yield* ownerStorage(commit)).toStrictEqual(initialStorage)
     }),
   )

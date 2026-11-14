@@ -33,13 +33,20 @@
  * shape checks that keep a whole class out.
  */
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
 import { Brand, Effect, Result } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { AIR_BLOCK_ID, BlockId } from '@nerima-games/mc-kernel'
-import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
+import {
+  applyDamage as applyDamageResult,
+  deathMessage as deathMessageResult,
+  fullHealth,
+  isDead,
+  MAX_HEALTH_POINTS,
+} from '../src/domain/death-cause'
 import { capabilityOfBlockId, DeltaTimeSecs, ENTITY_TYPES, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import {
   CREEPER_FUSE_SECS,
@@ -49,13 +56,13 @@ import {
   type CreeperFuse,
 } from '../src/domain/mob/creeper-fuse'
 import { dropRollsNeeded, rollDropsOfKind } from '../src/domain/entities/mob-frame'
-import { nextRoll } from '../src/domain/frame-rolls'
+import { nextRoll as nextRollResult } from '../src/domain/frame-rolls'
 import {
   CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
-  explosionDamageAmount,
-  explosionDamageAt,
-  explosionRadius,
+  explosionDamageAmount as explosionDamageAmountResult,
+  explosionDamageAt as explosionDamageAtResult,
+  explosionRadius as explosionRadiusResult,
   type Explosion,
 } from '../src/domain/mob/explosion'
 import {
@@ -127,9 +134,11 @@ import {
 } from '../src/domain/mob/shulker-shell'
 import {
   DESPAWN_DISTANCE_BLOCKS,
-  despawnVerdict,
+  despawnVerdict as despawnVerdictResult,
   type DespawnCandidate,
 } from '../src/domain/mob/hostile-despawn'
+
+const despawnVerdict = (candidate: DespawnCandidate) => Result.getOrThrow(despawnVerdictResult(candidate))
 
 /** Block ids, from kernel's registry. The RULES never name one; a test may. */
 const STONE: BlockId = BlockId(2)
@@ -144,6 +153,27 @@ const NO_TARGET = at(undefined)
 const TICK = DeltaTimeSecs(0.05)
 
 const lit = (burnedSecs: number): CreeperFuse => ({ _tag: 'Lit', burnedSecs })
+
+const applyDamage = (vitals: Parameters<typeof applyDamageResult>[0], damage: Parameters<typeof applyDamageResult>[1]) =>
+  Result.getOrThrow(applyDamageResult(vitals, damage))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
+const explosionDamageAmount = (
+  ...args: [power: number, distanceToCentre: number] | [power: number, distanceToCentre: number, exposure: number]
+) => Result.getOrThrow(
+  args.length === 2
+    ? explosionDamageAmountResult(args[0], args[1])
+    : explosionDamageAmountResult(args[0], args[1], args[2]),
+)
+const explosionDamageAt = (
+  ...args: [explosion: Parameters<typeof explosionDamageAtResult>[0], distanceToCentre: number] |
+    [explosion: Parameters<typeof explosionDamageAtResult>[0], distanceToCentre: number, exposure: number]
+) => Result.getOrThrow(
+  args.length === 2
+    ? explosionDamageAtResult(args[0], args[1])
+    : explosionDamageAtResult(args[0], args[1], args[2]),
+)
+const explosionRadius = (power: number) => Result.getOrThrow(explosionRadiusResult(power))
+const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
 
 describe('creeper: the fuse is a state machine with a timer and an irreversible end', () => {
   it.effect('carries the reference implementation’s two constants', () =>
@@ -406,7 +436,8 @@ describe('creeper: the blast, and the death message it must carry', () => {
       // Dropping the cause once the amount is 0 is how the optional argument
       // gets reintroduced, one guard clause at a time.
       expect(explosionDamageAt(blast, 99)).toStrictEqual({ amount: 0, cause: 'explosion' })
-      expect(explosionDamageAt(blast, Number.NaN)).toStrictEqual({ amount: 0, cause: 'explosion' })
+      expect(Result.isFailure(explosionDamageAtResult(blast, Number.NaN))).toBe(true)
+      expect(Result.isFailure(explosionDamageAtResult(blast, 1, undefined as unknown as number))).toBe(true)
     }),
   )
 
@@ -414,6 +445,30 @@ describe('creeper: the blast, and the death message it must carry', () => {
     Effect.sync(() => {
       expect(explosionRadius(0)).toBe(0)
       expect(explosionDamageAmount(0, 0)).toBe(0)
+    }),
+  )
+
+  it.effect('property: arbitrary power, distance, and exposure fail or produce finite damage', () =>
+    Effect.sync(() => {
+      const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+      FastCheck.assert(FastCheck.property(anyNumber, anyNumber, anyNumber, (power, distance, exposure) => {
+        const result = explosionDamageAmountResult(power, distance, exposure)
+        const valid = Number.isFinite(power) && power >= 0 &&
+          Number.isFinite(distance) && distance >= 0 &&
+          Number.isFinite(exposure) && exposure >= 0 && exposure <= 1
+        if (!valid) expect(Result.isFailure(result)).toBe(true)
+        if (Result.isSuccess(result)) {
+          expect(Number.isFinite(result.success)).toBe(true)
+          expect(Number.isInteger(result.success)).toBe(true)
+          expect(result.success).toBeGreaterThanOrEqual(0)
+        }
+      }))
+      expect(Result.isSuccess(explosionDamageAmountResult(0, 0))).toBe(true)
+      expect(Result.isFailure(explosionDamageAmountResult(-Number.MIN_VALUE, 0))).toBe(true)
+      expect(Result.isFailure(explosionDamageAmountResult(3, -Number.MIN_VALUE))).toBe(true)
+      expect(Result.isFailure(explosionDamageAmountResult(3, 0, 1 + Number.EPSILON))).toBe(true)
+      expect(Result.isFailure(explosionDamageAmountResult(3, 0, undefined as unknown as number))).toBe(true)
+      expect(Result.isFailure(explosionDamageAmountResult(Number.MAX_VALUE, 0))).toBe(true)
     }),
   )
 })
@@ -447,6 +502,22 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
         reason: 'daylight',
       })
       expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: SkyLightLevel(7) }))._tag).toBe('Spawn')
+    }),
+  )
+
+  it.effect('propagates an invalid time-of-day input instead of treating it as an ordinary refusal', () =>
+    Effect.sync(() => {
+      expect(canHostileSpawnAt(candidate({ timeOfDay: Number.NaN }))).toStrictEqual({
+        _tag: 'InvalidDayNightInput',
+        field: 'timeOfDay',
+      })
+      expect(canHostileSpawnAt({
+        ...candidate(),
+        timeOfDay: undefined,
+      } as unknown as SpawnCandidate)).toStrictEqual({
+        _tag: 'InvalidDayNightInput',
+        field: 'timeOfDay',
+      })
     }),
   )
 
@@ -522,19 +593,31 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
     }),
   )
 
-  it.effect('a measurement that is not a number refuses, rather than reading as darkness', () =>
+  it.effect('a malformed measurement is typed, while a missing measurement stays unmeasurable', () =>
     Effect.sync(() => {
-      // `NaN > 0` is false, so an unguarded light gate would treat a broken
-      // measurement as pitch dark and spawn a mob in daylight. Finding F5 is the
-      // same shape one module over, and this is the guard it argues for.
-      for (const overrides of [
-        { blockLight: Number.NaN },
-        { distanceToPlayerBlocksXZ: Number.NaN },
-        { distanceToPlayerBlocksXZ: Number.POSITIVE_INFINITY },
-      ]) {
-        expect(canHostileSpawnAt(candidate(overrides))).toStrictEqual({
-          _tag: 'Refused',
-          reason: 'unmeasurable',
+      expect(canHostileSpawnAt(candidate({ blockLight: Number.NaN }))).toStrictEqual({
+        _tag: 'InvalidSpawnCandidate',
+        field: 'blockLight',
+      })
+      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: Number.NaN }))).toStrictEqual({
+        _tag: 'InvalidSpawnCandidate',
+        field: 'distanceToPlayerBlocksXZ',
+      })
+      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: Number.POSITIVE_INFINITY }))).toStrictEqual({
+        _tag: 'InvalidSpawnCandidate',
+        field: 'distanceToPlayerBlocksXZ',
+      })
+      const { distanceToPlayerBlocksXZ: presentDistance, ...absentDistance } = candidate()
+      expect(presentDistance).toBe(30)
+      expect(canHostileSpawnAt(absentDistance as SpawnCandidate)).toStrictEqual({
+        _tag: 'Refused',
+        reason: 'unmeasurable',
+      })
+      for (const field of ['distanceToPlayerBlocksXZ', 'blockLight', 'skyLight'] as const) {
+        const malformed = { ...candidate(), [field]: undefined } as unknown as SpawnCandidate
+        expect(canHostileSpawnAt(malformed)).toStrictEqual({
+          _tag: 'InvalidSpawnCandidate',
+          field,
         })
       }
     }),
@@ -585,6 +668,16 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
       expect(
         canMobSpawnAt(SKELETON_KIND, candidate({ dimension: 'nether' })),
       ).toStrictEqual({ _tag: 'Refused', reason: 'wrong-dimension' })
+    }),
+  )
+
+  it.effect('an explicitly undefined dimension is typed as invalid instead of defaulting to the overworld', () =>
+    Effect.sync(() => {
+      const malformed = { ...candidate(), dimension: undefined } as unknown as SpawnCandidate
+      expect(canMobSpawnAt(COW_KIND, malformed)).toStrictEqual({
+        _tag: 'InvalidSpawnCandidate',
+        field: 'dimension',
+      })
     }),
   )
 
@@ -655,11 +748,12 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     }),
   )
 
-  it.effect('a passive mob is still refused for an unmeasurable, too-close, too-far, or bad surface', () =>
+  it.effect('a passive mob returns typed failures for malformed measurements and refuses valid distances', () =>
     Effect.sync(() => {
-      expect(
-        canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: Number.NaN })),
-      ).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
+      expect(canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: Number.NaN }))).toStrictEqual({
+        _tag: 'InvalidSpawnCandidate',
+        field: 'distanceToPlayerBlocksXZ',
+      })
       expect(
         canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: 23 })),
       ).toStrictEqual({ _tag: 'Refused', reason: 'too-close' })
@@ -1600,35 +1694,23 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
     }),
   )
 
-  it.effect('ORDER: a persistent mob whose position is not a number is swept anyway', () =>
+  it.effect('malformed despawn measurements are typed faults before persistence exemptions', () =>
     Effect.sync(() => {
-      // entity-manager-utils.ts checks finiteness at :59 and the exemption at
-      // :66 — in that order, so the exemption never protects a broken entity.
-      // The order is the whole content of this test: an exemption from a
-      // distance rule is not an exemption from being a number.
-      //
-      // The finiteness half HAS an oracle (test/mob/entity-manager-utils.test.ts
-      // :272-285 covers a NaN position, an infinite position and a non-finite
-      // velocity, all three answering "despawn"). The EXEMPTION has none, and
-      // the interaction between them has none either — which is exactly why the
-      // order is worth a test rather than a comment.
-      expect(despawnVerdict({ distanceToPlayerBlocks: Number.NaN, persistent: true })).toStrictEqual({
-        _tag: 'Despawn',
-        reason: 'unmeasurable',
-      })
-      expect(
-        despawnVerdict({ distanceToPlayerBlocks: Number.POSITIVE_INFINITY, persistent: false }),
-      ).toStrictEqual({ _tag: 'Despawn', reason: 'unmeasurable' })
+      // Present malformed measurements fail before the persistence exemption;
+      // only an omitted distance is treated as an unavailable measurement.
+      expect(despawnVerdictResult({ distanceToPlayerBlocks: Number.NaN, persistent: true })).toStrictEqual(
+        Result.fail({ _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' }),
+      )
+      expect(despawnVerdictResult({
+        distanceToPlayerBlocks: Number.POSITIVE_INFINITY,
+        persistent: false,
+      })).toStrictEqual(Result.fail({ _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' }))
     }),
   )
 
-  it.effect('the spawn rule and the sweep fail in OPPOSITE directions, which is one decision', () =>
+  it.effect('spawn and despawn rules return typed failures for malformed measurements', () =>
     Effect.sync(() => {
-      // A broken measurement REFUSES a spawn and CAUSES a despawn. Both answers
-      // remove a mob, so no unmeasurable number can ever be the reason a
-      // population grows. Asserted together because separately each looks like
-      // an arbitrary choice about `NaN`.
-      const refused = canHostileSpawnAt({
+      const invalidSpawn = canHostileSpawnAt({
         groundBlock: STONE,
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
@@ -1638,11 +1720,10 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
         timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,
       })
-      expect(refused).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
-      expect(despawnVerdict(candidate({ distanceToPlayerBlocks: Number.NaN }))).toStrictEqual({
-        _tag: 'Despawn',
-        reason: 'unmeasurable',
-      })
+      expect(invalidSpawn).toStrictEqual({ _tag: 'InvalidSpawnCandidate', field: 'blockLight' })
+      expect(despawnVerdictResult(candidate({ distanceToPlayerBlocks: Number.NaN }))).toStrictEqual(
+        Result.fail({ _tag: 'InvalidDespawnCandidate', field: 'distanceToPlayerBlocks' }),
+      )
     }),
   )
 

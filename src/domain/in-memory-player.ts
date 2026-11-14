@@ -81,11 +81,19 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
 export const PITCH_MAX_RADIANS: number = Math.PI / 2 - 0.001
 export const PITCH_MIN_RADIANS: number = -PITCH_MAX_RADIANS
 
+const inputError = (
+  reason: PlayerServiceInputError['reason'],
+  field: PlayerServiceInputError['field'],
+): PlayerServiceInputError => ({ _tag: 'PlayerServiceInputError', reason, field })
+
 /** Hold the pitch inside the range the basis is defined on. */
-export const clampPitch = (pitchRadians: number): number =>
+export const clampPitch = (
+  pitchRadians: number,
+  reason: PlayerServiceInputError['reason'] = 'invalid-pose',
+): Result.Result<number, PlayerServiceInputError> =>
   Number.isFinite(pitchRadians)
-    ? Math.min(PITCH_MAX_RADIANS, Math.max(PITCH_MIN_RADIANS, pitchRadians))
-    : 0
+    ? Result.succeed(Math.min(PITCH_MAX_RADIANS, Math.max(PITCH_MIN_RADIANS, pitchRadians)))
+    : Result.fail(inputError(reason, 'pitchRadians'))
 
 /**
  * Apply a look delta to a pose.
@@ -97,12 +105,20 @@ export const applyLook = (
   pose: PlayerPose,
   deltaYaw: number,
   deltaPitch: number,
-): PlayerPose => ({
-  feetPosition: pose.feetPosition,
-  // Not wrapped. See the header: wrapping breaks interpolation across the seam.
-  yawRadians: Number.isFinite(deltaYaw) ? pose.yawRadians + deltaYaw : pose.yawRadians,
-  pitchRadians: clampPitch(pose.pitchRadians + (Number.isFinite(deltaPitch) ? deltaPitch : 0)),
-})
+): Result.Result<PlayerPose, PlayerServiceInputError> => {
+  if (!Number.isFinite(deltaYaw)) return Result.fail(inputError('invalid-look', 'deltaYaw'))
+  if (!Number.isFinite(deltaPitch)) return Result.fail(inputError('invalid-look', 'deltaPitch'))
+  const pitch = clampPitch(pose.pitchRadians + deltaPitch, 'invalid-look')
+  if (Result.isFailure(pitch)) return Result.fail(pitch.failure)
+  const nextPose = {
+    feetPosition: pose.feetPosition,
+    // Not wrapped. See the header: wrapping breaks interpolation across the seam.
+    yawRadians: pose.yawRadians + deltaYaw,
+    pitchRadians: pitch.success,
+  }
+  const error = invalidPoseError(nextPose, 'invalid-look')
+  return error === undefined ? Result.succeed(nextPose) : Result.fail(error)
+}
 
 /** Where a player starts when nobody says otherwise. */
 export const INITIAL_PLAYER_POSE: PlayerPose = {
@@ -124,11 +140,6 @@ export const INITIAL_DIMENSION: Dimension = 'overworld'
  */
 export const EYE_LEVEL_OFFSET = 1.62
 
-const inputError = (
-  reason: PlayerServiceInputError['reason'],
-  field: PlayerServiceInputError['field'],
-): PlayerServiceInputError => ({ _tag: 'PlayerServiceInputError', reason, field })
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
@@ -144,11 +155,14 @@ const invalidPositionField = (value: unknown): PlayerServiceInputError['field'] 
 
 // Both callers build a record and clamp pitch before checking the remaining fields.
 const invalidPoseError = (
-  value: { readonly yawRadians: unknown; readonly feetPosition: unknown },
+  value: { readonly yawRadians: unknown; readonly pitchRadians: unknown; readonly feetPosition: unknown },
   reason: PlayerServiceInputError['reason'],
 ): PlayerServiceInputError | undefined => {
   if (typeof value['yawRadians'] !== 'number' || !Number.isFinite(value['yawRadians'])) {
     return inputError(reason, 'yawRadians')
+  }
+  if (typeof value['pitchRadians'] !== 'number' || !Number.isFinite(value['pitchRadians'])) {
+    return inputError(reason, 'pitchRadians')
   }
   const positionField = invalidPositionField(value['feetPosition'])
   return positionField === undefined ? undefined : inputError(reason, positionField)
@@ -188,10 +202,9 @@ export const makeInMemoryPlayer = (
           { readonly pose: PlayerPose; readonly dimension: Dimension },
         ] => {
           const pose = applyLook(current.pose, deltaYaw, deltaPitch)
-          const error = invalidPoseError(pose, 'invalid-look')
-          return error === undefined
-            ? [Result.succeed(pose), { ...current, pose }]
-            : [Result.fail(error), current]
+          return Result.isSuccess(pose)
+            ? [pose, { ...current, pose: pose.success }]
+            : [pose, current]
         }), Effect.fromResult),
 
       // POSITION ONLY. Pairing it with `setDimension` is the caller's, and the
@@ -283,9 +296,11 @@ export const makeInMemoryPlayer = (
        * after a load, where it is hardest to attribute.
        */
       restore: (pose, dimension) => {
-        const nextPose = { ...pose, pitchRadians: clampPitch(pose.pitchRadians) }
-        const poseError = invalidPoseError(nextPose, 'invalid-pose')
+        const poseError = invalidPoseError(pose, 'invalid-pose')
         if (poseError !== undefined) return Effect.fail(poseError)
+        const pitch = clampPitch(pose.pitchRadians)
+        if (Result.isFailure(pitch)) return Effect.fail(pitch.failure)
+        const nextPose = { ...pose, pitchRadians: pitch.success }
         if (!Schema.is(DimensionIdSchema)(dimension)) {
           return Effect.fail(inputError('invalid-dimension', 'dimension'))
         }

@@ -55,11 +55,11 @@ import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
   blockIdOf,
-  blockTypeOfId,
   type BlockId,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 
 /**
  * Is this byte a door?
@@ -69,7 +69,9 @@ import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
  * drop column and is never the block being PLACED — a player carries `door` and
  * what goes into the world is `door`.
  */
-export const isDoorBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'door'
+export const DOOR_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('door'))
+
+export const isDoorBlock = (block: BlockId): boolean => block === DOOR_BLOCK_ID
 
 /**
  * What the cell above says about a door placement.
@@ -86,6 +88,7 @@ export type DoorUpperCell =
   | { readonly _tag: 'Clear'; readonly cell: BlockPosition }
   /** A door with something in the way above, or with no world above. */
   | { readonly _tag: 'NoRoomAbove' }
+  | { readonly _tag: 'WorldDataFault'; readonly failure: EntityWorldQueryFailure }
 
 /**
  * Does the cell above admit a door's upper half?
@@ -116,6 +119,13 @@ export const doorUpperCell = (
     }
     const reading = yield* store.getBlock(cell)
 
+    if (reading._tag === 'Block') {
+      const data = entityWorldBlockDataAt(cell, reading.block)
+      if (Result.isFailure(data)) {
+        return { _tag: 'WorldDataFault', failure: data.failure }
+      }
+    }
+
     if (reading._tag !== 'Block' || reading.block !== AIR_BLOCK_ID) {
       return { _tag: 'NoRoomAbove' }
     }
@@ -128,6 +138,7 @@ export type DoorUpperBreakCell =
   | { readonly _tag: 'NotADoor' }
   | { readonly _tag: 'NoDoorAbove' }
   | { readonly _tag: 'DoorAbove'; readonly cell: BlockPosition }
+  | { readonly _tag: 'WorldDataFault'; readonly failure: EntityWorldQueryFailure }
 
 /**
  * Finds the closed-door upper half that must be removed with a broken lower
@@ -148,12 +159,16 @@ export const doorUpperBreakCell = (
       return { _tag: 'NoDoorAbove' }
     }
     const reading = yield* store.getBlock(cell)
-    if (reading._tag !== 'Block' || !isDoorBlock(reading.block)) {
+    if (reading._tag !== 'Block') {
+      return { _tag: 'NoDoorAbove' }
+    }
+    const data = entityWorldBlockDataAt(cell, reading.block)
+    if (Result.isFailure(data)) {
+      return { _tag: 'WorldDataFault', failure: data.failure }
+    }
+    if (!isDoorBlock(reading.block)) {
       return { _tag: 'NoDoorAbove' }
     }
 
     return { _tag: 'DoorAbove', cell }
   })
-
-/** The id this rule is about, for a caller that wants to demonstrate it. */
-export const DOOR_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('door'))

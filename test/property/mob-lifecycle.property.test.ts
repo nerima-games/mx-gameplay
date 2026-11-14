@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
+import { Result } from 'effect'
 import { AIR_BLOCK_ID, DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   DORMANT_FUSE,
@@ -9,7 +10,7 @@ import {
 } from '../../src/domain/mob/creeper-fuse'
 import {
   DESPAWN_DISTANCE_BLOCKS,
-  despawnVerdict,
+  despawnVerdict as despawnVerdictResult,
 } from '../../src/domain/mob/hostile-despawn'
 import { canHostileSpawnAt, SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import {
@@ -19,6 +20,9 @@ import {
 } from '../../src/domain/mob/mob-ecosystem'
 import { STONE } from '../support/chunk-store-double'
 import { position } from '../support/coordinate-fixtures'
+
+const despawnVerdict = (candidate: Parameters<typeof despawnVerdictResult>[0]) =>
+  Result.getOrThrow(despawnVerdictResult(candidate))
 
 describe('mob lifecycle properties', () => {
   it('keeps passive movement non-hostile, level, and bounded by elapsed time', () => {

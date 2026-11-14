@@ -48,7 +48,7 @@ import {
 } from '../src/domain/interactions/bow-shot'
 import {
   KnockbackPreparationSchema,
-  knockbackDirection,
+  knockbackDirection as knockbackDirectionResult,
   KNOCKBACK_EPSILON,
   prepareKnockbackDirection,
 } from '../src/domain/interactions/knockback'
@@ -77,6 +77,9 @@ import { makeInventoryDouble } from './support/inventory-service-double'
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
 import { runFrame } from './support/frame-runner'
 import { Ref } from 'effect'
+
+const knockbackDirection = (...args: Parameters<typeof knockbackDirectionResult>) =>
+  Result.getOrThrow(knockbackDirectionResult(...args))
 
 // Deliberately malformed positions exercise runtime rejection paths.
 const unsafePosition = (x: number, y: number, z: number): Position => ({ x, y, z }) as unknown as Position
@@ -786,9 +789,19 @@ describe('knockbackDirection', () => {
     expect(knockbackDirection(KNOCKBACK_EPSILON * 10, 0)._tag).toBe('Away')
   })
 
-  it('non-finite offsets pop straight up rather than producing a NaN direction', () => {
-    expect(knockbackDirection(Number.NaN, 1)._tag).toBe('StraightUp')
-    expect(knockbackDirection(1, Number.POSITIVE_INFINITY)._tag).toBe('StraightUp')
+  it('non-finite offsets return typed failures', () => {
+    expect(Result.isFailure(knockbackDirectionResult(Number.NaN, 1))).toBe(true)
+    expect(Result.isFailure(knockbackDirectionResult(1, Number.POSITIVE_INFINITY))).toBe(true)
+    expect(Result.isFailure(knockbackDirectionResult(Number.NEGATIVE_INFINITY, 1))).toBe(true)
+    expect(Result.isFailure(knockbackDirectionResult(undefined as unknown as number, 1))).toBe(true)
+  })
+
+  it('property: every finite offset resolves and every non-finite offset fails', () => {
+    const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+    FastCheck.assert(FastCheck.property(anyNumber, anyNumber, (dx, dz) => {
+      const result = knockbackDirectionResult(dx, dz)
+      expect(Result.isFailure(result)).toBe(!Number.isFinite(dx) || !Number.isFinite(dz))
+    }))
   })
 
   it('SCALE-INVARIANT under positive factors: docs/responsibility.md §5-1, executable', () => {
@@ -1017,9 +1030,15 @@ const scene = (
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
+    const legacyOwnerEntities = {
+      ...initial,
+      entities: initial.entities.map(({ behaviour, ...entity }) =>
+        behaviour === undefined ? entity : { ...entity, behaviour },
+      ),
+    } as unknown as EntityRoster<MobBehaviour>
     const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
       ...ownerInitial,
-      entities: ownerInitial.entities ?? initial,
+      entities: ownerInitial.entities ?? legacyOwnerEntities,
     })
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator: commit.coordinator,

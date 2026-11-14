@@ -7,7 +7,7 @@ import {
   CHUNK_SIZE_XZ,
   type ChunkCoord,
 } from '@nerima-games/mc-kernel'
-import { Effect, Option, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import { runBrowserDebugEffect } from '../entrypoint.js'
 import { CHUNK_VOLUME, blockIndex, type Chunk, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 import { HOSTILE_KINDS } from '../../../src/domain/entities/mob-frame.js'
@@ -297,10 +297,11 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
           `The fixture tracks one fire cell; fire runtime limits ${String(FIRE_WORK_BUDGET)} work items and ${String(FIRE_FRAME_TICK_BUDGET)} fire ticks per frame. Select rain or thunder to observe weather extinguishing the exposed fire.`,
         ],
       })
-      runBrowserDebugEffect(Ref.set(
-        mounted.site.state.fireLifecycle,
-        makeFireLifecycleState([fire], context.seed),
-      ))
+      const fireState = makeFireLifecycleState([fire], context.seed)
+      if (Result.isFailure(fireState)) {
+        throw new Error(`browser-debug: invalid weather-fire seed: ${JSON.stringify(fireState.failure)}`)
+      }
+      runBrowserDebugEffect(Ref.set(mounted.site.state.fireLifecycle, fireState.success))
       return mounted
     },
   },

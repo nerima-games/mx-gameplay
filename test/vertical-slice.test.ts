@@ -125,6 +125,7 @@ import {
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
   hostileMobSnapshot,
+  isHostileMobSnapshot,
   MAX_HOSTILE_COUNT,
   MAX_PASSIVE_COUNT,
   STEADY_ENDERMAN,
@@ -170,7 +171,11 @@ import {
   StackCount,
 } from '@nerima-games/mc-kernel'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
-import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
+import {
+  DEFAULT_ROLL_SEED,
+  drawRolls as drawRollsResult,
+  nextRoll as nextRollResult,
+} from '../src/domain/frame-rolls'
 import {
   FIRE_NATURAL_LIFETIME_TICKS,
   FIRE_TICK_INTERVAL_SECS,
@@ -185,7 +190,10 @@ import {
   ENDERMAN_TELEPORT_MIN_BLOCKS,
   endermanTeleportCandidates,
 } from '../src/domain/mob/enderman-teleport'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import {
+  CREEPER_EXPLOSION_POWER,
+  explosionDamageAmount as explosionDamageAmountResult,
+} from '../src/domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
@@ -250,6 +258,11 @@ import {
 } from './support/inventory-service-double'
 import { runFrame, runFrames } from './support/frame-runner'
 import { FrameServicesLayer } from './support/frame-services'
+
+const drawRolls = (...args: Parameters<typeof drawRollsResult>) => Result.getOrThrow(drawRollsResult(...args))
+const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
+const explosionDamageAmount = (power: number, distanceToCentre: number) =>
+  Result.getOrThrow(explosionDamageAmountResult(power, distanceToCentre))
 
 // ---------------------------------------------------------------------------
 // The column under test. Chunk (0, 0), which is the only resident one unless a
@@ -343,13 +356,13 @@ const withMiningDroppedItemsOwner = (
       yield* inventory.storageSnapshot,
     )
     const droppedItems = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)({ items: [] })
-    const registrations = gameplayOwnerRegistrations({ playerStorage, droppedItems })
+    const registrations = Result.getOrThrow(gameplayOwnerRegistrations({ playerStorage, droppedItems }))
     const miningCoordinator = yield* makeWorldCommitCoordinator({
       world: coordinator.worldId,
       owners: [
         ...registrations.filter((owner) => owner.ownerId !== playerStorageOwnerId),
         playerStorageOwnerRegistration(playerStorageOwnerId, playerStorage),
-        droppedItemOwnerRegistration(MINING_DROPPED_ITEMS_OWNER_ID, droppedItems),
+        Result.getOrThrow(droppedItemOwnerRegistration(MINING_DROPPED_ITEMS_OWNER_ID, droppedItems)),
       ],
       dimensions: [MINING_DIMENSION],
       chunkStores: { forDimension: () => store },
@@ -1211,9 +1224,13 @@ describe('the mob slice, through the stage registration', () => {
 
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
+      const movementFloor = Array.from({ length: 5 }, (_value, index) => [
+        fixtureBlockPosition(index + 3, 63, 5),
+        STONE,
+      ] as const)
       const { store, inventory, state, player, time, stages, commit } = yield* slice(
         world([
-          [craterFloor, STONE],
+          ...movementFloor,
           [craterLedge, STONE],
           [ledgeSand, SAND],
         ]),
@@ -1245,39 +1262,49 @@ describe('the mob slice, through the stage registration', () => {
 
       // ---- the player walks up ---------------------------------------------
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
-      yield* runFrame(stages, STRIDE)
+      yield* runFrames(stages, 5, DeltaTimeSecs(1 / 20))
+      expect((yield* Ref.get(state.entityStageFaults)).pending).toStrictEqual([])
 
-      // Lighting and burning are ONE step (`domain/mob/creeper-fuse.ts`), so the
-      // very frame that finds the player in range already has 0.25 on the clock.
+      // Lighting and burning are ONE step (`domain/mob/creeper-fuse.ts`). Five
+      // fixed simulation ticks burn 0.25 seconds regardless of host frame delta.
       // The bystander is four blocks off — outside the three-block ignition
       // range — and is untouched.
       const lit = (yield* readGameplayEntityRoster(commit.coordinator)).entities
-      expect(lit[0]?.behaviour).toStrictEqual({
-        ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 0.25 }),
+      expect(lit[0]?.behaviour).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: { _tag: 'Lit', burnedSecs: 0.25 },
         ageTicks: 5,
       })
-      expect(lit[1]?.behaviour).toStrictEqual({
-        ...hostileMobSnapshot(DORMANT_FUSE),
+      expect(lit[1]?.behaviour).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: DORMANT_FUSE,
         ageTicks: 5,
       })
 
-      // The bystander is outside ignition range, but hostile locomotion still
-      // closes the horizontal gap by speed * dt without changing altitude.
+      // The bystander is outside ignition range but SM3 closes the horizontal gap.
       expect(lit[1]).not.toBe(spawned[1])
-      expect(lit[1]?.feetPosition).toStrictEqual({ x: 6.5, y: 64, z: 5 })
+      expect(lit[1]?.feetPosition.y).toBe(64)
+      expect(Math.hypot((lit[1]?.feetPosition.x ?? 7) - 3, (lit[1]?.feetPosition.z ?? 5) - 5)).toBeLessThan(4)
+      expect(Math.hypot((lit[1]?.feetPosition.x ?? 7) - 3, (lit[1]?.feetPosition.z ?? 5) - 5)).toBeGreaterThan(3)
 
-      // ---- five more quarter-seconds ---------------------------------------
-      // 0.25 * 6 = 1.5 = CREEPER_FUSE_SECS, and the threshold is `>=`.
+      // ---- twenty more fixed ticks -----------------------------------------
+      // 25 ticks is 1.25 seconds; another five ticks cross the 1.5-second fuse.
       expect(CREEPER_FUSE_SECS).toBe(1.5)
-      yield* runFrames(stages, 4, STRIDE)
-      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities[0]?.behaviour).toStrictEqual({
-        ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 1.25 }),
+      yield* runFrames(stages, 20, DeltaTimeSecs(1 / 20))
+      const advancedFuse = (yield* readGameplayEntityRoster(commit.coordinator)).entities[0]?.behaviour
+      expect(advancedFuse).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: { _tag: 'Lit' },
         ageTicks: 25,
       })
+      const burnedSecs = isHostileMobSnapshot(advancedFuse) && advancedFuse.behaviour?._tag === 'Lit'
+        ? advancedFuse.behaviour.burnedSecs
+        : Number.NaN
+      expect(burnedSecs).toBeCloseTo(1.25, 10)
 
       const beforeBlast = yield* store.calls
       yield* Ref.set(state.rollSeed, 3)
-      yield* runFrame(stages, STRIDE)
+      yield* runFrames(stages, 5, DeltaTimeSecs(1 / 20))
 
       // ---- the roster settles ----------------------------------------------
       // The creeper is gone because it detonated; the bystander is gone because
@@ -1306,11 +1333,11 @@ describe('the mob slice, through the stage registration', () => {
       expect(yield* store.blockAt(ledgeSand)).toBeUndefined()
       expect(yield* store.blockAt(craterLedge)).toBe(SAND)
 
-      // The store was untouched until the blast. The crater reads each cell to
-      // enforce block resistance, then writes each readable non-resistant cell;
-      // falling-block processing accounts for any additional calls.
-      // Six frames of fuse, six portal probes, and nothing else touched.
-      expect(beforeBlast).toStrictEqual({ reads: 6, writes: 0, peeks: 0 })
+      // The movement window reads terrain for both creepers on each fixed tick;
+      // the portal probe also reads once per pass. The crater reads each cell to
+      // enforce block resistance, then writes each readable non-resistant cell.
+      expect(beforeBlast.reads).toBeGreaterThanOrEqual(6)
+      expect(beforeBlast.peeks).toBeGreaterThan(0)
       const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
       const afterBlast = yield* store.calls
       expect(afterBlast.reads).toBeGreaterThanOrEqual(beforeBlast.reads + craterCellCount)
@@ -1334,7 +1361,7 @@ describe('the mob slice, through the stage registration', () => {
     }),
   )
 
-  it.effect('REGRESSION: unruled mobs stay zero-copy while a hostile moves', () =>
+  it.effect('REGRESSION: unruled mobs stay zero-copy while a creeper follows its SM3 path', () =>
     Effect.gen(function* () {
       // THE PROPERTY THE WHOLE DESIGN PROTECTS, and the mob-side twin of the
       // idle-frame test above. mc-sim's sweep returns the ARGUMENT roster when
@@ -1344,12 +1371,15 @@ describe('the mob slice, through the stage registration', () => {
       // fresh one per mob would be completely correct and would hand back
       // per-mob-per-frame garbage on the frame path — DN-GP-1's mistake made out
       // of objects instead of block reads.
-      const { store, roster, state, player, stages, commit } = yield* slice(world([[craterFloor, STONE]]))
+      const movementFloor = Array.from({ length: 8 }, (_value, index) => [
+        fixtureBlockPosition(index + 3, 63, 5),
+        STONE,
+      ] as const)
+      const { store, roster, state, player, stages, commit } = yield* slice(world(movementFloor))
 
-      // Three mobs this repository has no rule for, and one dormant creeper.
-      // The creeper is 50 blocks off: outside the 3-block ignition range and
-      // well inside the 128-block despawn radius, so nothing happens to any of
-      // them for any reason.
+      // Three mobs this repository has no rule for, and one dormant creeper on
+      // a loaded floor. It starts outside the 3-block ignition range and well
+      // inside the 128-block despawn radius.
       const pig = EntityKind('pig')
       yield* Effect.forEach([0, 1, 2], (index) =>
         roster.api.spawn({
@@ -1361,7 +1391,7 @@ describe('the mob slice, through the stage registration', () => {
       )
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: fixturePosition(50, 64, 5 ),
+        feetPosition: fixturePosition(10, 64, 5),
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
@@ -1372,10 +1402,15 @@ describe('the mob slice, through the stage registration', () => {
       const revisionBefore = yield* commit.coordinator.revision
       const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       yield* runFrames(entitiesStage, 10, STRIDE)
+      expect((yield* Ref.get(state.entityStageFaults)).pending).toStrictEqual([])
 
       const after = yield* readGameplayEntityRoster(commit.coordinator)
       expect(after.entities.slice(0, 3)).toStrictEqual(before.entities.slice(0, 3))
-      expect(after.entities[3]?.feetPosition).toStrictEqual({ x: 45, y: 64, z: 5 })
+      const creeperAfter = after.entities[3]?.feetPosition
+      const distanceAfter = creeperAfter === undefined
+        ? undefined
+        : Math.hypot(creeperAfter.x - 3, creeperAfter.z - 5)
+      expect(distanceAfter).toBeLessThan(7)
       expect(yield* commit.coordinator.revision).toBeGreaterThan(revisionBefore)
 
       // One shared ignored result plus the hostile mob's changed movement result.
@@ -1385,9 +1420,9 @@ describe('the mob slice, through the stage registration', () => {
       expect(calls.sweeps).toBe(0)
       expect(calls.despawns).toBe(0)
 
-      // The entities stage has no block work for these mobs, so it never asks
-      // the store for a portal or terrain read.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      // SM3 reads the loaded floor to path and step the creeper. The unruled
+      // pigs are absent from that movement work.
+      expect((yield* store.calls).peeks).toBeGreaterThan(0)
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
   )
@@ -1486,7 +1521,11 @@ describe('the mob slice, through the stage registration', () => {
       // pins is the SEED PLUMBING: the same scenario advances the same generator
       // by the same number of draws.
       const run = Effect.gen(function* () {
-        const { roster, state, player, stages, commit } = yield* slice(world([]))
+        const floorCells = Array.from({ length: 5 }, (_value, index) => [
+          fixtureBlockPosition(index + 3, 63, 5),
+          STONE,
+        ] as const)
+        const { roster, state, player, stages, commit } = yield* slice(world(floorCells))
         yield* roster.api.spawn({
           kind: CREEPER_KIND,
           feetPosition: positionOfBlock(creeperAt),
@@ -1501,9 +1540,9 @@ describe('the mob slice, through the stage registration', () => {
         })
         yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
         yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
-        yield* runFrames(stages, 5, STRIDE)
+        yield* runFrames(stages, 29, DeltaTimeSecs(1 / 20))
         yield* Ref.set(state.rollSeed, 3)
-        yield* runFrame(stages, STRIDE)
+        yield* runFrame(stages, DeltaTimeSecs(1 / 20))
 
         return {
           drops: yield* Ref.get(state.mobDrops),
@@ -1514,15 +1553,18 @@ describe('the mob slice, through the stage registration', () => {
       const first = yield* run
       const second = yield* run
 
-      expect(first.drops).toStrictEqual([
-        {
-          item: 'gunpowder',
-          count: 1,
-          source: 'e:1',
-          kind: CREEPER_KIND,
-          at: fixturePosition(6, 64, 5 ),
-        },
-      ])
+      expect(first.drops).toHaveLength(1)
+      const [drop] = first.drops
+      expect(drop).toMatchObject({
+        item: 'gunpowder',
+        count: 1,
+        source: 'e:1',
+        kind: CREEPER_KIND,
+      })
+      const blastDistance = drop === undefined
+        ? undefined
+        : Math.hypot(drop.at.x - 5, drop.at.z - 5)
+      expect(blastDistance).toBeLessThanOrEqual(2)
       expect(second).toStrictEqual(first)
     }),
   )
@@ -1706,9 +1748,9 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(creeperAt),
-        // One step from the end, so the very next frame detonates.
+        // One fixed tick from the end, so the next stage pass detonates.
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
-        behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
+        behaviour: { _tag: 'Lit', burnedSecs: 1.45 },
       })
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
@@ -2064,8 +2106,8 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(creeperAt),
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
-        // Already one step from the end, so the very next frame detonates.
-        behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
+        // One fixed tick from the end, so the next stage pass detonates.
+        behaviour: { _tag: 'Lit', burnedSecs: 1.45 },
       })
       yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)

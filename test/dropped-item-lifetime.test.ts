@@ -9,7 +9,7 @@
  * carries no residual state.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { StackCount, WorldId, type Position } from '@nerima-games/mc-kernel'
 import {
@@ -22,10 +22,12 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   createDroppedItemLifetimeTracker,
+  droppedItemOwnerRegistration,
   droppedItemPickupOwnerRegistrations,
   pickupDroppedItems,
   pickupDroppedItemsCommitted,
   spawnDroppedItem,
+  type DroppedItemOwnerSnapshot,
 } from '../src/domain/entities/dropped-item'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -49,47 +51,89 @@ const COMMITTED_DROP = {
 const makePickupCoordinator = () =>
   makeWorldCommitCoordinator({
     world: WorldId('dropped-item-lifetime-tests'),
-    owners: droppedItemPickupOwnerRegistrations(PICKUP_OWNERS, emptyPlayerStorage(), {
+    owners: Result.getOrThrow(droppedItemPickupOwnerRegistrations(PICKUP_OWNERS, emptyPlayerStorage(), {
       items: [COMMITTED_DROP],
-    }),
+    })),
   })
+
+const makeTracker = (lifetimeSecs: number) =>
+  Result.getOrThrow(createDroppedItemLifetimeTracker(lifetimeSecs))
+
+const advance = (
+  tracker: ReturnType<typeof makeTracker>,
+  dimension: string,
+  deltaSecs: number,
+  entityIds: ReadonlyArray<string>,
+) => Result.getOrThrow(tracker.advance(dimension, deltaSecs, entityIds))
+
+const restore = (
+  tracker: ReturnType<typeof makeTracker>,
+  dimension: string,
+  entries: ReadonlyArray<{ readonly entityId: string; readonly elapsedSecs: number }>,
+) => Result.getOrThrow(tracker.restore(dimension, entries))
+
+describe('dropped item owner registration defaults', () => {
+  it('defaults only an omitted initial state and types explicit undefined', () => {
+    const omitted = droppedItemOwnerRegistration(PICKUP_OWNERS.droppedItems)
+    expect(omitted.initialState).toStrictEqual({ items: [] })
+    expect(droppedItemOwnerRegistration(
+      PICKUP_OWNERS.droppedItems,
+      undefined as unknown as DroppedItemOwnerSnapshot,
+    )).toStrictEqual(Result.fail({ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' }))
+    expect(droppedItemPickupOwnerRegistrations(
+      PICKUP_OWNERS,
+      emptyPlayerStorage(),
+      undefined as unknown as DroppedItemOwnerSnapshot,
+    )).toStrictEqual(Result.fail({ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' }))
+  })
+})
 
 describe('createDroppedItemLifetimeTracker: scenarios', () => {
   it('tracks elapsed time per dimension and entity independently', () => {
-    const tracker = createDroppedItemLifetimeTracker(10)
-    tracker.advance('overworld', 4, ['a'])
-    tracker.advance('nether', 9, ['a'])
+    const tracker = makeTracker(10)
+    advance(tracker, 'overworld', 4, ['a'])
+    advance(tracker, 'nether', 9, ['a'])
     expect(tracker.elapsed('overworld', 'a')).toBe(4)
     expect(tracker.elapsed('nether', 'a')).toBe(9)
     expect(tracker.elapsed('overworld', 'b')).toBe(0)
   })
 
   it('drops an entity id that is no longer present, so a picked-up item does not linger', () => {
-    const tracker = createDroppedItemLifetimeTracker(10)
-    tracker.advance('overworld', 4, ['a', 'b'])
-    tracker.advance('overworld', 4, ['a'])
+    const tracker = makeTracker(10)
+    advance(tracker, 'overworld', 4, ['a', 'b'])
+    advance(tracker, 'overworld', 4, ['a'])
     expect(tracker.elapsed('overworld', 'a')).toBe(8)
     expect(tracker.elapsed('overworld', 'b')).toBe(0)
   })
 
   it('restore seeds elapsed time and replaces any prior tracking for that dimension', () => {
-    const tracker = createDroppedItemLifetimeTracker(10)
-    tracker.advance('overworld', 4, ['a'])
-    tracker.restore('overworld', [{ entityId: 'b', elapsedSecs: 6 }])
+    const tracker = makeTracker(10)
+    advance(tracker, 'overworld', 4, ['a'])
+    restore(tracker, 'overworld', [{ entityId: 'b', elapsedSecs: 6 }])
     expect(tracker.elapsed('overworld', 'a')).toBe(0)
     expect(tracker.elapsed('overworld', 'b')).toBe(6)
   })
 
-  it('restore clamps a negative persisted elapsed to zero', () => {
-    const tracker = createDroppedItemLifetimeTracker(10)
-    tracker.restore('overworld', [{ entityId: 'a', elapsedSecs: -5 }])
+  it('rejects a negative persisted elapsed without changing tracker state', () => {
+    const tracker = makeTracker(10)
+    expect(tracker.restore('overworld', [{ entityId: 'a', elapsedSecs: -5 }])).toStrictEqual(Result.fail({
+      _tag: 'InvalidDroppedItemLifetimeInput',
+      field: 'elapsedSecs',
+    }))
     expect(tracker.elapsed('overworld', 'a')).toBe(0)
   })
 
+  it('rejects an explicitly undefined lifetime instead of using the default', () => {
+    expect(createDroppedItemLifetimeTracker(undefined as unknown as number)).toStrictEqual(Result.fail({
+      _tag: 'InvalidDroppedItemLifetimeInput',
+      field: 'lifetimeSecs',
+    }))
+  })
+
   it('expires an item the instant it reaches the lifetime, and only once', () => {
-    const tracker = createDroppedItemLifetimeTracker(10)
-    expect(tracker.advance('overworld', 6, ['a'])).toStrictEqual([])
-    expect(tracker.advance('overworld', 4, ['a'])).toStrictEqual(['a'])
+    const tracker = makeTracker(10)
+    expect(advance(tracker, 'overworld', 6, ['a'])).toStrictEqual([])
+    expect(advance(tracker, 'overworld', 4, ['a'])).toStrictEqual(['a'])
     // No longer tracked: a second advance with the same id starts a fresh clock
     // rather than expiring again immediately (the caller is responsible for not
     // re-presenting a despawned id — see the invariant below for the sweep-safe
@@ -107,12 +151,12 @@ describe('createDroppedItemLifetimeTracker: tick-sequence invariant', () => {
    * reported the item as expired.
    */
   const runSequence = (deltas: ReadonlyArray<number>): ReadonlyArray<boolean> => {
-    const tracker = createDroppedItemLifetimeTracker(LIFETIME_SECS)
+    const tracker = makeTracker(LIFETIME_SECS)
     const expiredPerFrame: boolean[] = []
     let alive = true
     for (const delta of deltas) {
       const ids = alive ? ['item'] : []
-      const expired = tracker.advance('overworld', delta, ids)
+      const expired = advance(tracker, 'overworld', delta, ids)
       expiredPerFrame.push(expired.includes('item'))
       if (expired.includes('item')) alive = false
     }
@@ -160,15 +204,15 @@ describe('createDroppedItemLifetimeTracker: tick-sequence invariant', () => {
   }
 
   it('pickup is idempotent: an id already absent from the roster is simply not re-expired', () => {
-    const tracker = createDroppedItemLifetimeTracker(LIFETIME_SECS)
-    tracker.advance('overworld', LIFETIME_SECS - 1, ['item'])
+    const tracker = makeTracker(LIFETIME_SECS)
+    advance(tracker, 'overworld', LIFETIME_SECS - 1, ['item'])
     // The item is picked up (removed from the live roster) one frame before
     // it would have expired.
-    const afterPickup = tracker.advance('overworld', 10, [])
+    const afterPickup = advance(tracker, 'overworld', 10, [])
     expect(afterPickup).toStrictEqual([])
     // Calling advance again with the same (still-absent) id set is a no-op,
     // not a second expiry — there is nothing left to expire.
-    expect(tracker.advance('overworld', 10, [])).toStrictEqual([])
+    expect(advance(tracker, 'overworld', 10, [])).toStrictEqual([])
     expect(tracker.elapsed('overworld', 'item')).toBe(0)
   })
 })

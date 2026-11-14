@@ -474,11 +474,15 @@ export const makeSite = (
     }
     // Register the gameplay owners before constructing the frame state so its
     // survival vitals runtime reads and commits through the vitals owner.
-    const owners = gameplayOwnerRegistrations({
+    const ownerRegistrations = gameplayOwnerRegistrations({
       playerPose: yield* previewPlayer.pose,
       dimension: yield* previewPlayer.dimension,
       playerStorage: yield* inventoryService.api.storageSnapshot,
     })
+    if (Result.isFailure(ownerRegistrations)) {
+      throw new Error(`preview-mining-site: invalid gameplay owner fixture: ${JSON.stringify(ownerRegistrations.failure)}`)
+    }
+    const owners = ownerRegistrations.success
     const coordinator = yield* Effect.orDie(makeWorldCommitCoordinator({
       world: PREVIEW_WORLD_ID,
       owners,

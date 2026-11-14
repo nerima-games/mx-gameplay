@@ -7,13 +7,14 @@ import {
   type BlockPosition,
   type Position,
 } from '@nerima-games/mc-kernel'
-import type { Vehicle, VehicleServiceApi } from '@nerima-games/mc-sim'
+import type { Vehicle, VehicleId, VehicleOperationError, VehicleServiceApi } from '@nerima-games/mc-sim'
 import { Effect, Result } from 'effect'
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { Dimension } from '@nerima-games/mc-worldgen'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 import { isAscendingAhead } from './rail-ascent.js'
 import { resolveRailShape } from './rail-shape.js'
-import { stepBoat, stepMinecart, type VehicleExitReason } from './vehicle-motion.js'
+import { stepBoat, stepMinecart, type VehicleExitReason, type VehicleMotionFailure } from './vehicle-motion.js'
 
 export type VehicleControlInput = Readonly<{
   throttle: number
@@ -27,12 +28,23 @@ export type VehicleFrameEnvironment = Readonly<{
   onVehicleExit?: (vehicle: Vehicle, reason: VehicleExitReason) => void
 }>
 
+export type VehicleFrameFailure =
+  | Readonly<{ _tag: 'VehicleWorldDataFault'; vehicleId: VehicleId; failure: EntityWorldQueryFailure }>
+  | Readonly<{
+      _tag: 'VehicleWorldUnavailable'
+      vehicleId: VehicleId
+      position: BlockPosition
+      reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+    }>
+  | Readonly<{ _tag: 'VehicleMotionFailure'; vehicleId: VehicleId; failure: VehicleMotionFailure }>
+  | Readonly<{ _tag: 'VehicleUpdateFailure'; vehicleId: VehicleId; failure: VehicleOperationError }>
+
 const blockKey = (position: BlockPosition): string => `${position.x},${position.y},${position.z}`
 const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
   blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 const positionAt = (x: number, y: number, z: number): Position =>
   kernelPosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
-const elapsedFor = (dt: number): number => Math.min(0.1, Math.max(0, Number.isFinite(dt) ? dt : 0))
+const elapsedFor = (dt: number): number => Math.min(0.1, dt)
 const speedOf = (vehicle: Vehicle): number => Math.hypot(
   vehicle.velocity.x,
   vehicle.velocity.y,
@@ -43,6 +55,34 @@ const isBlock = (reading: BlockReading): reading is Extract<BlockReading, { read
 
 const blockAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): BlockReading | undefined =>
   readings.get(blockKey(position))
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const boatControls = (
+  environment: VehicleFrameEnvironment,
+  vehicle: Vehicle,
+): Result.Result<VehicleControlInput, VehicleMotionFailure> => {
+  if (environment.controlsForVehicle === undefined) {
+    return Object.hasOwn(environment, 'controlsForVehicle')
+      ? Result.fail({ _tag: 'InvalidBoatControl', field: 'controls' })
+      : Result.succeed({ throttle: 0, steering: 0 })
+  }
+
+  const controls: unknown = environment.controlsForVehicle(vehicle)
+  if (!isRecord(controls)) return Result.fail({ _tag: 'InvalidBoatControl', field: 'controls' })
+
+  const throttle = Object.hasOwn(controls, 'throttle') ? controls['throttle'] : undefined
+  if (typeof throttle !== 'number' || !Number.isFinite(throttle)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
+  }
+  const steering = Object.hasOwn(controls, 'steering') ? controls['steering'] : undefined
+  if (typeof steering !== 'number' || !Number.isFinite(steering)) {
+    return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
+  }
+
+  return Result.succeed({ throttle, steering })
+}
 
 const railKindAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): 'none' | 'normal' | 'powered' => {
   const reading = blockAt(readings, position)
@@ -99,12 +139,35 @@ const neighbourhood = (position: BlockPosition): ReadonlyArray<BlockPosition> =>
   return cells
 }
 
-const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effect.Effect<ReadonlyMap<string, BlockReading>> => {
+const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effect.Effect<
+  | Readonly<{ _tag: 'Loaded'; readings: ReadonlyMap<string, BlockReading> }>
+  | Readonly<{ _tag: 'WorldDataFault'; failure: EntityWorldQueryFailure }>
+  | Readonly<{
+      _tag: 'Unavailable'
+      position: BlockPosition
+      reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+    }>
+> => Effect.gen(function* () {
   const cells = neighbourhood(position)
-  return Effect.forEach(cells, (cell) => store.getBlock(cell)).pipe(
-    Effect.map((readings) => new Map(readings.map((reading, index) => [blockKey(cells[index]!), reading]))),
-  )
-}
+  const values = yield* Effect.forEach(cells, (cell) => store.getBlock(cell))
+  const readings = new Map<string, BlockReading>()
+  let unavailable: Readonly<{
+    position: BlockPosition
+    reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+  }> | undefined
+  for (const [index, reading] of values.entries()) {
+    const cell = cells[index]!
+    if (reading._tag === 'Block') {
+      const data = entityWorldBlockDataAt(cell, reading.block)
+      if (Result.isFailure(data)) return { _tag: 'WorldDataFault', failure: data.failure }
+    } else {
+      unavailable ??= { position: cell, reading }
+    }
+    readings.set(blockKey(cell), reading)
+  }
+  if (unavailable !== undefined) return { _tag: 'Unavailable', ...unavailable }
+  return { _tag: 'Loaded', readings }
+})
 
 const integrate = (vehicle: Vehicle, dt: number): Vehicle => ({
   ...vehicle,
@@ -120,56 +183,83 @@ const stepVehicle = (
   vehicle: Vehicle,
   environment: VehicleFrameEnvironment,
   dt: number,
-): Effect.Effect<Readonly<{ vehicle: Vehicle; exited?: Readonly<{ reason: VehicleExitReason }> }>> => Effect.gen(function* () {
+): Effect.Effect<
+  | Readonly<{ _tag: 'Stepped'; vehicle: Vehicle; exited?: Readonly<{ reason: VehicleExitReason }> }>
+  | Readonly<{ _tag: 'WorldDataFault'; failure: EntityWorldQueryFailure }>
+  | Readonly<{
+      _tag: 'WorldUnavailable'
+      position: BlockPosition
+      reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+    }>
+  | Readonly<{ _tag: 'MotionFailure'; failure: VehicleMotionFailure }>
+> => Effect.gen(function* () {
   const position = blockPositionAt(
     Math.floor(vehicle.position.x),
     Math.floor(vehicle.position.y),
     Math.floor(vehicle.position.z),
   )
-  const readings = yield* readNeighbourhood(store, position)
-  const controls = environment.controlsForVehicle?.(vehicle) ?? { throttle: 0, steering: 0 }
+  const vehicleNeighbourhood = yield* readNeighbourhood(store, position)
+  if (vehicleNeighbourhood._tag !== 'Loaded') {
+    return vehicleNeighbourhood._tag === 'Unavailable'
+      ? { ...vehicleNeighbourhood, _tag: 'WorldUnavailable' as const }
+      : vehicleNeighbourhood
+  }
+  const readings = vehicleNeighbourhood.readings
   if (vehicle.type === 'boat') {
-    const transition = stepBoat(vehicle, {
+    const controlsResult = boatControls(environment, vehicle)
+    if (Result.isFailure(controlsResult)) return { _tag: 'MotionFailure', failure: controlsResult.failure }
+    const controls = controlsResult.success
+    const transitionResult = stepBoat(vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,
       inWater: waterAt(readings, position),
       collided: false,
     }, dt)
+    if (Result.isFailure(transitionResult)) return { _tag: 'MotionFailure', failure: transitionResult.failure }
+    const transition = transitionResult.success
     const next = integrate(transition.vehicle, dt)
     const collision = collidesAt(readings, next)
-    const resolved = collision ? stepBoat(transition.vehicle, {
+    const resolvedResult = collision ? stepBoat(transition.vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,
       inWater: waterAt(readings, position),
       collided: true,
       impactSpeed: speedOf(transition.vehicle),
-    }, dt) : transition
+    }, dt) : Result.succeed(transition)
+    if (Result.isFailure(resolvedResult)) return { _tag: 'MotionFailure', failure: resolvedResult.failure }
+    const resolved = resolvedResult.success
     const result = collision ? resolved.vehicle : next
     return resolved.exited === undefined
-      ? { vehicle: result }
-      : { vehicle: result, exited: { reason: resolved.exited.reason } }
+      ? { _tag: 'Stepped', vehicle: result }
+      : { _tag: 'Stepped', vehicle: result, exited: { reason: resolved.exited.reason } }
   }
 
   const kind = railKindAt(readings, position)
   const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, blockPositionAt(x, y, z)) !== 'none'
-  const transition = stepMinecart(vehicle, {
+  const shape = resolveRailShape(isRailAt, position.x, position.y, position.z)
+  if (Result.isFailure(shape)) return { _tag: 'MotionFailure', failure: shape.failure }
+  const track = {
     kind,
-    shape: resolveRailShape(isRailAt, position.x, position.y, position.z),
+    shape: shape.success,
     ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
     powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
+  } as const
+  const transitionResult = stepMinecart(vehicle, {
+    ...track,
   }, { collided: false }, dt)
+  if (Result.isFailure(transitionResult)) return { _tag: 'MotionFailure', failure: transitionResult.failure }
+  const transition = transitionResult.success
   const next = integrate(transition.vehicle, dt)
   const collision = collidesAt(readings, next)
-  const resolved = collision ? stepMinecart(vehicle, {
-    kind,
-    shape: resolveRailShape(isRailAt, position.x, position.y, position.z),
-    ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
-    powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
-  }, { collided: true, impactSpeed: speedOf(transition.vehicle) }, dt) : transition
+  const resolvedResult = collision
+    ? stepMinecart(vehicle, track, { collided: true, impactSpeed: speedOf(transition.vehicle) }, dt)
+    : Result.succeed(transition)
+  if (Result.isFailure(resolvedResult)) return { _tag: 'MotionFailure', failure: resolvedResult.failure }
+  const resolved = resolvedResult.success
   const result = collision ? resolved.vehicle : next
   return resolved.exited === undefined
-    ? { vehicle: result }
-    : { vehicle: result, exited: { reason: resolved.exited.reason } }
+    ? { _tag: 'Stepped', vehicle: result }
+    : { _tag: 'Stepped', vehicle: result, exited: { reason: resolved.exited.reason } }
 })
 
 export const advanceVehicles = (
@@ -177,23 +267,49 @@ export const advanceVehicles = (
   vehicleService: VehicleServiceApi,
   dt: number,
   environment: VehicleFrameEnvironment = {},
-): Effect.Effect<void> => Effect.gen(function* () {
+): Effect.Effect<ReadonlyArray<VehicleFrameFailure>> => Effect.gen(function* () {
   const elapsed = elapsedFor(dt)
-  if (elapsed === 0) return
+  if (elapsed === 0) return []
   const vehicles = yield* vehicleService.vehicles
-  yield* Effect.forEach(vehicles, (vehicle) => {
-    if (environment.isActiveDimension !== undefined && !environment.isActiveDimension(vehicle.dimension)) return Effect.void
-    return stepVehicle(store, vehicle, environment, elapsed).pipe(
-      Effect.flatMap((transition) => Effect.sync(() => {
-        if (transition.exited !== undefined) environment.onVehicleExit?.(vehicle, transition.exited.reason)
-      }).pipe(Effect.andThen(vehicleService.updateState(vehicle.id, {
-        dimension: transition.vehicle.dimension,
-        position: transition.vehicle.position,
-        velocity: transition.vehicle.velocity,
-        yawRadians: transition.vehicle.yawRadians,
-        occupant: transition.vehicle.occupant,
-      })))),
-      Effect.catch(() => Effect.void),
-    )
-  })
+  const failures: Array<VehicleFrameFailure> = []
+  for (const vehicle of vehicles) {
+    if (environment.isActiveDimension !== undefined && !environment.isActiveDimension(vehicle.dimension)) continue
+    if (!Number.isFinite(dt) || dt < 0) {
+      failures.push({
+        _tag: 'VehicleMotionFailure', vehicleId: vehicle.id,
+        failure: { _tag: 'InvalidVehicleDeltaTime' },
+      })
+      continue
+    }
+    const transition = yield* stepVehicle(store, vehicle, environment, elapsed)
+    if (transition._tag === 'WorldDataFault') {
+      failures.push({ _tag: 'VehicleWorldDataFault', vehicleId: vehicle.id, failure: transition.failure })
+      continue
+    }
+    if (transition._tag === 'WorldUnavailable') {
+      failures.push({
+        _tag: 'VehicleWorldUnavailable',
+        vehicleId: vehicle.id,
+        position: transition.position,
+        reading: transition.reading,
+      })
+      continue
+    }
+    if (transition._tag === 'MotionFailure') {
+      failures.push({ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: transition.failure })
+      continue
+    }
+    if (transition.exited !== undefined) environment.onVehicleExit?.(vehicle, transition.exited.reason)
+    const updated = yield* Effect.result(vehicleService.updateState(vehicle.id, {
+      dimension: transition.vehicle.dimension,
+      position: transition.vehicle.position,
+      velocity: transition.vehicle.velocity,
+      yawRadians: transition.vehicle.yawRadians,
+      occupant: transition.vehicle.occupant,
+    }))
+    if (Result.isFailure(updated)) {
+      failures.push({ _tag: 'VehicleUpdateFailure', vehicleId: vehicle.id, failure: updated.failure })
+    }
+  }
+  return failures
 })

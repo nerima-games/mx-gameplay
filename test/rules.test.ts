@@ -7,12 +7,12 @@
  * a checkout of the frozen `takeokunn/ts-minecraft` — see docs/README.md.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Brand, Effect, Option } from 'effect'
+import { Brand, Effect, Option, Result } from 'effect'
 import { blockIdOf, type BlockId, type BlockPositionKey, type BlockType } from '@nerima-games/mc-kernel'
 import {
-  applyDamage,
+  applyDamage as applyDamageResult,
   DEATH_MESSAGES,
-  deathMessage,
+  deathMessage as deathMessageResult,
   describeDeath,
   fullHealth,
   isDead,
@@ -44,6 +44,19 @@ import {
  * kernel's own constructor is built on.
  */
 const positionKey = Brand.nominal<BlockPositionKey>()
+
+const splitWithBudget = (
+  frontier: ReadonlyArray<FluidWorkItem>,
+  options: { readonly budget: number; readonly lavaTickActive: boolean },
+) => Result.getOrThrow(splitBudget(frontier, {
+  budget: options.budget,
+  lavaTickActive: options.lavaTickActive,
+}))
+
+const applyDamage = (
+  ...args: Parameters<typeof applyDamageResult>
+) => Result.getOrThrow(applyDamageResult(...args))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
 
 const registeredBlockId = (type: BlockType): BlockId =>
   Option.getOrElse(blockIdOf(type), () => {
@@ -322,7 +335,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
 
   it.effect('REGRESSION: lava cannot starve water — water is guaranteed half the budget', () =>
     Effect.sync(() => {
-      const split = splitBudget(frontierOf(1_000, 1_000), { lavaTickActive: true, budget: 64 })
+      const split = splitWithBudget(frontierOf(1_000, 1_000), { lavaTickActive: true, budget: 64 })
       const water = split.work.filter((item) => item.kind === 'water')
       expect(water).toHaveLength(32)
       expect(split.work.filter((item) => item.kind === 'lava')).toHaveLength(32)
@@ -336,7 +349,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       // (packages/world/application/fluid-tick-budget.ts:25-32) and is recorded
       // here as a KNOWN LIMIT rather than as desired behaviour: it should be
       // revisited against a measurement, not silently "fixed".
-      const split = splitBudget(frontierOf(1_000, 0), { lavaTickActive: true, budget: 64 })
+      const split = splitWithBudget(frontierOf(1_000, 0), { lavaTickActive: true, budget: 64 })
       expect(split.work).toHaveLength(32)
     }),
   )
@@ -356,7 +369,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
   it.effect('carryOver returns exactly the cells that were not evaluated', () =>
     Effect.sync(() => {
       const frontier = frontierOf(4, 0)
-      const split = splitBudget(frontier, { lavaTickActive: true, budget: 4 })
+      const split = splitWithBudget(frontier, { lavaTickActive: true, budget: 4 })
       expect(split.work).toHaveLength(2)
       expect(carryOver(frontier, split).map((item) => item.key)).toStrictEqual(['w2', 'w3'])
     }),
@@ -368,14 +381,14 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
         { key: positionKey('interface'), kind: 'water' },
         { key: positionKey('interface'), kind: 'lava' },
       ]
-      const inactive = splitBudget(frontier, { lavaTickActive: false, budget: 2 })
+      const inactive = splitWithBudget(frontier, { lavaTickActive: false, budget: 2 })
 
       expect(inactive.work).toStrictEqual([{ key: 'interface', kind: 'water' }])
       expect(carryOver(frontier, inactive)).toStrictEqual([
         { key: 'interface', kind: 'lava' },
       ])
 
-      const active = splitBudget(frontier, { lavaTickActive: true, budget: 1 })
+      const active = splitWithBudget(frontier, { lavaTickActive: true, budget: 1 })
       expect(active.work).toStrictEqual([{ key: 'interface', kind: 'lava' }])
       expect(carryOver(frontier, active)).toStrictEqual([
         { key: 'interface', kind: 'water' },
@@ -394,7 +407,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
         let frontier = initial
         const history: Array<ReadonlyArray<FluidWorkItem>> = []
         for (let tick = 0; tick < 8; tick += 1) {
-          const split = splitBudget(frontier, { lavaTickActive: false, budget: 3 })
+          const split = splitWithBudget(frontier, { lavaTickActive: false, budget: 3 })
           expect(split.work.length).toBeLessThanOrEqual(3)
           frontier = carryOver(frontier, split)
           expect(frontier.length).toBeLessThanOrEqual(initial.length)
@@ -414,9 +427,20 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
   it.effect('a zero budget evaluates nothing and loses nothing', () =>
     Effect.sync(() => {
       const frontier = frontierOf(3, 3)
-      const split = splitBudget(frontier, { lavaTickActive: true, budget: 0 })
+      const split = splitWithBudget(frontier, { lavaTickActive: true, budget: 0 })
       expect(split.work).toStrictEqual([])
       expect(carryOver(frontier, split)).toStrictEqual(frontier)
+    }),
+  )
+
+  it.effect('an explicitly undefined or invalid budget fails with a typed result', () =>
+    Effect.sync(() => {
+      for (const budget of [undefined, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(Result.isFailure(splitBudget([], {
+          lavaTickActive: true,
+          budget: budget as number,
+        }))).toBe(true)
+      }
     }),
   )
 
@@ -437,7 +461,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       // The reference's own numbers, `fluid-tick-budget.test.ts:55-63`: 1 water
       // and 4 lava against a budget of 4. halfBudget = 2, water fills 1 of it,
       // and lava gets 4 - 1 = 3 rather than 2.
-      const split = splitBudget(frontierOf(1, 4), { lavaTickActive: true, budget: 4 })
+      const split = splitWithBudget(frontierOf(1, 4), { lavaTickActive: true, budget: 4 })
 
       expect(split.work.filter((item) => item.kind === 'water')).toHaveLength(1)
       expect(split.work.filter((item) => item.kind === 'lava')).toHaveLength(3)
@@ -447,7 +471,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
   it.effect('returns work only; carryOver is the sole owner of inactive lava', () =>
     Effect.sync(() => {
       const frontier = frontierOf(2, 2)
-      const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+      const split = splitWithBudget(frontier, { lavaTickActive: false, budget: 64 })
 
       expect(split).toStrictEqual({
         work: [
@@ -533,23 +557,34 @@ describe('death: "You died." must not be the only message the game can print', (
     }),
   )
 
-  it.effect('a hand-built dead Vitals with no recorded cause still gets a message rather than nothing', () =>
+  it.effect('a dead Vitals with no recorded cause fails rather than inventing a generic message', () =>
     Effect.sync(() => {
-      // Unreachable through `applyDamage`, which always records. It is reachable
-      // through an object literal — a QA API, a save migration, a test — and a
-      // death screen with no text at all is a worse failure than a generic one.
-      expect(deathMessage({ healthPoints: 0, lastDeathCause: undefined })).toBe(
-        DEATH_MESSAGES.generic,
-      )
+      expect(deathMessageResult({ healthPoints: 0, lastDeathCause: undefined })).toStrictEqual(Result.fail({
+        _tag: 'InvalidDeathMessageInput',
+        field: 'vitals.lastDeathCause',
+      }))
+      expect(deathMessageResult({ healthPoints: 0 } as never)).toStrictEqual(Result.fail({
+        _tag: 'InvalidDeathMessageInput',
+        field: 'vitals.lastDeathCause',
+      }))
     }),
   )
 
   it.effect('health never goes below zero and negative damage never heals', () =>
     Effect.sync(() => {
       expect(applyDamage(fullHealth, { amount: 999, cause: 'fall' }).healthPoints).toBe(0)
-      expect(applyDamage(fullHealth, { amount: -5, cause: 'fall' }).healthPoints).toBe(
-        MAX_HEALTH_POINTS,
-      )
+      expect(Result.isFailure(applyDamageResult(fullHealth, { amount: -5, cause: 'fall' }))).toBe(true)
+      expect(applyDamageResult(
+        { healthPoints: 20 } as never,
+        { amount: 1, cause: 'fall' },
+      )).toStrictEqual(Result.fail({
+        _tag: 'InvalidDamageApplicationInput',
+        field: 'vitals.lastDeathCause',
+      }))
+      expect(Result.isSuccess(applyDamageResult(
+        { healthPoints: 20, lastDeathCause: undefined },
+        { amount: 1, cause: 'fall' },
+      ))).toBe(true)
     }),
   )
 })

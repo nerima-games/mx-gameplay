@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   BlockAxis,
   blockPosition,
@@ -50,14 +50,14 @@ describe('bed sleep', () => {
       dimension: 'overworld',
       timeOfDay: 0.9,
       weather: 'clear',
-    })).toStrictEqual({
+    })).toStrictEqual(Result.succeed({
       _tag: 'SleepAccepted',
       morningTimeOfDay: 0.95,
       respawnLocation: {
         dimension: 'overworld',
         position: { x: 5, y: 65, z: -3 },
       },
-    })
+    }))
   })
 
   it('accepts thunder during daytime but rejects ordinary daytime weather', () => {
@@ -68,11 +68,11 @@ describe('bed sleep', () => {
       timeOfDay: 0.5,
     }
 
-    expect(resolveBedSleep({ ...common, weather: 'thunder' })._tag).toBe('SleepAccepted')
-    expect(resolveBedSleep({ ...common, weather: 'rain' })).toStrictEqual({
+    expect(Result.getOrThrow(resolveBedSleep({ ...common, weather: 'thunder' }))._tag).toBe('SleepAccepted')
+    expect(resolveBedSleep({ ...common, weather: 'rain' })).toStrictEqual(Result.succeed({
       _tag: 'SleepRejected',
       reason: 'not-night-or-thunder',
-    })
+    }))
   })
 
   it('rejects danger before considering otherwise valid sleep conditions', () => {
@@ -82,7 +82,7 @@ describe('bed sleep', () => {
       dimension: 'overworld',
       timeOfDay: 0,
       weather: 'thunder',
-    })).toStrictEqual({ _tag: 'SleepRejected', reason: 'danger-nearby' })
+    })).toStrictEqual(Result.succeed({ _tag: 'SleepRejected', reason: 'danger-nearby' }))
   })
 
   it('rejects every non-overworld dimension before any other condition', () => {
@@ -93,7 +93,7 @@ describe('bed sleep', () => {
         dimension,
         timeOfDay: 0,
         weather: 'thunder',
-      })).toStrictEqual({ _tag: 'SleepRejected', reason: 'wrong-dimension' })
+      })).toStrictEqual(Result.succeed({ _tag: 'SleepRejected', reason: 'wrong-dimension' }))
     }
   })
 
@@ -163,28 +163,32 @@ describe('multiplayer sleep roster', () => {
   })
 
   it('requiredSleeperCount rounds up and floors at one player', () => {
-    expect(requiredSleeperCount(4, 0.5)).toBe(2)
-    expect(requiredSleeperCount(3, 0.5)).toBe(2)
-    expect(requiredSleeperCount(0, 1)).toBe(1)
-    expect(requiredSleeperCount(10, 0)).toBe(1)
-    expect(requiredSleeperCount(10, Number.NaN)).toBe(10)
+    expect(requiredSleeperCount(4, 0.5)).toEqual(Result.succeed(2))
+    expect(requiredSleeperCount(3, 0.5)).toEqual(Result.succeed(2))
+    expect(requiredSleeperCount(0, 1)).toEqual(Result.succeed(1))
+    expect(requiredSleeperCount(10, 0)).toEqual(Result.succeed(1))
+    expect(requiredSleeperCount(10, Number.NaN)).toEqual(Result.fail('invalid-sleep-ratio'))
   })
 
-  it('sleepRatioFromPercentage parses a gamerule string, defaulting to "everyone" when it cannot', () => {
-    expect(sleepRatioFromPercentage(null)).toBe(1)
-    expect(sleepRatioFromPercentage('')).toBe(1)
-    expect(sleepRatioFromPercentage('   ')).toBe(1)
-    expect(sleepRatioFromPercentage('not a number')).toBe(1)
-    expect(sleepRatioFromPercentage('50')).toBe(0.5)
+  it('sleepRatioFromPercentage defaults missing values and rejects malformed gamerule values', () => {
+    expect(sleepRatioFromPercentage(null)).toEqual(Result.succeed(1))
+    expect(sleepRatioFromPercentage('')).toEqual(Result.fail('invalid-sleep-percentage'))
+    expect(sleepRatioFromPercentage('   ')).toEqual(Result.fail('invalid-sleep-percentage'))
+    expect(sleepRatioFromPercentage(undefined as never)).toEqual(Result.fail('invalid-sleep-percentage'))
+    expect(sleepRatioFromPercentage('not a number')).toEqual(Result.fail('invalid-sleep-percentage'))
+    expect(sleepRatioFromPercentage('50')).toEqual(Result.succeed(0.5))
     // Clamped at both ends.
-    expect(sleepRatioFromPercentage('150')).toBe(1)
-    expect(sleepRatioFromPercentage('-20')).toBe(0)
+    expect(sleepRatioFromPercentage('150')).toEqual(Result.succeed(1))
+    expect(sleepRatioFromPercentage('-20')).toEqual(Result.succeed(0))
   })
 
   describe('advanceSleep', () => {
     it('skips to morning once enough players are sleeping AND one has waited long enough', () => {
       const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
-      const result = advanceSleep(state, 5, 1, 1, 5)
+      const advanced = advanceSleep(state, 5, 1, 1, 5)
+      expect(Result.isSuccess(advanced)).toBe(true)
+      if (Result.isFailure(advanced)) return
+      const result = advanced.success
       expect(result.state.sleepers[0]?.elapsedSecs).toBe(5)
       expect(result.skipToMorning).toBe(true)
     })
@@ -192,20 +196,33 @@ describe('multiplayer sleep roster', () => {
     it('does not skip when enough players are sleeping but none has waited long enough', () => {
       const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
       const result = advanceSleep(state, 4.999, 1, 1, 5)
-      expect(result.skipToMorning).toBe(false)
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isFailure(result)) return
+      expect(result.success.skipToMorning).toBe(false)
     })
 
     it('does not skip when the wait is satisfied but not enough players are sleeping', () => {
       const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
       const result = advanceSleep(state, 10, 4, 1, 5)
-      expect(result.skipToMorning).toBe(false)
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isFailure(result)) return
+      expect(result.success.skipToMorning).toBe(false)
     })
 
     it('ages every sleeper by the same delta, additively across frames', () => {
       const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
-      const afterOne = advanceSleep(state, 2, 1, 1, 100).state
-      const afterTwo = advanceSleep(afterOne, 3, 1, 1, 100).state
-      expect(afterTwo.sleepers[0]?.elapsedSecs).toBe(5)
+      const afterOne = advanceSleep(state, 2, 1, 1, 100)
+      expect(Result.isSuccess(afterOne)).toBe(true)
+      if (Result.isFailure(afterOne)) return
+      const afterTwo = advanceSleep(afterOne.success.state, 3, 1, 1, 100)
+      expect(Result.isSuccess(afterTwo)).toBe(true)
+      if (Result.isFailure(afterTwo)) return
+      expect(afterTwo.success.state.sleepers[0]?.elapsedSecs).toBe(5)
+    })
+
+    it('rejects a non-finite ratio instead of treating it as all players', () => {
+      const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
+      expect(advanceSleep(state, 1, 1, Number.NaN, 1)).toEqual(Result.fail('invalid-sleep-ratio'))
     })
   })
 

@@ -53,7 +53,7 @@ export const makeFluidsStage = (context: GameplayStageContext): StageRegistratio
             if (work.length === 0) return
 
             const dimension = playerState.pose.feetPosition.dimension
-            yield* runFluidPropagation(store, runtime, work, {
+            yield* runFluidPropagation(state, store, runtime, work, {
               coordinator: commit.coordinator,
               dimension,
               changes: [],

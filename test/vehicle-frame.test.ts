@@ -1,9 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Exit, Option } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
+import * as FastCheck from 'fast-check'
+import { BlockId, blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import { advanceVehicles } from '../src/domain/vehicle/vehicle-frame'
+import { advanceVehicles, type VehicleControlInput } from '../src/domain/vehicle/vehicle-frame'
+
+const AIR = Option.getOrThrow(blockIdOf('air'))
 
 describe('vehicle frame', () => {
   it('integrates active vehicles and writes the result atomically', async () => {
@@ -24,7 +27,7 @@ describe('vehicle frame', () => {
         }),
     } as unknown as VehicleServiceApi
     const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
     const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
@@ -60,12 +63,7 @@ describe('vehicle frame', () => {
     expect(updateCount).toBe(0)
   })
 
-  it('swallows a per-vehicle update failure rather than failing the whole frame', async () => {
-    // Every other test's `updateState` succeeds, so the `Effect.catch(() =>
-    // Effect.void)` at the end of the per-vehicle pipe had never actually
-    // caught anything — one bad vehicle write must not stop the rest of the
-    // frame, or a roster of ten carts becomes a roster of one bad write away
-    // from none moving at all.
+  it('returns a per-vehicle update failure and continues the remaining vehicles', async () => {
     const vehicle = {
       id: VehicleId('v:broken'),
       type: 'minecart' as const,
@@ -74,17 +72,50 @@ describe('vehicle frame', () => {
       velocity: { x: 2, y: 0, z: 0 },
       yawRadians: 0,
     }
+    const nextVehicle = { ...vehicle, id: VehicleId('v:next') }
+    const updated: Array<VehicleId> = []
     const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: () => Effect.fail({ _tag: 'VehicleNotFound' as const, id: vehicle.id }),
+      vehicles: Effect.succeed([vehicle, nextVehicle]),
+      updateState: (id: VehicleId) => id === vehicle.id
+        ? Effect.fail({ _tag: 'VehicleOperationError' as const, reason: 'not-found' as const })
+        : Effect.sync(() => { updated.push(id) }),
     } as unknown as VehicleServiceApi
     const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
+    const result = await Effect.runPromise(advanceVehicles(store, service, 1))
 
-    expect(Exit.isSuccess(result)).toBe(true)
+    expect(result).toMatchObject([{ _tag: 'VehicleUpdateFailure', vehicleId: vehicle.id }])
+    expect(updated).toEqual([nextVehicle.id])
+  })
+
+  it('returns a world-data fault and does not step the vehicle across an unknown block id', async () => {
+    const vehicle = {
+      id: VehicleId('v:unknown-terrain'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let updateCount = 0
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: () => Effect.sync(() => { updateCount += 1 }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: BlockId(65_535) }),
+    } as unknown as ChunkStoreApi
+
+    const result = await Effect.runPromise(advanceVehicles(store, service, 1))
+
+    expect(result).toMatchObject([{
+      _tag: 'VehicleWorldDataFault',
+      vehicleId: vehicle.id,
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', blockId: BlockId(65_535) },
+    }])
+    expect(updateCount).toBe(0)
   })
 
   it('passes boat controls into the vehicle motion step', async () => {
@@ -115,6 +146,98 @@ describe('vehicle frame', () => {
     expect(next?.['occupant']).toBe('player:local')
   })
 
+  it('returns typed failures for malformed host boat controls and continues other vehicles', async () => {
+    const badThrottle = {
+      id: VehicleId('v:bad-throttle'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    const badSteering = {
+      ...badThrottle,
+      id: VehicleId('v:bad-steering'),
+      position: { x: 10, y: 64, z: 0 },
+    }
+    const undefinedThrottle = {
+      ...badThrottle,
+      id: VehicleId('v:undefined-throttle'),
+      position: { x: 20, y: 64, z: 0 },
+    }
+    const good = {
+      ...badThrottle,
+      id: VehicleId('v:good-controls'),
+      position: { x: 30, y: 64, z: 0 },
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([badThrottle, badSteering, undefinedThrottle, good]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    const failures = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: (vehicle) => vehicle.id === badThrottle.id
+        ? { throttle: Number.NaN, steering: 0 }
+        : vehicle.id === badSteering.id
+          ? { throttle: 0, steering: Number.POSITIVE_INFINITY }
+          : vehicle.id === undefinedThrottle.id
+            ? { throttle: undefined, steering: 0 } as unknown as VehicleControlInput
+          : { throttle: 1, steering: 0 },
+    }))
+
+    expect(failures).toMatchObject([
+      { _tag: 'VehicleMotionFailure', vehicleId: badThrottle.id, failure: { _tag: 'InvalidBoatControl', field: 'throttle' } },
+      { _tag: 'VehicleMotionFailure', vehicleId: badSteering.id, failure: { _tag: 'InvalidBoatControl', field: 'steering' } },
+      { _tag: 'VehicleMotionFailure', vehicleId: undefinedThrottle.id, failure: { _tag: 'InvalidBoatControl', field: 'throttle' } },
+    ])
+    expect(updated).toStrictEqual([good.id])
+  })
+
+  it('rejects an explicitly undefined controls callback while preserving the omitted callback default', async () => {
+    const vehicle = {
+      id: VehicleId('v:explicit-undefined-controls'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    const explicitUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: undefined,
+    } as unknown as Parameters<typeof advanceVehicles>[3]))
+    expect(explicitUndefined).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: {
+      _tag: 'InvalidBoatControl', field: 'controls',
+    } }])
+    expect(updated).toStrictEqual([])
+
+    const callbackReturnsUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: () => undefined,
+    } as unknown as Parameters<typeof advanceVehicles>[3]))
+    expect(callbackReturnsUndefined).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: {
+      _tag: 'InvalidBoatControl', field: 'controls',
+    } }])
+    expect(updated).toStrictEqual([])
+
+    const omittedCallback = await Effect.runPromise(advanceVehicles(store, service, 0.05))
+    expect(omittedCallback).toStrictEqual([])
+    expect(updated).toStrictEqual([vehicle.id])
+  })
+
   it('does not treat an unloaded cell as water for boat movement', async () => {
     const vehicle = {
       id: VehicleId('v:boat-unloaded-water'),
@@ -134,12 +257,86 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    const result = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
       controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
     }))
 
-    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
-    expect(velocity.z).toBeCloseTo(-0.0165, 12)
+    expect(result).toMatchObject([{
+      _tag: 'VehicleWorldUnavailable',
+      vehicleId: vehicle.id,
+      reading: { _tag: 'ChunkNotLoaded' },
+    }])
+    expect(next).toBeUndefined()
+  })
+
+  it('returns a typed refusal for every unavailable BlockReading state', async () => {
+    const vehicle = {
+      id: VehicleId('v:unavailable-property'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+
+    await FastCheck.assert(
+      FastCheck.asyncProperty(
+        FastCheck.constantFrom(
+          { _tag: 'ChunkNotLoaded' as const },
+          { _tag: 'OutOfWorld' as const },
+        ),
+        async (reading) => {
+          let updates = 0
+          const service = {
+            vehicles: Effect.succeed([vehicle]),
+            updateState: () => Effect.sync(() => { updates += 1 }),
+          } as unknown as VehicleServiceApi
+          const store = { getBlock: () => Effect.succeed(reading) } as unknown as ChunkStoreApi
+          const failures = await Effect.runPromise(advanceVehicles(store, service, 0.1))
+          const failure = failures[0]
+          return failures.length === 1 &&
+            failure?._tag === 'VehicleWorldUnavailable' &&
+            failure.reading._tag === reading._tag &&
+            updates === 0
+        },
+      ),
+      { numRuns: 100, seed: 70404 },
+    )
+  })
+
+  it('refuses an out-of-world vehicle and continues other vehicles', async () => {
+    const unavailableVehicle = {
+      id: VehicleId('v:out-of-world'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    const nextVehicle = {
+      ...unavailableVehicle,
+      id: VehicleId('v:loaded'),
+      position: { x: 10, y: 64, z: 0 },
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([unavailableVehicle, nextVehicle]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: (position: { x: number; y: number; z: number }) => position.x < 2
+        ? Effect.succeed({ _tag: 'OutOfWorld' as const })
+        : Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    const result = await Effect.runPromise(advanceVehicles(store, service, 0.1))
+
+    expect(result).toMatchObject([{
+      _tag: 'VehicleWorldUnavailable',
+      vehicleId: unavailableVehicle.id,
+      reading: { _tag: 'OutOfWorld' },
+    }])
+    expect(updated).toStrictEqual([nextVehicle.id])
   })
 
   it('preserves minecart momentum on a block without rail metadata', async () => {
@@ -188,7 +385,7 @@ describe('vehicle frame', () => {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
-          : { _tag: 'OutOfWorld' as const },
+          : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
 
@@ -267,7 +464,7 @@ describe('vehicle frame', () => {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
-          : { _tag: 'OutOfWorld' as const },
+          : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
 
@@ -280,7 +477,7 @@ describe('vehicle frame', () => {
     })
   })
 
-  it('reads track power for both the free step and the collision-resolved re-step', async () => {
+  it('samples powered track state once and reuses it for collision resolution', async () => {
     const vehicle = {
       id: VehicleId('v:powered'),
       type: 'minecart' as const,
@@ -302,7 +499,7 @@ describe('vehicle frame', () => {
           ? { _tag: 'Block' as const, block: stone }
           : position.x === 0 && position.y === 64 && position.z === 0
             ? { _tag: 'Block' as const, block: poweredRail }
-            : { _tag: 'OutOfWorld' as const },
+            : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
     let poweredQueries = 0
@@ -314,13 +511,12 @@ describe('vehicle frame', () => {
       },
     }))
 
-    // Queried once building the track for the initial, uncollided step and once
-    // more building the track the collision forces `stepVehicle` to re-run with.
-    expect(poweredQueries).toBe(2)
+    // Track is built once and reused when the collision resolves the step.
+    expect(poweredQueries).toBe(1)
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
   })
 
-  it('falls back to unpowered on both steps when no isPoweredRailAt hook is provided', async () => {
+  it('falls back to unpowered when no isPoweredRailAt hook is provided', async () => {
     const vehicle = {
       id: VehicleId('v:no-power-hook'),
       type: 'minecart' as const,
@@ -346,7 +542,7 @@ describe('vehicle frame', () => {
           ? { _tag: 'Block' as const, block: stone }
           : position.x === 0 && position.y === 64 && position.z === 0
             ? { _tag: 'Block' as const, block: poweredRail }
-            : { _tag: 'OutOfWorld' as const },
+            : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
 
@@ -360,7 +556,7 @@ describe('vehicle frame', () => {
     expect(velocity.z).toBe(0)
   })
 
-  it('treats a non-finite delta time as no elapsed time and performs no updates', async () => {
+  it('records malformed delta time per active vehicle without reading terrain or updating state', async () => {
     const vehicle = {
       id: VehicleId('v:frozen'),
       type: 'minecart' as const,
@@ -370,18 +566,33 @@ describe('vehicle frame', () => {
       yawRadians: 0,
     }
     let updateCount = 0
+    const inactive = { ...vehicle, id: VehicleId('v:inactive'), dimension: 'nether' as const }
     const service = {
-      vehicles: Effect.succeed([vehicle]),
+      vehicles: Effect.succeed([vehicle, inactive]),
       updateState: () => Effect.sync(() => {
         updateCount += 1
       }),
     } as unknown as VehicleServiceApi
+    let reads = 0
     const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      getBlock: () => Effect.sync(() => {
+        reads += 1
+        return { _tag: 'OutOfWorld' as const }
+      }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, Number.NaN))
+    const results = await Promise.all([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.05]
+      .map((dt) => Effect.runPromise(advanceVehicles(store, service, dt, {
+        isActiveDimension: (dimension) => dimension === 'overworld',
+      }))))
+    for (const result of results) {
+      expect(result).toStrictEqual([{
+        _tag: 'VehicleMotionFailure', vehicleId: vehicle.id,
+        failure: { _tag: 'InvalidVehicleDeltaTime' },
+      }])
+    }
 
     expect(updateCount).toBe(0)
+    expect(reads).toBe(0)
   })
 })

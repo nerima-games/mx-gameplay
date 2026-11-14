@@ -14,7 +14,7 @@ import {
   type DomainEventBusApi,
 } from '@nerima-games/mc-sim'
 import type { StageRegistration } from '@nerima-games/mc-kernel'
-import { Effect, Ref, Schema, Stream } from 'effect'
+import { Effect, Ref, Result, Schema, Stream } from 'effect'
 import { gameplayStages } from '../src/stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
@@ -58,16 +58,17 @@ vi.mock('../src/domain/frame-rolls.js', async (importOriginal) => {
     ...actual,
     drawRolls: (seed: number, count: number) => {
       const batch = actual.drawRolls(seed, count)
+      if (Result.isFailure(batch)) return batch
       if (count === 4) randomControl.lootBatches += 1
       if (!randomControl.constant) return batch
-      randomControl.draws += batch.rolls.length
-      return { ...batch, rolls: batch.rolls.map(() => 0) }
+      randomControl.draws += batch.success.rolls.length
+      return Result.succeed({ ...batch.success, rolls: batch.success.rolls.map(() => 0) })
     },
     nextRoll: (seed: number) => {
       const draw = actual.nextRoll(seed)
-      if (!randomControl.constant) return draw
+      if (Result.isFailure(draw) || !randomControl.constant) return draw
       randomControl.draws += 1
-      return { ...draw, roll: 0 }
+      return Result.succeed({ ...draw.success, roll: 0 })
     },
   }
 })

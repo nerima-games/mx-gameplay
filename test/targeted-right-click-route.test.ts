@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 
 import { BlockId, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
@@ -29,7 +29,9 @@ const makeTargetedWorld = (block: number, loaded: boolean = true) =>
     const world = yield* makeInMemoryWorld({
       world: {
         blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
-        loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
+        loaded: loaded
+          ? [chunkKey(chunkOf(TARGET)), chunkKey(chunkOf(BEHIND_TARGET))]
+          : [],
       },
       spawnPose: SPAWN_POSE,
     })
@@ -92,6 +94,50 @@ describe('targetedRightClickRoute', () => {
     }),
   )
 
+  it.effect('returns a typed failure for an explicitly undefined maximum distance', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const result = yield* Effect.result(
+        targetedRightClickRoute(world.chunkStore, world.pose, undefined as unknown as number),
+      )
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: 'TargetedRightClickRouteInputFailure',
+          field: 'maxDistance',
+          reason: 'undefined',
+        })
+      }
+    }),
+  )
+
+  it.effect('propagates a typed player-pose failure', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const result = yield* Effect.result(targetedRightClickRoute(world.chunkStore, {
+        ...world.pose,
+        yawRadians: Number.NaN,
+      }))
+
+      expect(Result.isFailure(result)).toBe(true)
+    }),
+  )
+
+  it.effect('propagates a typed block-id failure from the world read', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const store = {
+        ...world.chunkStore,
+        getBlock: (_position: BlockPosition) =>
+          Effect.succeed({ _tag: 'Block' as const, block: 70_000 as never }),
+      }
+      const result = yield* Effect.result(targetedRightClickRoute(store, world.pose))
+
+      expect(Result.isFailure(result)).toBe(true)
+    }),
+  )
+
   it.effect('supports asynchronous block reads without reading a coordinate twice', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
@@ -125,23 +171,38 @@ describe('targetedRightClickRoute', () => {
     }),
   )
 
-  it.effect('returns undefined when the target chunk is not loaded', () =>
+  it.effect('preserves the ChunkNotLoaded reading when the ray enters an unloaded chunk', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID, false)
 
-      expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.pose),
-      ).toBeUndefined()
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.pose)).toMatchObject({
+        _tag: 'ChunkNotLoaded',
+      })
     }),
   )
 
-  it.effect('returns undefined for an unknown non-air block id', () =>
+  it.effect('preserves the OutOfWorld reading', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const store = {
+        ...world.chunkStore,
+        getBlock: (_position: BlockPosition) => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      }
+
+      expect(yield* targetedRightClickRoute(store, world.pose)).toMatchObject({ _tag: 'OutOfWorld' })
+    }),
+  )
+
+  it.effect('returns a typed failure for an unknown non-air block id', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(UNKNOWN_BLOCK_ID)
+      const result = yield* Effect.result(targetedRightClickRoute(world.chunkStore, world.pose))
 
-      expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.pose),
-      ).toBeUndefined()
+      expect(result).toStrictEqual(Result.fail({
+        _tag: 'UnknownTargetBlockId',
+        position: TARGET,
+        blockId: BlockId(UNKNOWN_BLOCK_ID),
+      }))
     }),
   )
 })
