@@ -916,7 +916,9 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
 describe('initialBehaviourOfKind', () => {
   it('gives the creeper its named fuse and leaves unruled kinds without behaviour', () => {
     expect(initialBehaviourOfKind(CREEPER_KIND)).toStrictEqual(hostileMobSnapshot(DORMANT_FUSE))
-    expect(initialBehaviourOfKind(ENDERMITE_KIND)).toBeUndefined()
+    expect(initialBehaviourOfKind(ENDERMITE_KIND)).toStrictEqual(
+      hostileMobSnapshot(initialEcosystemMobState()),
+    )
     expect(initialBehaviourOfKind(EntityKind('unlisted-mob'))).toBeUndefined()
   })
 })
@@ -999,6 +1001,46 @@ describe('sweepMobs: zombie movement is owned by SM3', () => {
       const after = yield* roster.api.entities
       expect(after[0]?.feetPosition).toStrictEqual(ORIGIN)
       expect(after[0]?.behaviour).toMatchObject({ _tag: 'EcosystemMob', movementGoal: away(10) })
+    }),
+  )
+
+  it.effect('round-trips a zombie ecosystem state produced by a tick', () =>
+    Effect.gen(function* () {
+      const legacyZombie = {
+        id: EntityId('e:zombie-round-trip'),
+        kind: ZOMBIE_KIND,
+        feetPosition: ORIGIN,
+        healthPoints: EntityHealthPoints(20),
+      } as unknown as Entity<MobBehaviour>
+      const firstRoster = yield* makeEntityManagerDouble<MobBehaviour>({
+        entities: [legacyZombie],
+        nextSerial: EntitySerial(1),
+      })
+
+      const firstSweep = yield* sweepMobs(firstRoster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      expect(firstSweep.faults).toStrictEqual([])
+      const [afterFirstTick] = yield* firstRoster.api.entities
+      expect(afterFirstTick?.behaviour).toMatchObject({ _tag: 'EcosystemMob', motionPhase: 1 })
+      if (afterFirstTick === undefined) return
+
+      const restoredBehaviour = repairMobBehaviour(ZOMBIE_KIND, afterFirstTick.behaviour)
+      expect(restoredBehaviour).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: { _tag: 'EcosystemMob', motionPhase: 1 },
+      })
+      const restoredRoster = yield* makeEntityManagerDouble<MobBehaviour>({
+        entities: [{ ...afterFirstTick, behaviour: restoredBehaviour }],
+        nextSerial: EntitySerial(1),
+      })
+
+      const secondSweep = yield* sweepMobs(restoredRoster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      expect(secondSweep.faults).toStrictEqual([])
+      const [afterSecondTick] = yield* restoredRoster.api.entities
+      expect(afterSecondTick?.behaviour).toMatchObject({
+        _tag: 'HostileMob',
+        ageTicks: 1,
+        behaviour: { _tag: 'EcosystemMob', motionPhase: 2 },
+      })
     }),
   )
 })
