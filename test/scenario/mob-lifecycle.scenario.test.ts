@@ -3,6 +3,7 @@ import { SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import {
   AIR_BLOCK_ID,
   ChunkAxis,
+  BlockId,
   DeltaTimeSecs,
   EntityHealthPoints,
   InterpolationFraction,
@@ -35,9 +36,12 @@ import {
   CREEPER_KIND,
   CREEPER_MAX_HEALTH,
   DROPPED_ITEM_KIND,
+  ENDERMAN_MAX_HEALTH,
+  hostileMobSnapshot,
   isHostileMobSnapshot,
   repairMobBehaviour,
   maxHealthOfKind,
+  STRUCK_ENDERMAN,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../../src/domain/entities/mob-frame'
@@ -599,6 +603,62 @@ describe('mob lifecycle gameplay scenarios', () => {
         entityKind: COW_KIND,
         failure: { _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' },
       })
+
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records an enderman teleport world fault and continues the composed tick', () =>
+    Effect.gen(function* () {
+      const unregisteredBlock = BlockId(60_000)
+      const candidateFloor = blockPosition(-4, 63, 36)
+      const current = position(20.5, 64, 20.5)
+      const harness = yield* makeHarness(
+        position(0.5, 64, 0.5),
+        world([[candidateFloor, unregisteredBlock]]),
+        ['-1,2', '0,0', '1,1'],
+      )
+      const initial = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const enderman = {
+        id: EntityId('scenario:teleport-registry-fault'),
+        kind: ENDERMAN_KIND,
+        feetPosition: current,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
+        behaviour: hostileMobSnapshot(STRUCK_ENDERMAN),
+        dimension: 'overworld' as const,
+      }
+      const seeded = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        ...initial.state,
+        entities: [enderman],
+      })
+      yield* harness.commit.coordinator.commit({
+        expectedRevision: initial.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state: seeded }],
+      })
+      yield* Ref.set(harness.state.rollSeed, 1)
+
+      const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+      const after = yield* mobEntities(harness.commit.coordinator)
+      const kept = after.find(({ id }) => id === enderman.id)
+      const faults = yield* drainGameplayEntityStageFaults(harness.state)
+
+      expect(Exit.isSuccess(tick)).toBe(true)
+      expect(kept).toStrictEqual(enderman)
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'EndermanTeleport',
+        target: { _tag: 'Cell', cell: candidateFloor },
+        failure: expect.objectContaining({
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: candidateFloor,
+          blockId: unregisteredBlock,
+        }),
+      }))
 
       yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
       expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])

@@ -487,26 +487,31 @@ describe('dropRulesOfKind and xpRewardOfKind: an unknown kind', () => {
 })
 
 describe('repairMobBehaviour: the load path for every stored shape', () => {
-  it.effect('a creeper: a bad fuse resets to dormant, a good one is wrapped as-is', () =>
+  it.effect('a creeper: only an omitted legacy fuse migrates to dormant; malformed state is a typed fault', () =>
     Effect.sync(() => {
-      expect(repairMobBehaviour(CREEPER_KIND, 'not a fuse')).toStrictEqual(
-        hostileMobSnapshot(DORMANT_FUSE),
-      )
+      expect(repairMobBehaviour(CREEPER_KIND, undefined)).toStrictEqual(hostileMobSnapshot(DORMANT_FUSE))
+      expect(repairMobBehaviour(CREEPER_KIND, 'not a fuse')).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
+      })
       const lit = { _tag: 'Lit' as const, burnedSecs: 0.4 }
       expect(repairMobBehaviour(CREEPER_KIND, lit)).toStrictEqual(hostileMobSnapshot(lit))
     }),
   )
 
-  it.effect('an enderman: a bad flinch resets to steady, a good one is wrapped as-is', () =>
+  it.effect('an enderman: only an omitted legacy flinch migrates to steady; malformed state is a typed fault', () =>
     Effect.sync(() => {
       // A non-object value first — `isEndermanFlinch`'s own guard, the same
       // shape `isCreeperFuse`'s 'not a fuse' case exercises above.
-      expect(repairMobBehaviour(ENDERMAN_KIND, 'not a flinch')).toStrictEqual(
-        hostileMobSnapshot(STEADY_ENDERMAN),
-      )
-      expect(repairMobBehaviour(ENDERMAN_KIND, { _tag: 'Confused' })).toStrictEqual(
-        hostileMobSnapshot(STEADY_ENDERMAN),
-      )
+      expect(repairMobBehaviour(ENDERMAN_KIND, undefined)).toStrictEqual(hostileMobSnapshot(STEADY_ENDERMAN))
+      expect(repairMobBehaviour(ENDERMAN_KIND, 'not a flinch')).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' },
+      })
+      expect(repairMobBehaviour(ENDERMAN_KIND, { _tag: 'Confused' })).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' },
+      })
       expect(repairMobBehaviour(ENDERMAN_KIND, STRUCK_ENDERMAN)).toStrictEqual(
         hostileMobSnapshot(STRUCK_ENDERMAN),
       )
@@ -574,12 +579,24 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         _tag: 'MobBehaviourRepairFault',
         failure: { _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' },
       })).toBe(true)
+      expect(isMobBehaviourRepairFault({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
+      })).toBe(true)
+      expect(isMobBehaviourRepairFault({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'unknown' },
+      })).toBe(false)
     }),
   )
 
-  it.effect('primed tnt is trusted as-is when it is one, and reset to fresh when it is not', () =>
+  it.effect('primed tnt: only an omitted legacy fuse migrates to fresh; malformed state is a typed fault', () =>
     Effect.sync(() => {
-      expect(repairMobBehaviour(PRIMED_TNT_KIND, 'not tnt')).toBe(FRESH_PRIMED_TNT)
+      expect(repairMobBehaviour(PRIMED_TNT_KIND, undefined)).toBe(FRESH_PRIMED_TNT)
+      expect(repairMobBehaviour(PRIMED_TNT_KIND, 'not tnt')).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'primed-tnt' },
+      })
       const burning = { _tag: 'PrimedTnt', burnedSecs: 2 }
       expect(repairMobBehaviour(PRIMED_TNT_KIND, burning)).toBe(burning)
     }),
@@ -612,7 +629,10 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
 
       // Not even object-shaped: `hasDroppedItemFields`'s own top guard, which
       // both the current shape and the legacy one are built on.
-      expect(repairMobBehaviour(DROPPED_ITEM_KIND, 'not an item')).toBeUndefined()
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, 'not an item')).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'dropped-item' },
+      })
 
       // VILLAGER again: no rule at all, so the load path LOSES the behaviour
       // rather than inventing one for a kind that carries none.
@@ -640,7 +660,10 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       // silently keeping a blank name.
       const blankNamed = { ...bare, customName: '   ' }
       expect(isDroppedItemBehaviour(blankNamed)).toBe(false)
-      expect(repairMobBehaviour(DROPPED_ITEM_KIND, blankNamed)).toBeUndefined()
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, blankNamed)).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'dropped-item' },
+      })
 
       // Empty enchantments is a known fact (dropped with zero), distinct from the
       // field being absent, and it decodes.
@@ -667,6 +690,10 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         enchantments: [{ id: 'not_a_real_enchantment', level: 1 }],
       }
       expect(isDroppedItemBehaviour(badEnchantment)).toBe(false)
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, badEnchantment)).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'dropped-item' },
+      })
     }),
   )
 
@@ -686,14 +713,14 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     Effect.sync(() => {
       const badCreeper = hostileMobSnapshot(STEADY_ENDERMAN, { ageTicks: 12, named: true })
       expect(repairMobBehaviour(CREEPER_KIND, badCreeper)).toStrictEqual({
-        ...badCreeper,
-        behaviour: DORMANT_FUSE,
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
       })
 
       const badEnderman = hostileMobSnapshot(DORMANT_FUSE, { ageTicks: 12 })
       expect(repairMobBehaviour(ENDERMAN_KIND, badEnderman)).toStrictEqual({
-        ...badEnderman,
-        behaviour: STEADY_ENDERMAN,
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' },
       })
 
       const badBlaze = hostileMobSnapshot(DORMANT_FUSE, { ageTicks: 12 })
@@ -719,8 +746,8 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         movement,
       })
       expect(repairMobBehaviour(CREEPER_KIND, badCreeperWithMovement)).toStrictEqual({
-        ...badCreeperWithMovement,
-        behaviour: DORMANT_FUSE,
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
       })
     }),
   )
@@ -957,7 +984,7 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
     }),
   )
 
-  it.effect('an unregistered block is refused like an unsafe one, and a later candidate still lands — the miss stays IGNORED for a bystander', () =>
+  it.effect('an unregistered candidate faults its enderman before a later safe candidate can land', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const current: Position = atPosition(0, 64, 0 )
@@ -995,12 +1022,20 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
         anchor,
         rolls: [0.75, 0.5, 0.5, 0.75],
       }
-      yield* resolveEndermanTeleportProbes(roster.api, store.api, [probe])
+      const faults = yield* resolveEndermanTeleportProbes(roster.api, store.api, [probe])
       const entities = yield* roster.api.entities
       const moved = entities.find((entity) => entity.id === teleporting.id)
-      expect(moved?.feetPosition).toStrictEqual(second)
-      // The bystander has no probe of its own: `destinations.get` answers
-      // `undefined` for it, and it is the shared IGNORED step, by reference.
+      expect(faults).toStrictEqual([{
+        _tag: 'EndermanTeleportWorldQueryFailure',
+        entityId: teleporting.id,
+        failure: {
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: blockPosition(first.x, first.y - 1, first.z),
+          blockId: UNREGISTERED_BLOCK_ID,
+        },
+      }])
+      expect(moved?.feetPosition).toStrictEqual(current)
+      expect(moved?.behaviour).toBe(teleporting.behaviour)
       const untouched = entities.find((entity) => entity.id === bystander.id)
       expect(untouched).toBe(bystander)
     }),
@@ -1589,12 +1624,13 @@ describe('planEndermanTeleportRoster', () => {
 
       const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
 
-      expect(planned).toBe(initial)
+      expect(planned.roster).toBe(initial)
+      expect(planned.faults).toStrictEqual([])
       expect((yield* store.calls).reads).toBeGreaterThan(0)
     }),
   )
 
-  it.effect('uses a later safe registered floor and keeps unrelated roster entries', () =>
+  it.effect('faults an unregistered floor and keeps the original roster without trying a later candidate', () =>
     Effect.gen(function* () {
       const current = atPosition(0, 64, 0)
       const anchor = atPosition(100, 70, 100)
@@ -1621,9 +1657,18 @@ describe('planEndermanTeleportRoster', () => {
 
       const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
 
-      expect(planned.entities[0]).toMatchObject({ id: teleporting.id, feetPosition: second })
-      expect(planned.entities[1]).toBe(bystander)
-      expect(planned.nextSerial).toBe(initial.nextSerial)
+      expect(planned.roster).toBe(initial)
+      expect(planned.faults).toStrictEqual([{
+        _tag: 'EndermanTeleportWorldQueryFailure',
+        entityId: teleporting.id,
+        failure: {
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: blockPosition(first.x, first.y - 1, first.z),
+          blockId: unregisteredBlock,
+        },
+      }])
+      expect(initial.entities[0]).toBe(teleporting)
+      expect(initial.entities[1]).toBe(bystander)
     }),
   )
 
@@ -1644,8 +1689,10 @@ describe('planEndermanTeleportRoster', () => {
       const empty = yield* planEndermanTeleportRoster(initial, store.api, [])
       const unsafe = yield* planEndermanTeleportRoster(initial, store.api, [probe])
 
-      expect(empty).toBe(initial)
-      expect(unsafe).toBe(initial)
+      expect(empty.roster).toBe(initial)
+      expect(empty.faults).toStrictEqual([])
+      expect(unsafe.roster).toBe(initial)
+      expect(unsafe.faults).toStrictEqual([])
       expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
     }),
   )
