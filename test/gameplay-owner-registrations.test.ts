@@ -186,6 +186,7 @@ describe('gameplay replicated owner registrations', () => {
         { _tag: 'PrimedTnt', burnedSecs: -1 },
         { _tag: 'HostileMob', behaviour: { _tag: 'Dormant', extra: true }, ageTicks: 0, persistent: false, named: false, tamed: false },
         { _tag: 'HostileMob', behaviour: 0, ageTicks: 0, persistent: false, named: false, tamed: false },
+        { _tag: 'HostileMob', behaviour: undefined, ageTicks: 0, persistent: false, named: false, tamed: false },
       ]
       for (const behaviour of invalid) {
         expect(Result.isFailure(Schema.decodeUnknownResult(GameplayMobBehaviourSchema)(behaviour))).toBe(true)
@@ -236,19 +237,44 @@ describe('gameplay replicated owner registrations', () => {
         field: 'resolvedMobProjectileIds',
       }))
 
-      const explicitUndefinedBehaviour = {
-        entities: [{ behaviour: undefined }],
+      const explicitUndefinedDimension = {
+        entities: [{ dimension: undefined }],
         nextSerial: previous.nextSerial,
       } as unknown as typeof previous
-      expect(restoreGameplayEntityMetadata(explicitUndefinedBehaviour, previous, 'overworld')).toStrictEqual(Result.fail({
+      expect(restoreGameplayEntityMetadata(explicitUndefinedDimension, previous, 'overworld')).toStrictEqual(Result.fail({
         _tag: 'InvalidGameplayEntityMetadata',
-        field: 'behaviour',
+        field: 'dimension',
       }))
 
       expect(gameplayOwnerRegistrations({ playerStorage: undefined } as unknown as GameplayOwnerInitialState)).toStrictEqual(Result.fail({
         _tag: 'ExplicitUndefinedGameplayOwnerInitialState',
         field: 'playerStorage',
       }))
+    }),
+  )
+
+  it.effect('preserves no-state entity behaviour through raw owner registration and JSON restoration', () =>
+    Effect.gen(function* () {
+      const initial = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        entities: [{
+          id: EntityId('owner-no-state'), kind: EntityKind('pig'),
+          feetPosition: { x: 0, y: 64, z: 0 }, dimension: 'overworld',
+          healthPoints: EntityHealthPoints(10), behaviour: undefined,
+        }],
+        nextSerial: EntitySerial(1),
+      })
+      expect(Object.hasOwn(initial.entities[0]!, 'behaviour')).toBe(true)
+      const serialized: unknown = JSON.parse(JSON.stringify(initial))
+      const restored = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(serialized)
+      expect(restored).toStrictEqual(initial)
+      const owners = Result.getOrThrow(gameplayOwnerRegistrations({ entities: initial }))
+      const coordinator = yield* makeWorldCommitCoordinator({
+        world: Schema.decodeUnknownSync(WorldIdSchema)('gameplay-no-state-roundtrip'),
+        owners,
+      })
+      const snapshot = yield* coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(snapshot.state.entities).toStrictEqual(initial.entities)
+      expect(Result.getOrThrow(restoreGameplayEntityMetadata(initial, restored, 'overworld'))).toStrictEqual(initial)
     }),
   )
 })
