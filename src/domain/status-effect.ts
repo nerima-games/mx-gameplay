@@ -188,6 +188,11 @@ export type InvalidStatusEffectApplication = Readonly<{
   reason: 'invalid-state' | 'invalid-shape' | 'invalid-duration' | 'invalid-amplifier'
 }>
 
+export type InvalidStatusEffectTick = Readonly<{
+  _tag: 'InvalidStatusEffectTick'
+  reason: 'invalid-state' | 'invalid-delta'
+}>
+
 export type PlayerHealingEvent = Readonly<{
   _tag: 'StatusEffect'
   effect: 'regeneration'
@@ -719,8 +724,9 @@ export const statusEffectModifiers = (state: StatusEffectState): StatusEffectMod
   }
 }
 
+// Only tickStatusEffects reaches this, after validating every amplifier.
 const intervalSecs = (baseIntervalTicks: number, amplifier: number): number =>
-  Math.max(1, Math.floor(baseIntervalTicks / 2 ** finiteAmplifier(amplifier))) /
+  Math.max(1, Math.floor(baseIntervalTicks / 2 ** amplifier)) /
   TICKS_PER_SECOND
 
 const pulseIntervalFor = (type: StatusEffectType): number | undefined =>
@@ -785,9 +791,13 @@ const promoteHiddenEffect = (
 export const tickStatusEffects = (
   state: StatusEffectState,
   dt: DeltaTimeSecs,
-): StatusEffectTick => {
-  const elapsedSecs = typeof dt === 'number' && Number.isFinite(dt) && dt >= 0 ? dt : 0
-  const sourceState = isValidStatusEffectState(state) ? state : emptyStatusEffectState()
+): Result.Result<StatusEffectTick, InvalidStatusEffectTick> => {
+  if (Result.isFailure(DeltaTimeSecs.result(dt))) {
+    return Result.fail({ _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' })
+  }
+  if (!isValidStatusEffectState(state)) {
+    return Result.fail({ _tag: 'InvalidStatusEffectTick', reason: 'invalid-state' })
+  }
   let poisonPulses = 0
   let regenerationPulses = 0
   let witherPulses = 0
@@ -826,14 +836,14 @@ export const tickStatusEffects = (
     return advance(promoted, elapsed - activeElapsedSecs)
   }
 
-  const effects = sourceState.effects.flatMap((effect) => {
-    const advanced = advance(effect, elapsedSecs)
+  const effects = state.effects.flatMap((effect) => {
+    const advanced = advance(effect, dt)
     return advanced === undefined ? [] : [advanced]
   })
 
   const nextState: StatusEffectState = { effects: canonicalEffects(effects) }
   const modifiers = statusEffectModifiers(nextState)
-  return {
+  return Result.succeed({
     state: nextState,
     poisonPulses,
     regenerationPulses,
@@ -842,5 +852,5 @@ export const tickStatusEffects = (
     hungerExhaustion,
     nauseaAmplifier: modifiers.nauseaAmplifier,
     modifiers,
-  }
+  })
 }

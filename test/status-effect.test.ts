@@ -32,6 +32,7 @@ import {
   type StatusEffectApplicationOutcome,
   type PersistentStatusEffectApplication,
   type StatusEffectState,
+  type StatusEffectTick,
 } from '../src/domain/status-effect'
 
 const apply = (
@@ -40,6 +41,12 @@ const apply = (
 ): StatusEffectApplicationOutcome => {
   const result = applyStatusEffect(state, application)
   if (Result.isFailure(result)) throw result.failure
+  return result.success
+}
+
+const advance = (state: StatusEffectState, dt: DeltaTimeSecs): StatusEffectTick => {
+  const result = tickStatusEffects(state, dt)
+  if (Result.isFailure(result)) throw new Error(`unexpected tick failure: ${result.failure.reason}`)
   return result.success
 }
 
@@ -70,7 +77,7 @@ describe('status effects', () => {
         expect(outcome.success.state.effects.map((effect) => effect.type)).toContain(type)
       }
 
-      const expired = tickStatusEffects(outcome.success.state, DeltaTimeSecs(0.2))
+      const expired = advance(outcome.success.state, DeltaTimeSecs(0.2))
       expect(expired.state.effects.map((effect) => effect.type)).not.toContain(type)
     }
   })
@@ -211,7 +218,7 @@ describe('status effects', () => {
     state = apply(state, { type: 'regeneration', durationSecs: 6, amplifier: 0 }).state
     state = apply(state, { type: 'wither', durationSecs: 6, amplifier: 0 }).state
 
-    const tick = tickStatusEffects(state, DeltaTimeSecs(3))
+    const tick = advance(state, DeltaTimeSecs(3))
 
     expect(tick.poisonPulses).toBe(Math.floor((3 * 20) / 25))
     expect(tick.regenerationPulses).toBe(Math.floor((3 * 20) / 50))
@@ -246,7 +253,7 @@ describe('status effects', () => {
           amplifier: level - 1,
         }).state
 
-        const beforeBoundary = tickStatusEffects(
+        const beforeBoundary = advance(
           state,
           DeltaTimeSecs(intervalSecs - 1 / 20),
         )
@@ -257,7 +264,7 @@ describe('status effects', () => {
             : beforeBoundary.witherPulses
         expect(pulsesBefore, `${type} level ${level} before interval`).toBe(0)
 
-        const atBoundary = tickStatusEffects(beforeBoundary.state, DeltaTimeSecs(1 / 20))
+        const atBoundary = advance(beforeBoundary.state, DeltaTimeSecs(1 / 20))
         const pulsesAt = type === 'poison'
           ? atBoundary.poisonPulses
           : type === 'regeneration'
@@ -279,7 +286,7 @@ describe('status effects', () => {
       amplifier: 2,
     }).state
 
-    const tick = tickStatusEffects(state, DeltaTimeSecs(2))
+    const tick = advance(state, DeltaTimeSecs(2))
 
     expect(tick.hungerExhaustion).toBeCloseTo(0.005 * 3 * 20 * 1.5, 12)
     expect(tick.state.effects).toStrictEqual([])
@@ -292,7 +299,7 @@ describe('status effects', () => {
       amplifier: 1,
     }).state
 
-    const tick = tickStatusEffects(state, DeltaTimeSecs(2))
+    const tick = advance(state, DeltaTimeSecs(2))
 
     expect(tick.hungerExhaustion).toBeCloseTo(2 * 0.005 * 2 * 20, 12)
     expect(tick.state.effects).toStrictEqual([{
@@ -463,7 +470,7 @@ describe('status effects', () => {
       durationSecs: 4,
       amplifier: 0,
     }).state
-    state = tickStatusEffects(state, DeltaTimeSecs(1)).state
+    state = advance(state, DeltaTimeSecs(1)).state
     state = apply(state, { type: 'speed', durationSecs: 2, amplifier: 1 }).state
 
     expect(state.effects[0]).toStrictEqual({
@@ -474,7 +481,7 @@ describe('status effects', () => {
       hiddenEffects: [{ remainingSecs: 3, pulseClockSecs: 0, amplifier: 0 }],
     })
 
-    const restored = tickStatusEffects(state, DeltaTimeSecs(2.5))
+    const restored = advance(state, DeltaTimeSecs(2.5))
 
     expect(restored.state.effects).toStrictEqual([{
       type: 'speed',
@@ -497,7 +504,7 @@ describe('status effects', () => {
         ],
       }],
     } as const
-    const afterHiddenExpiry = tickStatusEffects(expiringHidden, DeltaTimeSecs(1))
+    const afterHiddenExpiry = advance(expiringHidden, DeltaTimeSecs(1))
     expect(afterHiddenExpiry.state.effects).toStrictEqual([{
       type: 'speed',
       remainingSecs: 2,
@@ -517,7 +524,7 @@ describe('status effects', () => {
         ],
       }],
     } as const
-    const afterPromotion = tickStatusEffects(stackedEffects, DeltaTimeSecs(1))
+    const afterPromotion = advance(stackedEffects, DeltaTimeSecs(1))
     expect(afterPromotion.state.effects).toStrictEqual([{
       type: 'speed',
       remainingSecs: 3,
@@ -533,10 +540,10 @@ describe('status effects', () => {
       durationSecs: 3,
       amplifier: 0,
     }).state
-    state = tickStatusEffects(state, DeltaTimeSecs(0.25)).state
+    state = advance(state, DeltaTimeSecs(0.25)).state
     state = apply(state, { type: 'poison', durationSecs: 0.5, amplifier: 1 }).state
 
-    const strongerTick = tickStatusEffects(state, DeltaTimeSecs(0.5))
+    const strongerTick = advance(state, DeltaTimeSecs(0.5))
     expect(strongerTick.poisonPulses).toBe(0)
     expect(strongerTick.state.effects[0]).toStrictEqual({
       type: 'poison',
@@ -545,7 +552,7 @@ describe('status effects', () => {
       amplifier: 0,
     })
 
-    const restoredTick = tickStatusEffects(strongerTick.state, DeltaTimeSecs(0.5))
+    const restoredTick = advance(strongerTick.state, DeltaTimeSecs(0.5))
     expect(restoredTick.poisonPulses).toBe(1)
   })
 
@@ -555,11 +562,11 @@ describe('status effects', () => {
       durationSecs: 2,
       amplifier: 0,
     }).state
-    state = tickStatusEffects(state, DeltaTimeSecs(0.75)).state
+    state = advance(state, DeltaTimeSecs(0.75)).state
     state = apply(state, { type: 'poison', durationSecs: 2, amplifier: 0 }).state
 
     expect(state.effects[0]?.pulseClockSecs).toBe(0.75)
-    const tick = tickStatusEffects(state, DeltaTimeSecs(0.5))
+    const tick = advance(state, DeltaTimeSecs(0.5))
     expect(tick.poisonPulses).toBe(1)
     expect(tick.state.effects[0]?.remainingSecs).toBe(1.5)
   })
@@ -630,8 +637,8 @@ describe('status effects', () => {
       durationSecs: 1,
       amplifier: 3,
     }).state
-    const active = tickStatusEffects(state, DeltaTimeSecs(0.5))
-    const expired = tickStatusEffects(active.state, DeltaTimeSecs(0.5))
+    const active = advance(state, DeltaTimeSecs(0.5))
+    const expired = advance(active.state, DeltaTimeSecs(0.5))
 
     expect(active.nauseaAmplifier).toBe(3)
     expect(expired.nauseaAmplifier).toBeNull()
@@ -785,23 +792,20 @@ describe('status effects', () => {
     expect(isValidStatusEffectState({ effects: [], extra: true })).toBe(false)
   })
 
-  it('keeps malformed tick state inert and treats a bypassed non-finite delta as no elapsed time', () => {
+  it('rejects malformed tick state and a bypassed invalid delta with typed failures', () => {
     const poison = apply(emptyStatusEffectState(), { type: 'poison', durationSecs: 5, amplifier: 0 }).state
-    const invalidDelta = tickStatusEffects(poison, Number.NaN as unknown as DeltaTimeSecs)
-    expect(invalidDelta.poisonPulses).toBe(0)
-    expect(invalidDelta.state.effects).toStrictEqual(poison.effects)
+    for (const invalidDelta of [Number.NaN, -0.05, Number.POSITIVE_INFINITY]) {
+      expect(tickStatusEffects(poison, invalidDelta as unknown as DeltaTimeSecs)).toStrictEqual(
+        Result.fail({ _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' }),
+      )
+    }
 
     const malformed = {
       effects: [{ type: 'unknown', remainingSecs: 1, pulseClockSecs: 0, amplifier: 0 }],
     } as unknown as StatusEffectState
-    expect(tickStatusEffects(malformed, DeltaTimeSecs(0))).toMatchObject({
-      state: { effects: [] },
-      poisonPulses: 0,
-      regenerationPulses: 0,
-      witherPulses: 0,
-      hungerExhaustion: 0,
-      movementSpeedMultiplier: 1,
-    })
+    expect(tickStatusEffects(malformed, DeltaTimeSecs(0))).toStrictEqual(
+      Result.fail({ _tag: 'InvalidStatusEffectTick', reason: 'invalid-state' }),
+    )
   })
 
   it('clamps a non-finite amplifier when projecting malformed state into modifiers', () => {
@@ -882,7 +886,7 @@ describe('status effects', () => {
           })
           if (Result.isFailure(applied)) return false
 
-          const tick = tickStatusEffects(
+          const tick = advance(
             applied.success.state,
             DeltaTimeSecs(elapsedTicks / 20),
           )

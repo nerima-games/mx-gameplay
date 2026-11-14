@@ -155,9 +155,15 @@ describe('player systems properties', () => {
         })
         if (Result.isFailure(activeResult)) return false
         const active = activeResult.success.state
-        const before = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
-        const exact = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
-        const after = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
+        const beforeResult = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
+        const exactResult = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
+        const afterResult = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
+        if (Result.isFailure(beforeResult) || Result.isFailure(exactResult) || Result.isFailure(afterResult)) {
+          return false
+        }
+        const before = beforeResult.success
+        const exact = exactResult.success
+        const after = afterResult.success
 
         return before.state.effects[0]?.remainingSecs === 1 &&
           before.movementSpeedMultiplier > 1 &&
