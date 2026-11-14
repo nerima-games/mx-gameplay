@@ -24,7 +24,7 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { world } from './support/chunk-store-double'
-import { fixtureBlockPosition } from './support/coordinate-fixtures'
+import { blockPosition } from './support/coordinate-fixtures'
 import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 
 const makeHarness = (initial: ReadonlyMap<string, BlockId>) =>
@@ -66,7 +66,7 @@ const unknownBlockId = BlockId(65_535)
 describe('registration-core typed world faults', () => {
   it.effect('records a typed fault on the portal recheck and retries the crossing next frame', () =>
     Effect.gen(function* () {
-      const portalCell = fixtureBlockPosition(0, 64, 0)
+      const portalCell = blockPosition(0, 64, 0)
       const portal = Option.getOrThrow(blockIdOf('nether_portal'))
       const harness = yield* makeHarness(world([[portalCell, portal]]))
       let portalCellReads = 0
@@ -111,7 +111,7 @@ describe('registration-core typed world faults', () => {
 
   it.effect('records a fluid current-cell fault, keeps the evaluated work, and queues a retry', () =>
     Effect.gen(function* () {
-      const fluidCell = fixtureBlockPosition(0, 64, 0)
+      const fluidCell = blockPosition(0, 64, 0)
       const harness = yield* makeHarness(world([]))
       const work: FluidWorkItem = {
         key: blockPositionKeyOf(fluidCell),
@@ -145,8 +145,8 @@ describe('registration-core typed world faults', () => {
 
   it.effect('retries a fluid cell after a neighbor fault and still probes the other neighbors', () =>
     Effect.gen(function* () {
-      const fluidCell = fixtureBlockPosition(0, 64, 0)
-      const belowCell = fixtureBlockPosition(0, 63, 0)
+      const fluidCell = blockPosition(0, 64, 0)
+      const belowCell = blockPosition(0, 63, 0)
       const fluid = Option.getOrThrow(blockIdOf('water'))
       const harness = yield* makeHarness(world([[fluidCell, fluid]]))
       const work: FluidWorkItem = {
@@ -192,8 +192,8 @@ describe('registration-core typed world faults', () => {
 
   it.effect('treats an above-world fire snapshot cell as air and advances the supported fire', () =>
     Effect.gen(function* () {
-      const fireCell = fixtureBlockPosition(0, CHUNK_HEIGHT - 1, 0)
-      const aboveWorldCell = fixtureBlockPosition(0, CHUNK_HEIGHT, 0)
+      const fireCell = blockPosition(0, CHUNK_HEIGHT - 1, 0)
+      const aboveWorldCell = blockPosition(0, CHUNK_HEIGHT, 0)
       const fireBlock = Option.getOrThrow(blockIdOf('fire'))
       const supportBlock = Option.getOrThrow(blockIdOf('stone'))
       const harness = yield* makeHarness(world([
