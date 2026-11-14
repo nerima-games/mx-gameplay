@@ -599,7 +599,7 @@ describe('browser debug Site contract', () => {
     Effect.gen(function* () {
       const track: WorldSpec = {
         cells: [[0, 64, POWERED_RAIL]],
-        loadedChunks: ['0,0'],
+        loadedChunks: ['-1,-1', '-1,0', '0,-1', '0,0'],
         z: 0,
       }
       const railPosition = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
@@ -632,7 +632,7 @@ describe('browser debug Site contract', () => {
     Effect.gen(function* () {
       const waterWorld: WorldSpec = {
         cells: [[0, 64, WATER]],
-        loadedChunks: ['0,0'],
+        loadedChunks: ['-1,-1', '-1,0', '0,-1', '0,0'],
         z: 0,
       }
       const mount = mountScenario('contract-boat', waterWorld)
