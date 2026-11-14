@@ -109,6 +109,17 @@ describe('entity world block registry results', () => {
     expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({
       _tag: 'EntityWorldRegistryFailure', cell, failure: { _tag: 'OtherFailure' },
     }))).toBe(true)
+    for (const failure of [
+      null,
+      { _tag: 'BlockDefinitionFailure', reason: 'unsupported', message: 'invalid definition' },
+      { _tag: 'BlockDefinitionFailure', reason: 'unknown-field', message: 1 },
+      { _tag: 'BlockPropertyFailure', reason: 'unsupported', message: 'invalid property' },
+      { _tag: 'BlockPropertyFailure', reason: 'type', message: 1 },
+    ]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({
+        _tag: 'EntityWorldRegistryFailure', cell, failure,
+      }))).toBe(true)
+    }
     expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({ _tag: 'OtherFailure' }))).toBe(true)
   })
 })

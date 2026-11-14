@@ -166,11 +166,10 @@ const unsupportedMobSimulation = (
 
 const entityWorldFaultTarget = (
   failure: EntityWorldQueryFailure,
-  entityId?: import('@nerima-games/mc-sim').EntityId,
+  entityId: import('@nerima-games/mc-sim').EntityId,
 ): EntityWorldFaultTarget => {
   if ('cell' in failure) return { _tag: 'Cell', cell: failure.cell }
-  if (entityId !== undefined) return { _tag: 'Entity', entityId }
-  return { _tag: 'Position', position: failure.position }
+  return { _tag: 'Entity', entityId }
 }
 
 const recordEntityWorldDataFault = (
