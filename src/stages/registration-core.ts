@@ -2378,20 +2378,20 @@ const stepPortalTravel = (
     const blockId = reading._tag === 'Block' ? reading.block : undefined
     let block: BlockType | undefined
     if (blockId !== undefined) {
-      const decoded = blockTypeOfId(blockId)
-      if (Result.isFailure(decoded) || decoded.success === undefined) {
+      const decoded = yield* blockTypeOrDie(blockId)
+      if (decoded === undefined) {
         const reason: GameplayStageBlockTypeDecodeFailure = {
           _tag: 'BlockTypeDecodeFailed',
           position: cell,
           block: blockId,
-          failure: Result.isFailure(decoded) ? decoded.failure : { _tag: 'UnregisteredBlockId' },
+          failure: { _tag: 'UnregisteredBlockId' },
         }
         yield* state.stageFaults.record({
           _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: cell, reason,
         })
         return
       }
-      block = decoded.success
+      block = decoded
     }
     const inPortal =
       block !== undefined &&
@@ -2435,20 +2435,20 @@ const stepPortalTravel = (
     const currentBlockId = currentReading._tag === 'Block' ? currentReading.block : undefined
     let currentBlock: BlockType | undefined
     if (currentBlockId !== undefined) {
-      const decoded = blockTypeOfId(currentBlockId)
-      if (Result.isFailure(decoded) || decoded.success === undefined) {
+      const decoded = yield* blockTypeOrDie(currentBlockId)
+      if (decoded === undefined) {
         const reason: GameplayStageBlockTypeDecodeFailure = {
           _tag: 'BlockTypeDecodeFailed',
           position: currentCell,
           block: currentBlockId,
-          failure: Result.isFailure(decoded) ? decoded.failure : { _tag: 'UnregisteredBlockId' },
+          failure: { _tag: 'UnregisteredBlockId' },
         }
         yield* state.stageFaults.record({
           _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: currentCell, reason,
         })
         return
       }
-      currentBlock = decoded.success
+      currentBlock = decoded
     }
     const stillInPortal = currentBlock === 'nether_portal' ||
       (currentBlockId !== undefined && isEndPortalBlock(currentBlockId))

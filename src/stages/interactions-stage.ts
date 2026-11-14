@@ -29,6 +29,7 @@ import {
   isSuccessfulBlockUse,
   planFurnaceAdvance,
   processBlockPlacementCommand,
+  resultOrDie,
   isRetryableWorldCommitFailure,
   resolveBlockUse,
   stepPortalTravel,
@@ -2009,23 +2010,8 @@ const itemUseBlockTypeAt = (
     }
   }
 
-  const decoded = blockTypeOfId(blockRead.reading.block)
-  if (Result.isFailure(decoded)) {
-    const reason: GameplayStageBlockTypeDecodeFailure = {
-      _tag: 'BlockTypeDecodeFailed',
-      position,
-      block: blockRead.reading.block,
-      failure: decoded.failure,
-    }
-    yield* state.stageFaults.record({
-      _tag: 'WorldDataFailure',
-      operation: 'DecodeBlockType',
-      position,
-      reason,
-    })
-    return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
-  }
-  if (decoded.success === undefined) {
+  const decoded = yield* resultOrDie(blockTypeOfId(blockRead.reading.block))
+  if (decoded === undefined) {
     const reason: GameplayStageBlockTypeDecodeFailure = {
       _tag: 'BlockTypeDecodeFailed',
       position,
@@ -2041,7 +2027,7 @@ const itemUseBlockTypeAt = (
     return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
   }
 
-  return { _tag: 'Block', blockType: decoded.success }
+  return { _tag: 'Block', blockType: decoded }
 })
 
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
