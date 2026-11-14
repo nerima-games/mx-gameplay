@@ -670,6 +670,10 @@ CI に追加のフラグは要らず、そうしておけば手元と CI が同�
 **「push して初めて落ちるゲート」を作らないための配置**である。
 なお `pnpm verify` はカバレッジを含まない（`pnpm test` であって `pnpm test:coverage` ではない）。
 
+V8のカバレッジ計測は依存コードも遅くするため、`pnpm test:coverage`の各テストtimeoutを60秒に設定します。
+同一runnerの[PR #81計測run 43611581804](https://github.com/nerima-games/mx-gameplay/actions/runs/43611581804)では、新依存（`mc-sim 0.11.1`、`mc-worldgen 0.9.1`）で対象テストがカバレッジなし1,792ms、あり10,046ms（従来の10秒timeout）、旧依存（`mc-sim 0.10.0`、`mc-worldgen 0.8.0`）で1,015ms/5,355msでした。
+カバレッジ実行のtimeoutは停止したテストの検出用です。性能の後退は通常テストの10秒timeoutと[mc-worldgen PR #66](https://github.com/nerima-games/mc-worldgen/pull/66)の性能gateで判定します。
+
 計測対象は `src/**/*.ts`。`*.d.ts`、設定ファイル、テストファイルは除外する。
 
 ### 4-0. 有効化のためにやったこと（履歴: 99% ゲート導入時の分析。テストは 36 本、しかし本題はコードの側にある）

@@ -54,7 +54,7 @@
     "check:catalog": "node scripts/check-catalog.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --testTimeout=60000",
     "mutate": "stryker run stryker.config.mjs",
     "package:verify": "pnpm build && node scripts/verify-package.mjs",
     "prepublishOnly": "pnpm verify && pnpm package:verify",
