@@ -85,11 +85,15 @@ describe('mining progress properties', () => {
   it.effect('keeps work bounded and announces completion once for a held target', () =>
     Effect.sync(() => {
       // This catches lost work on tool changes, work overshoot, or repeated break notifications.
+      // Java Edition applies block-breaking progress once per 1/20 s game tick, so work
+      // grows exactly when the held time crosses a tick boundary and not within one.
+      // https://minecraft.wiki/w/Breaking
+      const tickMilliseconds = 1000 / 20
       fc.assert(
         fc.property(
           fc.array(
             fc.record({
-              deltaSecs: fc.integer({ min: 0, max: 10 }).map((milliseconds) => deltaTimeSecs(milliseconds / 1000)),
+              deltaMilliseconds: fc.integer({ min: 0, max: 10 }),
               selectedItem: fc.constantFrom(...tools),
               efficiencyLevel: fc.integer({ min: 0, max: 5 }).map(enchantmentLevel),
             }),
@@ -98,10 +102,11 @@ describe('mining progress properties', () => {
           (generatedFrames) => {
             let current: MiningProgressState | null = null
             const frames = [
-              { deltaSecs: deltaTimeSecs(0.001), selectedItem: 'diamond_pickaxe' as const, efficiencyLevel: enchantmentLevel(0) },
-              { deltaSecs: deltaTimeSecs(0.001), selectedItem: null, efficiencyLevel: enchantmentLevel(0) },
+              { deltaMilliseconds: 1, selectedItem: 'diamond_pickaxe' as const, efficiencyLevel: enchantmentLevel(0) },
+              { deltaMilliseconds: 1, selectedItem: null, efficiencyLevel: enchantmentLevel(0) },
               ...generatedFrames,
             ]
+            let heldMilliseconds = 0
 
             for (const frame of frames) {
               const result = advanceMiningProgress({
@@ -110,7 +115,7 @@ describe('mining progress properties', () => {
                 isMining: true,
                 selectedItem: frame.selectedItem,
                 efficiencyLevel: frame.efficiencyLevel,
-                deltaSecs: frame.deltaSecs,
+                deltaSecs: deltaTimeSecs(frame.deltaMilliseconds / 1000),
               })
               const next = result.nextProgress
               if (next === null) return false
@@ -118,6 +123,12 @@ describe('mining progress properties', () => {
               const previousWork = current?.accumulatedWork ?? 0
               if (!Number.isFinite(next.accumulatedWork)) return false
               if (next.accumulatedWork < previousWork) return false
+              if (!current?.completed) {
+                const ticksBefore = Math.floor(heldMilliseconds / tickMilliseconds)
+                heldMilliseconds += frame.deltaMilliseconds
+                const crossesTick = Math.floor(heldMilliseconds / tickMilliseconds) > ticksBefore
+                if (crossesTick !== (next.accumulatedWork > previousWork)) return false
+              }
               if (next.accumulatedWork > requiredWork) return false
               if (next.completed !== (next.accumulatedWork === requiredWork)) return false
               if (result.shouldBreak !== (!current?.completed && next.completed)) return false
