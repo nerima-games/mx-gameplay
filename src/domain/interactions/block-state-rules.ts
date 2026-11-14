@@ -131,7 +131,7 @@ export type BlockStateRuleOutcome =
       _tag: 'NoChange'
       reason: 'growthMiss' | 'mature' | 'blocked' | 'outOfWorld' | 'chunkNotLoaded' | 'unchanged'
     }>
-  | Readonly<{ _tag: 'NotApplicable'; block: BlockType | undefined }>
+  | Readonly<{ _tag: 'NotApplicable'; block: BlockType }>
   | BlockStateRuleFailure
 
 export type BlockStateRuleResult = Readonly<{
@@ -155,15 +155,30 @@ const cropAge = (value: number): BlockStateAge | undefined =>
 const validCropAgeRange = (age: number, maximumAge: number): boolean =>
   cropAge(age) !== undefined && cropAge(maximumAge) !== undefined && age <= maximumAge
 
-const typeOf = (block: BlockId): BlockType | undefined =>
-  Result.getOrUndefined(blockTypeOfId(block))
+type TypedBlockStateCell = Readonly<{ cell: BlockStateCell; type: BlockType }>
 
 type BlockStateAccess =
-  | Readonly<{ _tag: 'Found'; cell: BlockStateCell }>
+  | Readonly<{ _tag: 'Found' } & TypedBlockStateCell>
   | Readonly<{ _tag: 'Failed'; failure: BlockStateRuleFailure }>
 
 const readAccess = (position: BlockPosition, reading: BlockStateRead): BlockStateAccess => {
-  if (reading._tag === 'Found') return { _tag: 'Found', cell: reading.cell }
+  if (reading._tag === 'Found') {
+    const { cell } = reading
+    const decoded = blockTypeOfId(cell.block)
+    if (Result.isFailure(decoded)) {
+      return {
+        _tag: 'Failed',
+        failure: { _tag: 'BlockTypeDecodeFailed', position, block: cell.block, failure: decoded.failure },
+      }
+    }
+    if (decoded.success === undefined) {
+      return {
+        _tag: 'Failed',
+        failure: { _tag: 'BlockTypeDecodeFailed', position, block: cell.block, failure: { _tag: 'UnregisteredBlockId' } },
+      }
+    }
+    return { _tag: 'Found', cell, type: decoded.success }
+  }
   if (reading._tag === 'Unsupported') {
     return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: reading.operation, position } }
   }
@@ -298,11 +313,11 @@ const counterClockwiseFacing = (facing: HorizontalBlockStateFacing): HorizontalB
 const isHorizontalFacing = (facing: BlockStateFacing | undefined): facing is HorizontalBlockStateFacing =>
   facing === 'north' || facing === 'east' || facing === 'south' || facing === 'west'
 
-const isStairType = (block: BlockType | undefined): boolean =>
+const isStairType = (block: BlockType): boolean =>
   block === 'oak_stairs' || block === 'purpur_stairs'
 
-const stairCellState = (position: BlockPosition, cell: BlockStateCell): StairCellState => {
-  if (!isStairType(typeOf(cell.block))) return { _tag: 'NotStair' }
+const stairCellState = (position: BlockPosition, { cell, type }: TypedBlockStateCell): StairCellState => {
+  if (!isStairType(type)) return { _tag: 'NotStair' }
   const facing = cell.state.facing
   const half = cell.state.half
   return isHorizontalFacing(facing) && (half === 'top' || half === 'bottom')
@@ -319,13 +334,13 @@ const adjacent = (
 
 const readFromSnapshot = (
   port: BlockStateWorldPort,
-  snapshot: Map<string, BlockStateCell>,
+  snapshot: Map<string, TypedBlockStateCell>,
   position: BlockPosition,
 ): Effect.Effect<BlockStateAccess> => Effect.gen(function* () {
   const cached = snapshot.get(positionKey(position))
-  if (cached !== undefined) return { _tag: 'Found', cell: cached }
+  if (cached !== undefined) return { _tag: 'Found', ...cached }
   const access = readAccess(position, yield* port.read(position))
-  if (access._tag === 'Found') snapshot.set(positionKey(position), access.cell)
+  if (access._tag === 'Found') snapshot.set(positionKey(position), { cell: access.cell, type: access.type })
   return access
 })
 
@@ -337,7 +352,7 @@ type StairCornerResult =
 
 const stairCornerAt = (
   port: BlockStateWorldPort,
-  snapshot: Map<string, BlockStateCell>,
+  snapshot: Map<string, TypedBlockStateCell>,
   position: BlockPosition,
   subject: StairState,
   side: 'front' | 'back',
@@ -349,7 +364,7 @@ const stairCornerAt = (
   }
   const candidateAccess = yield* readFromSnapshot(port, snapshot, candidatePosition)
   if (candidateAccess._tag === 'Failed') return { _tag: 'Failed', failure: candidateAccess.failure }
-  const candidate = stairCellState(candidatePosition, candidateAccess.cell)
+  const candidate = stairCellState(candidatePosition, candidateAccess)
   if (candidate._tag === 'Invalid') {
     return { _tag: 'Failed', failure: { _tag: 'InvalidState', position: candidate.position } }
   }
@@ -365,7 +380,7 @@ const stairCornerAt = (
   }
   const checkedSideAccess = yield* readFromSnapshot(port, snapshot, checkedSidePosition)
   if (checkedSideAccess._tag === 'Failed') return { _tag: 'Failed', failure: checkedSideAccess.failure }
-  const checkedSide = stairCellState(checkedSidePosition, checkedSideAccess.cell)
+  const checkedSide = stairCellState(checkedSidePosition, checkedSideAccess)
   if (checkedSide._tag === 'Invalid') {
     return { _tag: 'Failed', failure: { _tag: 'InvalidState', position: checkedSide.position } }
   }
@@ -382,7 +397,7 @@ const stairCornerAt = (
 
 const stairShapeAt = (
   port: BlockStateWorldPort,
-  snapshot: Map<string, BlockStateCell>,
+  snapshot: Map<string, TypedBlockStateCell>,
   position: BlockPosition,
   subject: StairState,
 ): Effect.Effect<BlockStateShape | BlockStateRuleFailure> => Effect.gen(function* () {
@@ -402,7 +417,7 @@ type AdjacentStairEdits =
 
 const adjacentStairShapeEdits = (
   port: BlockStateWorldPort,
-  snapshot: Map<string, BlockStateCell>,
+  snapshot: Map<string, TypedBlockStateCell>,
   position: BlockPosition,
 ): Effect.Effect<AdjacentStairEdits> => Effect.gen(function* () {
   const edits: Array<BlockStateEdit> = []
@@ -413,7 +428,7 @@ const adjacentStairShapeEdits = (
     }
     const access = yield* readFromSnapshot(port, snapshot, neighborPosition)
     if (access._tag === 'Failed') return { _tag: 'Failed', failure: access.failure }
-    const stair = stairCellState(neighborPosition, access.cell)
+    const stair = stairCellState(neighborPosition, access)
     if (stair._tag === 'Invalid') {
       return { _tag: 'Failed', failure: { _tag: 'InvalidState', position: stair.position } }
     }
@@ -513,7 +528,7 @@ const toggleDoor = (
     const lowerAccess = readAccess(position, lowerRead)
     if (lowerAccess._tag === 'Failed') return lowerAccess.failure
     const lowerCell = lowerAccess.cell
-    const blockType = typeOf(lowerCell.block)
+    const blockType = lowerAccess.type
     if (blockType !== 'door' && blockType !== 'door_open') return { _tag: 'NotApplicable', block: blockType }
 
     const half = lowerCell.state.half
@@ -525,7 +540,7 @@ const toggleDoor = (
     if (otherAccess._tag === 'Failed') return otherAccess.failure
     const otherCell = otherAccess.cell
 
-    const otherType = typeOf(otherCell.block)
+    const otherType = otherAccess.type
     const otherHalf = otherCell.state.half
     const expectedOtherHalf = half === 'lower' ? 'upper' : 'lower'
     if ((otherType !== 'door' && otherType !== 'door_open') || otherHalf !== expectedOtherHalf) {
@@ -565,7 +580,7 @@ const placeDoor = (
     const upperRead = yield* port.read(upper)
     const upperAccess = readAccess(upper, upperRead)
     if (upperAccess._tag === 'Failed') return upperAccess.failure
-    if (typeOf(lowerAccess.cell.block) !== 'air' || typeOf(upperAccess.cell.block) !== 'air') {
+    if (lowerAccess.type !== 'air' || upperAccess.type !== 'air') {
       return { _tag: 'InvalidState', position }
     }
     const door = Option.getOrThrow(blockIdOf('door'))
@@ -593,10 +608,10 @@ const placeStairs = (
   const block = Option.getOrThrow(blockIdOf(operation.block))
   const defaults = Result.getOrThrow(defaultBlockState(block))
 
-  const snapshot = new Map<string, BlockStateCell>()
+  const snapshot = new Map<string, TypedBlockStateCell>()
   const targetAccess = yield* readFromSnapshot(port, snapshot, position)
   if (targetAccess._tag === 'Failed') return targetAccess.failure
-  const targetType = typeOf(targetAccess.cell.block)
+  const targetType = targetAccess.type
   if (targetType !== 'air' && targetType !== 'water') return { _tag: 'InvalidState', position }
 
   const initialState: BlockStateValues = {
@@ -605,13 +620,12 @@ const placeStairs = (
     shape: 'straight',
     waterlogged: targetType === 'water' && targetAccess.cell.state.level === 0,
   }
-  const placedCell: BlockStateCell = { block, state: initialState }
-  snapshot.set(positionKey(position), placedCell)
+  snapshot.set(positionKey(position), { cell: { block, state: initialState }, type: operation.block })
 
   const shape = yield* stairShapeAt(port, snapshot, position, placement)
   if (typeof shape !== 'string') return shape
   const placedState = { ...initialState, shape }
-  snapshot.set(positionKey(position), { block, state: placedState })
+  snapshot.set(positionKey(position), { cell: { block, state: placedState }, type: operation.block })
 
   const adjacentEdits = yield* adjacentStairShapeEdits(port, snapshot, position)
   if (adjacentEdits._tag === 'Failed') return adjacentEdits.failure
@@ -643,11 +657,9 @@ const growCrop = (
     const access = readAccess(position, reading)
     if (access._tag === 'Failed') return access.failure
     const cell = access.cell
-    const block = typeOf(cell.block)
+    const block = access.type
     const isNetherWart = block === 'nether_wart_crop'
-    const maximumAge = isNetherWart
-      ? NETHER_WART_MAX_AGE
-      : block === undefined ? undefined : CROP_MAX_AGE[block]
+    const maximumAge = isNetherWart ? NETHER_WART_MAX_AGE : CROP_MAX_AGE[block]
     if (maximumAge === undefined) return { _tag: 'NotApplicable', block }
     const age = cell.state.age
     if (age === undefined) return { _tag: 'InvalidState', position }
@@ -689,7 +701,7 @@ const applyBoneMeal = (
     const access = readAccess(position, reading)
     if (access._tag === 'Failed') return access.failure
     const cell = access.cell
-    const block = typeOf(cell.block)
+    const block = access.type
 
     if (block === 'sapling') {
       const stage = cell.state.stage
@@ -702,7 +714,7 @@ const applyBoneMeal = (
       )
     }
 
-    const maximumAge = block === undefined ? undefined : CROP_MAX_AGE[block]
+    const maximumAge = CROP_MAX_AGE[block]
     if (maximumAge !== undefined) {
       const age = cell.state.age
       if (age === undefined) return { _tag: 'InvalidState', position }
@@ -744,7 +756,7 @@ export const applyBlockStateRule = (
       const access = readAccess(request.position, reading)
       if (access._tag === 'Failed') return access.failure
       const cell = access.cell
-      if (typeOf(cell.block) !== 'sapling') return { _tag: 'NotApplicable', block: typeOf(cell.block) }
+      if (access.type !== 'sapling') return { _tag: 'NotApplicable', block: access.type }
       const stage = cell.state.stage
       if (stage === undefined) return { _tag: 'InvalidState', position: request.position }
       return yield* outcomeForSapling(
