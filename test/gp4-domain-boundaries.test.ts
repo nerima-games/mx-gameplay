@@ -227,6 +227,16 @@ describe('mob domain input boundaries', () => {
     }))
     expect(explosionDamageAt(null as unknown as Explosion, 0)).toStrictEqual(Result.fail({ _tag: 'InvalidExplosionInput', field: 'power' }))
     expect(explosionDamageAmount(Number.MAX_VALUE / 4, 0)).toStrictEqual(Result.fail({ _tag: 'InvalidExplosionInput', field: 'damageAmount' }))
+    expect(resolvePlayerBlastDamage([
+      { ...validBlast, at: kernelPosition(PositionAxis(-Number.MAX_VALUE), PositionAxis(64), PositionAxis(0)) },
+    ], kernelPosition(PositionAxis(Number.MAX_VALUE), PositionAxis(64), PositionAxis(0)))).toStrictEqual(Result.fail({
+      _tag: 'InvalidExplosionInput', field: 'distanceToCentre',
+    }))
+    expect(resolvePlayerBlastDamage([
+      { ...validBlast, explosion: { source: 'tnt', power: 1e307 } },
+    ], origin, 'hard')).toStrictEqual(Result.fail({
+      _tag: 'InvalidPlayerBlastDamageInput', field: 'difficulty',
+    }))
   })
 })
 

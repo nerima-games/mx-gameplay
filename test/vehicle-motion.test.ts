@@ -209,6 +209,16 @@ describe('minecart motion', () => {
 })
 
 describe('vehicle collision lifecycle', () => {
+  it('rejects derived impact speed overflow even when every velocity component is finite', () => {
+    const boat = vehicle('boat', {
+      occupant: rider,
+      velocity: { x: Number.MAX_VALUE, y: Number.MAX_VALUE, z: Number.MAX_VALUE },
+    })
+    expect(stepBoat(boat, { throttle: 0, steering: 0, inWater: true, collided: true }, 0)).toStrictEqual(Result.fail({
+      _tag: 'InvalidImpactSpeed',
+    }))
+  })
+
   it.each(['boat', 'minecart'] as const)('rejects non-finite delta time for %s even when destroyed', (type) => {
     const moving = vehicle(type, { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
     for (const dt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {

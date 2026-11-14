@@ -238,6 +238,33 @@ describe('vehicle frame', () => {
     expect(updated).toStrictEqual([vehicle.id])
   })
 
+  it.each([
+    { controls: { steering: 0 }, field: 'throttle' },
+    { controls: { throttle: 0 }, field: 'steering' },
+  ] as const)('rejects an omitted required $field control without updating the boat', async ({ controls, field }) => {
+    const boat = {
+      id: VehicleId('v:missing-control'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([boat]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    expect(await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: () => controls as unknown as VehicleControlInput,
+    }))).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: boat.id, failure: { _tag: 'InvalidBoatControl', field } }])
+    expect(updated).toStrictEqual([])
+  })
+
   it('does not treat an unloaded cell as water for boat movement', async () => {
     const vehicle = {
       id: VehicleId('v:boat-unloaded-water'),

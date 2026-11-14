@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { VehicleId, makeTimeService, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import type { VehicleControlInput } from '../src/domain/vehicle/vehicle-frame.js'
 import { drainGameplayEntityStageFaults, gameplayStages } from '../src/stages/registration.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import { makeGameplayFrameState } from '../src/stages/registration-core.js'
@@ -29,9 +30,10 @@ describe('vehicles stage fault recording', () => {
     }
     const failure = { _tag: 'VehicleOperationError' as const, reason: 'not-found' as const }
     let rejectUpdate = true
+    let invalidVelocity = false
     let updateAttempts = 0
     const vehicleService = {
-      vehicles: Effect.succeed([vehicle]),
+      vehicles: Effect.sync(() => [invalidVelocity ? { ...vehicle, velocity: { x: Number.NaN, y: 0, z: 0 } } : vehicle]),
       updateState: () => {
         updateAttempts += 1
         return rejectUpdate ? Effect.fail(failure) : Effect.void
@@ -74,9 +76,22 @@ describe('vehicles stage fault recording', () => {
       subject: 'Vehicle',
       error: failure,
     }])
+
+    invalidVelocity = true
+    const faultExit = await Effect.runPromiseExit(stage.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)))
+    expect(faultExit._tag).toBe('Success')
+    expect(updateAttempts).toBe(2)
+    expect(await Effect.runPromise(Ref.get(state.operationFailures))).toStrictEqual([
+      { _tag: 'Failed', operation: 'WorldCommit', subject: 'Vehicle', error: failure },
+      { _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vehicle', error: { _tag: 'InvalidMinecartVelocityInput', field: 'vx' } },
+    ])
   })
 
-  it('records invalid host controls as a drainable vehicle fault and steps other vehicles', async () => {
+  it.each([
+    { controls: { throttle: Number.NaN, steering: 0 }, reason: 'InvalidVehicleThrottle' },
+    { controls: { throttle: 0, steering: Number.NaN }, reason: 'InvalidVehicleSteering' },
+    { controls: undefined, reason: 'InvalidVehicleControlShape' },
+  ])('records $reason as a drainable vehicle fault and steps other vehicles', async ({ controls, reason }) => {
     const brokenBoat = {
       id: VehicleId('test:broken-boat-controls'),
       type: 'boat' as const,
@@ -109,7 +124,7 @@ describe('vehicles stage fault recording', () => {
       time,
       vehicleService,
       { controlsForVehicle: (vehicle) => vehicle.id === brokenBoat.id
-        ? { throttle: Number.NaN, steering: 0 }
+        ? controls as unknown as VehicleControlInput
         : { throttle: 1, steering: 0 } },
     ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.vehicles)
 
@@ -124,7 +139,7 @@ describe('vehicles stage fault recording', () => {
       _tag: 'GameplayRequestFault',
       source: 'VehicleMovement',
       requestId: String(brokenBoat.id),
-      reason: 'InvalidVehicleThrottle',
+      reason,
     }])
     expect(await Effect.runPromise(drainGameplayEntityStageFaults(state))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(state.operationFailures))).toStrictEqual([])

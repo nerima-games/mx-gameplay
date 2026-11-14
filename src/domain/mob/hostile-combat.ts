@@ -630,17 +630,15 @@ export const resolvePlayerBlastDamage = (
       return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'difficulty' })
     }
     if (scaledAmount.success > 0) {
-      const amount = Schema.decodeUnknownResult(DamageAmountSchema)(scaledAmount.success)
-      if (Result.isFailure(amount)) {
-        return Result.fail({ _tag: 'InvalidPlayerBlastDamageInput', field: 'damageAmount' })
-      }
+      // Scaling established finiteness; the enclosing condition established positivity.
+      const amount = Schema.decodeUnknownSync(DamageAmountSchema)(scaledAmount.success)
       damages.push({
         _tag: 'Explosion',
         source: blast.source,
         kind: blast.kind,
         at: blast.at,
         explosion: blast.explosion,
-        damage: { amount: amount.success, cause: 'explosion' },
+        damage: { amount, cause: 'explosion' },
       })
     }
   }

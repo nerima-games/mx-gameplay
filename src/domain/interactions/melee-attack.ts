@@ -397,15 +397,15 @@ export const prepareMeleeAttack = (
   if (Result.isFailure(decodedEvent) || decodedEvent.success._tag !== 'EntityDamaged') {
     return Result.fail('invalid-authoritative-state')
   }
-  const knockback = knockbackDirection(
+  // A matched ray candidate has finite horizontal offsets within the attack reach.
+  const knockback = Result.getOrThrow(knockbackDirection(
     match.success.entity.feetPosition.x - pose.feetPosition.x,
     match.success.entity.feetPosition.z - pose.feetPosition.z,
-  )
-  if (Result.isFailure(knockback)) return Result.fail('invalid-authoritative-state')
+  ))
   return Result.succeed({
     target: match.success.target,
     event: decodedEvent.success,
-    knockback: knockback.success,
+    knockback,
     targetDamageState: invulnerability.success.state,
   })
 }

@@ -50,10 +50,9 @@ const speedOf = (vehicle: Vehicle): number => Math.hypot(
   vehicle.velocity.y,
   vehicle.velocity.z,
 )
-const isBlock = (reading: BlockReading): reading is Extract<BlockReading, { readonly _tag: 'Block' }> =>
-  reading._tag === 'Block'
+type LoadedBlockReading = Extract<BlockReading, { readonly _tag: 'Block' }>
 
-const blockAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): BlockReading | undefined =>
+const blockAt = (readings: ReadonlyMap<string, LoadedBlockReading>, position: BlockPosition): LoadedBlockReading | undefined =>
   readings.get(blockKey(position))
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
@@ -84,26 +83,25 @@ const boatControls = (
   return Result.succeed({ throttle, steering })
 }
 
-const railKindAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): 'none' | 'normal' | 'powered' => {
-  const reading = blockAt(readings, position)
-  if (reading === undefined || !isBlock(reading)) return 'none'
+const railKindAt = (readings: ReadonlyMap<string, LoadedBlockReading>, position: BlockPosition): 'none' | 'normal' | 'powered' => {
+  // Rail topology and ascent probe only cells in the validated 3x3x3 neighborhood.
+  const reading = blockAt(readings, position)!
   const railKind = propertyOfBlockId(reading.block, 'railKind')
-  // `isBlock` narrows `reading.block` to a valid BlockId.
   return Result.getOrThrow(railKind)
 }
 
-const waterAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): boolean => {
+const waterAt = (readings: ReadonlyMap<string, LoadedBlockReading>, position: BlockPosition): boolean => {
   const cells = [position, blockPositionAt(position.x, position.y + 1, position.z)]
   return cells.some((cell) => {
-    const reading = blockAt(readings, cell)
-    if (reading === undefined || !isBlock(reading)) return false
+    // The current cell and the one above are inside the validated neighborhood.
+    const reading = blockAt(readings, cell)!
     const fluid = propertyOfBlockId(reading.block, 'fluid')
     return Result.isSuccess(fluid) && fluid.success === 'water'
   })
 }
 
 const collidesAt = (
-  readings: ReadonlyMap<string, BlockReading>,
+  readings: ReadonlyMap<string, LoadedBlockReading>,
   vehicle: Vehicle,
 ): boolean => {
   const halfWidth = vehicle.type === 'boat' ? 0.7 : 0.45
@@ -118,7 +116,7 @@ const collidesAt = (
     for (let z = Math.floor(minZ); z <= Math.floor(maxZ); z += 1) {
       for (let x = Math.floor(minX); x <= Math.floor(maxX); x += 1) {
         const reading = blockAt(readings, blockPositionAt(x, y, z))
-        if (reading === undefined || !isBlock(reading)) continue
+        if (reading === undefined) continue
         const collisionShape = propertyOfBlockId(reading.block, 'collisionShape')
         if (Result.isSuccess(collisionShape) && collisionShape.success === 'none') continue
         if (maxX > x && minX < x + 1 && maxY > y && minY < y + 1 && maxZ > z && minZ < z + 1) return true
@@ -140,7 +138,7 @@ const neighbourhood = (position: BlockPosition): ReadonlyArray<BlockPosition> =>
 }
 
 const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effect.Effect<
-  | Readonly<{ _tag: 'Loaded'; readings: ReadonlyMap<string, BlockReading> }>
+  | Readonly<{ _tag: 'Loaded'; readings: ReadonlyMap<string, LoadedBlockReading> }>
   | Readonly<{ _tag: 'WorldDataFault'; failure: EntityWorldQueryFailure }>
   | Readonly<{
       _tag: 'Unavailable'
@@ -150,7 +148,7 @@ const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effec
 > => Effect.gen(function* () {
   const cells = neighbourhood(position)
   const values = yield* Effect.forEach(cells, (cell) => store.getBlock(cell))
-  const readings = new Map<string, BlockReading>()
+  const readings = new Map<string, LoadedBlockReading>()
   let unavailable: Readonly<{
     position: BlockPosition
     reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
@@ -160,10 +158,10 @@ const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effec
     if (reading._tag === 'Block') {
       const data = entityWorldBlockDataAt(cell, reading.block)
       if (Result.isFailure(data)) return { _tag: 'WorldDataFault', failure: data.failure }
+      readings.set(blockKey(cell), reading)
     } else {
       unavailable ??= { position: cell, reading }
     }
-    readings.set(blockKey(cell), reading)
   }
   if (unavailable !== undefined) return { _tag: 'Unavailable', ...unavailable }
   return { _tag: 'Loaded', readings }

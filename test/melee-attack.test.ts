@@ -458,6 +458,9 @@ describe('C2 melee preparation', () => {
     expect(meleeTarget([zombie], { ...request, hitDistance: undefined } as unknown as MeleeAttackRequest)).toStrictEqual(invalid)
     expect(meleeTarget([], request)).toStrictEqual(Result.succeed(undefined))
     expect(prepareMeleeAttack(intent, { ...input, blockDistance: undefined } as never)).toStrictEqual(invalid)
+    for (const blockDistance of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(prepareMeleeAttack(intent, { ...input, blockDistance } as unknown as Parameters<typeof prepareMeleeAttack>[1])).toStrictEqual(invalid)
+    }
   })
 
   it('keeps valid authoritative ticks in the emitted event', () => {
