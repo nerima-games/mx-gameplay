@@ -57,7 +57,6 @@ import {
 } from '@nerima-games/mc-sim'
 import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
-import type { BlockLootFailure } from '../domain/interactions/block-loot.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
 import { ignitePortal } from '../domain/interactions/ignite-portal.js'
@@ -2429,13 +2428,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           yielded: BlockId,
           tool: BlockLootContext,
           breakPosition: BlockPosition,
-        ): Result.Result<
-          Readonly<{ seed: number; drops: ReadonlyArray<DroppedItemSpawn> }>,
-          BlockLootFailure
-        > => Result.gen(function* () {
+        ): Readonly<{ seed: number; drops: ReadonlyArray<DroppedItemSpawn> }> => {
           // The frame seed and loot-roll count are internal validated values.
           const batch = Result.getOrThrow(drawRolls(seed, BLOCK_LOOT_ROLLS))
-          const loot = yield* blockLoot(yielded, tool, batch.rolls)
+          // planBreakBlock already validated this id against the same immutable registry.
+          const loot = Result.getOrThrow(blockLoot(yielded, tool, batch.rolls))
           return {
             seed: batch.seed,
             drops: loot.map((item) => ({
@@ -2447,7 +2444,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               },
             })),
           }
-        })
+        }
 
         const batchHeldTool = yield* Ref.get(state.heldTool)
         for (const [index, positionKey] of breaks.entries()) {
@@ -2491,13 +2488,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             if (plan._tag === 'PlannedCascade') {
               const seed = yield* Ref.get(state.rollSeed)
               const plannedLoot = plannedDropsForBrokenBlock(seed, plan.yielded, tool, breakPosition)
-              if (Result.isFailure(plannedLoot)) {
-                yield* recordGameplayStageFailure(state, {
-                  _tag: 'Failed', operation: 'PlanBuild', subject: 'Mining', error: plannedLoot.failure,
-                })
-                continue
-              }
-              const drops = plannedLoot.success.drops
+              const drops = plannedLoot.drops
               let candidate: PlayerStorage = plan.candidateStorage
               const leftovers: Array<DroppedItemSpawn> = []
               for (const item of drops) {
@@ -2580,7 +2571,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 continue
               }
-              yield* Ref.set(state.rollSeed, plannedLoot.success.seed)
+              yield* Ref.set(state.rollSeed, plannedLoot.seed)
               for (const removed of plan.removed) {
                 disturbed.push(blockPositionKeyOf(removed))
               }
