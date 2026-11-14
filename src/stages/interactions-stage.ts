@@ -23,13 +23,13 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
+  recordGameplayEntityWorldDataFault,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollAt,
   isSuccessfulBlockUse,
   planFurnaceAdvance,
   processBlockPlacementCommand,
-  resultOrDie,
   isRetryableWorldCommitFailure,
   resolveBlockUse,
   stepPortalTravel,
@@ -105,7 +105,6 @@ import {
   WorldWriteBatchSchema,
   FoodNutrition,
   blockIdOf,
-  blockTypeOfId,
 } from '@nerima-games/mc-kernel'
 import {
   PlayerStorageSnapshotSchema,
@@ -188,6 +187,8 @@ import {
 } from '../domain/entities/mob-frame.js'
 import type { Damage } from '../domain/death-cause.js'
 import { solidityFromStore } from '../domain/in-memory-world.js'
+import { entityWorldBlockTypeAt } from '../domain/entities/entity-world-cell.js'
+import type { EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
 
 const cropAt = (
   snapshot: CropSnapshot,
@@ -1983,6 +1984,7 @@ const processEnderPearlThrow = (
 type ItemUseBlockRead =
   | Readonly<{ _tag: 'Block'; blockType: BlockType }>
   | Readonly<{ _tag: 'Failure'; failure: GameplayStageItemUseWorldFailure }>
+  | Readonly<{ _tag: 'Fault'; failure: EntityWorldQueryFailure }>
 
 const itemUseBlockTypeAt = (
   state: GameplayStageContext['state'],
@@ -1990,6 +1992,7 @@ const itemUseBlockTypeAt = (
   blockRead: WorldBlockRead | undefined,
 ): Effect.Effect<ItemUseBlockRead> => Effect.gen(function* () {
   if (blockRead === undefined) {
+    yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', { _tag: 'EntityWorldWindowUnavailable', cell: position })
     const reason = { _tag: 'MissingBlockReadResult' as const, position }
     yield* state.stageFaults.record({
       _tag: 'WorldDataFailure',
@@ -2011,8 +2014,12 @@ const itemUseBlockTypeAt = (
     }
   }
 
-  const decoded = yield* resultOrDie(blockTypeOfId(blockRead.reading.block))
-  if (decoded === undefined) {
+  const decoded = entityWorldBlockTypeAt(position, blockRead.reading.block)
+  if (Result.isFailure(decoded)) {
+    yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', decoded.failure)
+    if (decoded.failure._tag !== 'EntityWorldUnregisteredBlockId') {
+      return { _tag: 'Fault', failure: decoded.failure }
+    }
     const reason: GameplayStageBlockTypeDecodeFailure = {
       _tag: 'BlockTypeDecodeFailed',
       position,
@@ -2028,7 +2035,7 @@ const itemUseBlockTypeAt = (
     return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
   }
 
-  return { _tag: 'Block', blockType: decoded }
+  return { _tag: 'Block', blockType: decoded.success }
 })
 
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
@@ -2126,6 +2133,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         )
         const requeueItemUsesFrom = (start: number) =>
           Ref.update(state.pendingItemUses, (pending) => [...itemUses.slice(start), ...pending])
+        const requeueItemUse = (request: ItemUseRequest) =>
+          Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
         const bowShots = yield* Ref.getAndSet<ReadonlyArray<BowShotRequest>>(
           state.pendingBowShots,
           [],
@@ -2526,6 +2535,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
+                if (blockRead._tag === 'Fault') {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
                 if (blockRead._tag === 'Failure') {
                   itemUseResults.push({
                     action: request.action,
@@ -2665,6 +2678,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const groundRead = yield* itemUseBlockTypeAt(state, ground, observed.success.blocks[0])
                 const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
+                if (groundRead._tag === 'Fault') {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
                 if (groundRead._tag === 'Failure') {
                   itemUseResults.push({
                     action: request.action,
@@ -2675,6 +2692,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     outcome: groundRead.failure,
                   })
                   break itemUseAction
+                }
+                if (aboveRead._tag === 'Fault') {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
                 }
                 if (aboveRead._tag === 'Failure') {
                   itemUseResults.push({
@@ -2812,6 +2833,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const soilRead = yield* itemUseBlockTypeAt(state, soil, observed.success.blocks[0])
                 const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
+                if (soilRead._tag === 'Fault') {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
                 if (soilRead._tag === 'Failure') {
                   itemUseResults.push({
                     action: request.action,
@@ -2822,6 +2847,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     outcome: soilRead.failure,
                   })
                   break itemUseAction
+                }
+                if (aboveRead._tag === 'Fault') {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
                 }
                 if (aboveRead._tag === 'Failure') {
                   itemUseResults.push({
@@ -2963,6 +2992,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
+                if (blockRead._tag === 'Fault') {
+                  yield* requeueItemUse(request)
+                  continue itemUseRequests
+                }
                 if (blockRead._tag === 'Failure') {
                   itemUseResults.push({
                     action: request.action,

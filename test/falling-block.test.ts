@@ -68,6 +68,7 @@ describe('falling block domain', () => {
       expect(yield* applyFallingBlocks(store, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(reads).toBe(0)
       expect(writes).toBe(0)

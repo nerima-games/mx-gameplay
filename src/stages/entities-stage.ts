@@ -9,6 +9,7 @@ import {
   applyFallingBlocks,
   hostileSpawnsAllowed,
   recordGameplayEntityStageExecutionFailure,
+  recordGameplayEntityWorldDataFault,
   recordGameplayStageFailure,
   recordGameplayEntityStageFault,
   recordGameplayUnsupportedOperation,
@@ -141,6 +142,7 @@ import {
 import type {
   DroppedItemPickupExecution,
   ExperienceOrbAbsorptionExecution,
+  EntityWorldDataFaultSource,
   EntityStageFault,
   GameplayStageContext,
   StageRegistration,
@@ -173,15 +175,10 @@ const entityWorldFaultTarget = (
 
 const recordEntityWorldDataFault = (
   state: GameplayStageContext['state'],
-  source: 'UndeadDaylight' | 'MobMovement' | 'EndermanTeleport' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion',
+  source: EntityWorldDataFaultSource,
   failure: EntityWorldQueryFailure,
   entityId?: import('@nerima-games/mc-sim').EntityId,
-): Effect.Effect<void> => recordGameplayEntityStageFault(state, {
-  _tag: 'EntityWorldDataFault',
-  source,
-  target: entityWorldFaultTarget(failure, entityId),
-  failure,
-})
+): Effect.Effect<void> => recordGameplayEntityWorldDataFault(state, source, failure, entityId)
 
 export const entityStageFaultForMobMovement = (fault: MobMovementRosterFault): EntityStageFault => {
   switch (fault.reason) {
@@ -1717,6 +1714,9 @@ const runMobSimulation = (
     for (const fault of found.faults ?? []) {
       yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
     }
+    for (const failure of found.worldFaults) {
+      yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
+    }
     searchedAttempts = found.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
     nextRollSeed = found.seed
   }
@@ -1731,6 +1731,9 @@ const runMobSimulation = (
     )
     for (const fault of found.faults ?? []) {
       yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+    }
+    for (const failure of found.worldFaults) {
+      yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
     }
     nextRollSeed = found.seed
     searchedAttempts = searchedAttempts.length === 0
@@ -1966,11 +1969,23 @@ const runMobSimulation = (
     )
     for (const cell of craterCells(blastPosition, blastEvent.explosion.power)) {
       const reading = yield* store.getBlock(cell)
-      if (
-        reading._tag !== 'Block' ||
-        reading.block === AIR_BLOCK_ID ||
-        Result.getOrUndefined(resistsExplosion(reading.block, power)) !== false
-      ) continue
+      if (reading._tag !== 'Block' || reading.block === AIR_BLOCK_ID) continue
+      const worldCell = { x: cell.x, y: cell.y, z: cell.z }
+      const blockData = entityWorldBlockDataAt(worldCell, reading.block)
+      if (Result.isFailure(blockData)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', blockData.failure)
+        continue
+      }
+      const resistance = resistsExplosion(reading.block, power)
+      if (Result.isFailure(resistance)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', {
+          _tag: 'EntityWorldRegistryFailure',
+          cell: worldCell,
+          failure: resistance.failure,
+        })
+        continue
+      }
+      if (resistance.success) continue
       const key = blockPositionKeyOf(cell)
       if (blockEdits.has(key)) continue
       blockEdits.set(key, { position: cell, block: AIR_BLOCK_ID })
@@ -2315,6 +2330,9 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         const moves = yield* applyFallingBlocks(store, batch)
         for (const fault of moves.failures ?? []) {
           yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+        }
+        for (const failure of moves.faults) {
+          yield* recordGameplayEntityWorldDataFault(state, 'FallingBlock', failure)
         }
 
         // `update`, not `set`: the store writes above may have caused other

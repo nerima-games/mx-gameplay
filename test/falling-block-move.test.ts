@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from 'effect'
 import { LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
 import {
   AIR_BLOCK_ID,
+  BlockId,
   BlockAxis,
   BlockIdSchema,
   BlockPositionSchema,
@@ -10,7 +11,6 @@ import {
   blockPosition,
   blockPositionKeyOf,
   type BlockPosition,
-  type BlockId,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
 import { applyFallingBlocks } from '../src/domain/entities/falling-block-move'
@@ -33,6 +33,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(store.api, [malformedKey, upperBoundary])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
     }),
@@ -48,7 +49,7 @@ describe('falling block move input boundaries', () => {
       // Sand falls when its support is removed: https://minecraft.wiki/w/Sand
       const moves = yield* applyFallingBlocks(store.api, [blockPositionKeyOf(floor)])
 
-      expect(moves).toStrictEqual({ moved: 1, destinations: [blockPositionKeyOf(source)] })
+      expect(moves).toStrictEqual({ moved: 1, destinations: [blockPositionKeyOf(source)], faults: [] })
       expect(yield* store.blockAt(source)).toBe(AIR_BLOCK_ID)
       expect(yield* store.blockAt(floor)).toBe(sand)
       expect(yield* store.calls).toStrictEqual({ reads: 3, writes: 2, peeks: 0 })
@@ -66,11 +67,13 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(dirtStore.api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* dirtStore.calls).toStrictEqual({ reads: 1, writes: 0, peeks: 0 })
       expect(yield* applyFallingBlocks(outOfWorldStore.api, [blockPositionKeyOf(outOfWorldTarget)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* outOfWorldStore.calls).toStrictEqual({ reads: 1, writes: 0, peeks: 0 })
     }),
@@ -92,9 +95,37 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* store.blockAt(source)).toBe(block('sand'))
       expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+    }),
+  )
+
+  it.effect('returns a typed fault and retries when a source block id is unregistered', () =>
+    Effect.gen(function* () {
+      const target = at(5)
+      const source = at(6)
+      const base = yield* makeChunkStoreDouble(world([[source, block('sand')]]), ['0,0'])
+      const api = {
+        ...base.api,
+        getBlock: (position: BlockPosition) =>
+          samePosition(position, source)
+            ? Effect.succeed({ _tag: 'Block' as const, block: BlockId(60_000) })
+            : base.api.getBlock(position),
+      }
+
+      expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
+        moved: 0,
+        destinations: [blockPositionKeyOf(target)],
+        faults: [{
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: source,
+          blockId: BlockId(60_000),
+        }],
+      })
+      expect(yield* base.blockAt(source)).toBe(block('sand'))
+      expect(yield* base.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
     }),
   )
 
@@ -119,14 +150,17 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(unavailableApi, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* applyFallingBlocks(solidStore.api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* applyFallingBlocks(floorStore.api, [blockPositionKeyOf(belowWorld)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(yield* unavailableStore.blockAt(source)).toBe(sand)
       expect(yield* solidStore.blockAt(source)).toBe(sand)
@@ -159,6 +193,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(competingWrite).toBe(true)
       expect(yield* store.blockAt(source)).toBe(AIR_BLOCK_ID)
@@ -187,6 +222,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
       })
       expect(refusedDestinationWrite).toBe(true)
       expect(yield* store.blockAt(source)).toBe(sand)
@@ -312,6 +348,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(store.api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 1,
         destinations: [blockPositionKeyOf(below), blockPositionKeyOf(source)],
+        faults: [],
       })
       expect(yield* store.blockAt(source)).toBe(AIR_BLOCK_ID)
       expect(yield* store.blockAt(target)).toBe(sand)
