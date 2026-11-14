@@ -2267,6 +2267,7 @@ export type EntityStageFault =
       _tag: 'GameplayRequestFault'
       source: 'Mining' | 'BlockUse' | 'ItemUse' | 'Tnt' | 'Fluid' | 'VehicleMovement'
       requestId?: string
+      positionKey?: BlockPositionKey
       reason:
         | 'InvalidBlockPositionKey'
         | 'NeighbourPositionOverflow'
@@ -2348,8 +2349,15 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
             : fault.failure._tag
       return gameplayEntityStageFaultKey(`${target}:${reason}`)
     }
-    case 'GameplayRequestFault':
-      return gameplayEntityStageFaultKey(`request:${fault.source}:${fault.requestId ?? 'key-only'}:${fault.reason}`)
+    case 'GameplayRequestFault': {
+      if (fault.requestId !== undefined) {
+        return gameplayEntityStageFaultKey(`request:${fault.source}:${fault.requestId}:${fault.reason}`)
+      }
+      if (fault.positionKey !== undefined) {
+        return gameplayEntityStageFaultKey(`position:${fault.source}:${fault.positionKey}:${fault.reason}`)
+      }
+      return gameplayEntityStageFaultKey(`request:${fault.source}:key-only:${fault.reason}`)
+    }
     case 'FluidNeighbourPositionFault':
       return gameplayEntityStageFaultKey(`fluid:${fault.cell.x}:${fault.cell.y}:${fault.cell.z}:${fault.reason}`)
     case 'MobBehaviourRepairFault': {
@@ -2400,10 +2408,12 @@ export const recordGameplayRequestFault = (
   source: Extract<EntityStageFault, { _tag: 'GameplayRequestFault' }>['source'],
   requestId?: string,
   reason: Extract<EntityStageFault, { _tag: 'GameplayRequestFault' }>['reason'] = 'InvalidBlockPositionKey',
+  positionKey?: BlockPositionKey,
 ): Effect.Effect<void> => recordGameplayEntityStageFault(state, {
   _tag: 'GameplayRequestFault',
   source,
   ...(requestId === undefined ? {} : { requestId }),
+  ...(requestId === undefined && positionKey !== undefined ? { positionKey } : {}),
   reason,
 })
 

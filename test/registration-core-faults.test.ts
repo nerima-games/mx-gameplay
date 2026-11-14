@@ -92,6 +92,32 @@ const sameCell = (left: BlockPosition, right: BlockPosition): boolean =>
 const unknownBlockId = BlockId(65_535)
 
 describe('registration-core typed world faults', () => {
+  it.effect('records distinct uncorrelated malformed position keys and keeps each deduplicated after draining', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]))
+      const firstKey = 'malformed-position-a' as ReturnType<typeof blockPositionKeyOf>
+      const secondKey = 'malformed-position-b' as ReturnType<typeof blockPositionKeyOf>
+      const keys = [firstKey, secondKey] as const
+      const requests = keys.map((positionKey) => ({ positionKey, heldItem: 'stone' as const }))
+      const interactions = stageFor(harness, GAMEPLAY_STAGE_IDS.interactions)
+      yield* Ref.set(harness.state.pendingPlacements, requests)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual(keys.map((positionKey) => ({
+        _tag: 'GameplayRequestFault', source: 'ItemUse', reason: 'InvalidBlockPositionKey', positionKey,
+      })))
+
+      yield* Ref.set(harness.state.pendingPlacements, [...requests].reverse())
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
+      yield* recordGameplayRequestFault(harness.state, 'ItemUse', 'same-request', 'InvalidBlockPositionKey', firstKey)
+      yield* recordGameplayRequestFault(harness.state, 'ItemUse', 'same-request', 'InvalidBlockPositionKey', secondKey)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'same-request', reason: 'InvalidBlockPositionKey',
+      }])
+      expect(yield* harness.commit.coordinator.revision).toBe(0)
+    }),
+  )
+
   it.effect('records an unrepresentable player grid position once and continues unrelated requests', () =>
     Effect.gen(function* () {
       const playerPose = { ...SPAWN_POSE, feetPosition: { ...SPAWN_POSE.feetPosition, x: PositionAxis(Number.MAX_VALUE) } }

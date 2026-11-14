@@ -1400,7 +1400,7 @@ describe('interaction input and world boundaries', () => {
         requestId: request.requestId, reason: 'InvalidBlockPositionKey',
       })
     }
-    expect(faults).toContainEqual({ _tag: 'GameplayRequestFault', source: 'ItemUse', reason: 'InvalidBlockPositionKey' })
+    expect(faults).toContainEqual({ _tag: 'GameplayRequestFault', source: 'ItemUse', reason: 'InvalidBlockPositionKey', positionKey: invalidKey })
     expect(faults).toContainEqual({ _tag: 'GameplayRequestFault', source: 'BlockUse', requestId: 'bad-block-use', reason: 'InvalidBlockPositionKey' })
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
       requestId: 'valid-non-crop', success: false, outcome: { _tag: 'notCrop' },

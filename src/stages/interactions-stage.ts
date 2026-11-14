@@ -202,7 +202,7 @@ const blockPositionForRequest = (
 ): Effect.Effect<BlockPosition | undefined> => Effect.gen(function* () {
   const result = blockPositionForKey(key)
   if (Result.isFailure(result)) {
-    yield* recordGameplayRequestFault(state, source, requestId)
+    yield* recordGameplayRequestFault(state, source, requestId, 'InvalidBlockPositionKey', key)
     return undefined
   }
   return result.success
