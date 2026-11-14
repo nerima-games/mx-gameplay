@@ -6,6 +6,7 @@ import {
   blockPosition,
   blockTypeOfId,
   type BlockPosition,
+  type BlockRegistryResolutionFailure,
 } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
@@ -21,6 +22,7 @@ const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
 
 type TargetBlockFailure = Extract<ReturnType<typeof targetBlockFromPlayerPose>, { readonly _tag: 'Failure' }>['failure']
   | GameplayStageBlockTypeDecodeFailure
+  | BlockRegistryResolutionFailure
 
 /** Resolve the route from a pose read from the authoritative gameplay player owner. */
 export const targetedRightClickRoute = (
@@ -45,17 +47,8 @@ export const targetedRightClickRoute = (
       const reading = yield* store.getBlock(position)
       if (reading._tag !== 'Block' || reading.block === 0) continue
 
-      const decoded = blockTypeOfId(reading.block)
-      if (decoded._tag === 'Failure') {
-        const reason: GameplayStageBlockTypeDecodeFailure = {
-          _tag: 'BlockTypeDecodeFailed',
-          position,
-          block: reading.block,
-          failure: decoded.failure,
-        }
-        return yield* Effect.fail(reason)
-      }
-      if (decoded.success === undefined) {
+      const decoded = yield* Effect.fromResult(blockTypeOfId(reading.block))
+      if (decoded === undefined) {
         const reason: GameplayStageBlockTypeDecodeFailure = {
           _tag: 'BlockTypeDecodeFailed',
           position,
@@ -65,7 +58,7 @@ export const targetedRightClickRoute = (
         return yield* Effect.fail(reason)
       }
 
-      return rightClickRoute(position, decoded.success)
+      return rightClickRoute(position, decoded)
     }
 
     return undefined

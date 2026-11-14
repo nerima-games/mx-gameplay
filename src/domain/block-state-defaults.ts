@@ -20,9 +20,7 @@ export const materializeDefaultBlockStates = (
       continue
     }
 
-    const state = defaultBlockState(block)
-    if (Result.isFailure(state)) return Result.fail(state.failure)
-    const blockState = encodeBlockState(block, state.success)
+    const blockState = Result.flatMap(defaultBlockState(block), (state) => encodeBlockState(block, state))
     if (Result.isFailure(blockState)) return Result.fail(blockState.failure)
 
     encoded[index] = blockState.success
