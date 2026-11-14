@@ -1232,11 +1232,14 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(longDelta.contactTicks).toStrictEqual([SimulationTick(0), SimulationTick(0)])
   })
 
-  it('fails closed when the entities stage tick is behind a stored contact tick', async () => {
+  it('skips contact damage when its stored tick is ahead while allowing entity movement', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: zombieAt(1, 64) }))
     const previousCooldowns = new Map([[EntityId('test:zombie'), SimulationTick(10)]])
     await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, previousCooldowns))
     await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(9)))
+    const vitalsBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
 
     const exit = await Effect.runPromiseExit(
       harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
@@ -1244,7 +1247,12 @@ describe('entities stage owner-backed MobSimulation', () => {
 
     expect(exit._tag).toBe('Success')
     await expectEntityStagePlanBuildFailure(harness.state, 'invalid-tick-order')
-    expect(harness.commits()).toBe(0)
+    expect(harness.commits()).toBe(1)
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([GAMEPLAY_ENTITIES_OWNER_ID])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))).state).toStrictEqual(vitalsBefore.state)
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).toStrictEqual(previousCooldowns)
   })
 
@@ -2566,7 +2574,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
 
     expect(exit._tag).toBe('Success')
-    await expectEntityStagePlanBuildFailure(harness.state, { _tag: 'EntitySerialExhausted' })
+    await expectEntityStageExecutionFailure(harness.state)
     expect(harness.commits()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -2940,7 +2948,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
 
     expect(exit._tag).toBe('Success')
-    await expectEntityStageExecutionFailure(harness.state)
+    await expectEntityStagePlanBuildFailure(harness.state, { _tag: 'EntitySerialExhausted' })
     expect(harness.commits()).toBe(1)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(exhaustedRoster)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(exhaustedRoster.revision)

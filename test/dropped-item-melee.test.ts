@@ -459,14 +459,14 @@ describe('dropped item entities', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const invalidDrops = [
         { drop: { item: 'gunpowder' as const, count: 0 }, failureTag: 'InvalidStack' },
-        { drop: { item: 'wooden_pickaxe' as const, count: 1, durability: null }, failureTag: 'SchemaError' },
+        { drop: { item: 'wooden_pickaxe' as const, count: 1, durability: null }, failureTag: 'InvalidStack' },
         {
           drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 0, max: 59 } },
           failureTag: 'SchemaError',
         },
         {
           drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 12, max: 60 } },
-          failureTag: 'SchemaError',
+          failureTag: 'InvalidStack',
         },
         {
           drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 60, max: 59 } },
@@ -475,7 +475,7 @@ describe('dropped item entities', () => {
         { drop: { item: 'wooden_pickaxe' as const, count: 2 }, failureTag: 'InvalidStack' },
         {
           drop: { item: 'gunpowder' as const, count: 1, durability: { current: 1, max: 1 } },
-          failureTag: 'SchemaError',
+          failureTag: 'InvalidStack',
         },
       ] as const
 

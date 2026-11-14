@@ -178,6 +178,7 @@ const projectileStateWithBobber = () =>
   })
 
 const combatTarget = (id: string, healthPoints = 20) => ({
+  behaviour: undefined,
   id: EntityId(id),
   kind: EntityKind('creeper'),
   dimension: DIMENSION,
@@ -6092,15 +6093,15 @@ describe('schema-valid interaction edge paths', () => {
     const invalidNaN = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
     const injectedInvalid = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
     const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
-    const cropState = (position: BlockPosition) => ({
+    const cropState = (cropPosition: BlockPosition) => ({
       dimension: DIMENSION,
-      position,
+      position: cropPosition,
       crop: 'potato_crop' as const,
       growthSecs: POTATO_MATURITY_SECS,
     })
     const harness = await Effect.runPromise(makeHarness({
       blocks: [boundaryLow, boundaryHigh, invalidNegative, invalidOne, invalidNaN, injectedInvalid]
-        .map((position) => [position, potatoCrop] as const),
+        .map((cropPosition) => [cropPosition, potatoCrop] as const),
       crops: { crops: [boundaryLow, boundaryHigh, invalidNegative, invalidOne, invalidNaN, injectedInvalid].map(cropState) },
       playerStorage: playerStorageWithItem('potato', 1),
     }))
@@ -6162,7 +6163,7 @@ describe('schema-valid interaction edge paths', () => {
     expect((await Effect.runPromise(harness.coordinator.snapshot(
       GAMEPLAY_CROPS_OWNER_ID,
       CropSnapshotSchema,
-    ))).state.crops.map(({ position }) => position)).toStrictEqual([
+    ))).state.crops.map(({ position: cropPosition }) => cropPosition)).toStrictEqual([
       invalidNegative,
       invalidOne,
       invalidNaN,
@@ -6194,7 +6195,7 @@ describe('schema-valid interaction edge paths', () => {
         validUpper,
         injectedInvalid,
       ]
-        .map((position) => [position, dirt] as const),
+        .map((miningPosition) => [miningPosition, dirt] as const),
     }))
     const explicitUndefinedFortune = {}
     Object.defineProperty(explicitUndefinedFortune, 'fortuneLevel', { value: undefined, enumerable: true })
@@ -6240,10 +6241,10 @@ describe('schema-valid interaction edge paths', () => {
           requestId: blockPositionKeyOf(invalidNaN),
           reason: 'InvalidBlockLootFortuneLevel',
         },
-        ...[invalidNegative, invalidFraction, invalidUnsafe].map((position) => ({
+        ...[invalidNegative, invalidFraction, invalidUnsafe].map((miningPosition) => ({
           _tag: 'GameplayRequestFault',
           source: 'Mining',
-          requestId: blockPositionKeyOf(position),
+          requestId: blockPositionKeyOf(miningPosition),
           reason: 'InvalidBlockLootFortuneLevel',
         })),
         {

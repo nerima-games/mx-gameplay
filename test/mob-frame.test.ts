@@ -601,7 +601,7 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     }),
   )
 
-  it.effect('a zombie migrates an omitted state and faults on any present inner behaviour', () =>
+  it.effect('a zombie migrates an omitted state and reports malformed ecosystem state', () =>
     Effect.sync(() => {
       // `hostile-despawn-frame.test.ts` only exercises the ZOMBIE_KIND branch
       // through an ALREADY-wrapped snapshot, so `isHostileMobSnapshot` takes the
@@ -610,13 +610,13 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       expect(repairMobBehaviour(ZOMBIE_KIND, undefined)).toStrictEqual(hostileMobSnapshot(undefined))
       expect(repairMobBehaviour(ZOMBIE_KIND, { _tag: 'Lit', burnedSecs: 1 })).toMatchObject({
         _tag: 'MobBehaviourRepairFault',
-        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' },
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: '_tag' },
       })
       expect(repairMobBehaviour(ZOMBIE_KIND, {
         ...hostileMobSnapshot(undefined), behaviour: undefined,
       })).toMatchObject({
         _tag: 'MobBehaviourRepairFault',
-        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' },
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: '_tag' },
       })
     }),
   )
