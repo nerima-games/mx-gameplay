@@ -4906,6 +4906,30 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('reports a harvest when the crop owner disagrees with the world block', async () => {
+    const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, wheatBlock]],
+      crops: { crops: [{ dimension: 'overworld', position: target, crop: 'potato_crop', growthSecs: 0 }] },
+    }))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'harvest-crop-owner-mismatch', target, 0.5))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'HarvestPotato',
+      requestId: 'harvest-crop-owner-mismatch',
+      success: false,
+      outcome: {
+        _tag: 'cropOwnerMismatch',
+        block: 'wheat_crop',
+        registeredCrop: 'potato_crop',
+      },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('records a missing block result returned by the host coordinator', async () => {
     const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
     const harness = await Effect.runPromise(makeHarness({
