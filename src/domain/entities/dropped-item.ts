@@ -336,9 +336,6 @@ type ResolvedDroppedItemSpawn = Readonly<{
 const resolveDroppedItemSpawn = (
   drop: DroppedItemSpawn,
 ): Result.Result<ResolvedDroppedItemSpawn, DroppedItemSpawnError> => {
-  if (Object.hasOwn(drop, 'durability') && drop.durability === undefined) {
-    return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'durability' })
-  }
   if (Object.hasOwn(drop, 'eligibleFromFrame') && drop.eligibleFromFrame === undefined) {
     return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'eligibleFromFrame' })
   }

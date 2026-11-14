@@ -924,57 +924,12 @@ const resolveMobProjectileImpactsOnce = (
       burning: impact.kind === BLAZE_KIND,
     }]
   })
-  let damagePlan = planMobDamageRoster(entitySnapshot.state, mobHits, tick)
+  const damagePlan = planMobDamageRoster(entitySnapshot.state, mobHits, tick)
   for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(context.state, fault)
-  const casualtyDropsResult = rollCasualtyDrops(damagePlan.casualties, seed)
-  if (Result.isFailure(casualtyDropsResult)) {
-    if (damagePlan.casualties.length === 0) {
-      yield* recordGameplayStageFailure(context.state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
-      })
-    } else {
-      const affectedIds = new Set(damagePlan.casualties.map(({ id }) => id))
-      for (const casualty of damagePlan.casualties) {
-        yield* recordGameplayEntityStageFault(context.state, {
-          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyDropsResult.failure,
-        })
-      }
-      damagePlan = planMobDamageRoster(
-        entitySnapshot.state,
-        mobHits.filter(({ id }) => !affectedIds.has(id)),
-        tick,
-      )
-    }
-  }
-  let casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
-  const casualtyExperienceResult = casualtyDrops === undefined
-    ? undefined
-    : rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
-  if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
-    const affectedCasualties = damagePlan.casualties
-    if (affectedCasualties.length === 0) {
-      yield* recordGameplayStageFailure(context.state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
-      })
-    } else {
-      const affectedIds = new Set(affectedCasualties.map(({ id }) => id))
-      for (const casualty of affectedCasualties) {
-        yield* recordGameplayEntityStageFault(context.state, {
-          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
-        })
-      }
-      damagePlan = planMobDamageRoster(
-        entitySnapshot.state,
-        mobHits.filter(({ id }) => !affectedIds.has(id)),
-        tick,
-      )
-      casualtyDrops = undefined
-    }
-  }
-  const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
-    ? undefined
-    : casualtyExperienceResult.success
-  const nextRewardSeed = casualtyExperience?.seed ?? casualtyDrops?.seed ?? seed
+  // The frame seed and generated casualties contain no external roll counts or overrides.
+  const casualtyDrops = Result.getOrThrow(rollCasualtyDrops(damagePlan.casualties, seed))
+  const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed))
+  const nextRewardSeed = casualtyExperience.seed
   const entityCandidateResult = restoreGameplayEntityMetadata(
     damagePlan.roster,
     entitySnapshot.state,
@@ -1097,7 +1052,7 @@ const resolveMobProjectileImpactsOnce = (
   }
 
   let droppedCandidate: DroppedItemOwnerSnapshot | undefined
-  if ((casualtyDrops?.drops.length ?? 0) > 0) {
+  if (casualtyDrops.drops.length > 0) {
     const droppedItemsOwnerId = projectileCommit.droppedItemsOwnerId!
     const snapshot = yield* projectileCommit.coordinator.snapshot(droppedItemsOwnerId, DroppedItemOwnerSnapshotSchema)
     if (snapshot.revision !== expectedRevision) {
@@ -1105,7 +1060,7 @@ const resolveMobProjectileImpactsOnce = (
     }
     droppedCandidate = yield* Effect.fromResult(appendDroppedItemSpawns(
       snapshot.state,
-      casualtyDrops!.drops.map(({ item, count, at }) => ({ item, count, at })),
+      casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at })),
       expectedRevision,
     ))
   }
@@ -1156,8 +1111,8 @@ const resolveMobProjectileImpactsOnce = (
   })
   return {
     playerDamages,
-    drops: casualtyDrops?.drops ?? [],
-    experience: casualtyExperience?.experience ?? [],
+    drops: casualtyDrops.drops,
+    experience: casualtyExperience.experience,
     seed: nextRewardSeed,
     shield,
     immunity,
@@ -1421,61 +1376,10 @@ const runTntSimulation = (
     const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
     for (const fault of mobBlast.faults) yield* recordGameplayEntityStageFault(state, fault)
-    const lootResult = rollCasualtyDrops(mobBlast.casualties, seed)
-    let mobBlastRoster = mobBlast.roster
-    if (Result.isFailure(lootResult)) {
-      if (mobBlast.casualties.length === 0) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: lootResult.failure,
-        })
-      } else {
-        const affectedIds = new Set(mobBlast.casualties.map(({ id: casualtyId }) => casualtyId))
-        for (const casualty of mobBlast.casualties) {
-          yield* recordGameplayEntityStageFault(state, {
-            _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: lootResult.failure,
-          })
-        }
-        const retained = new Map(mobBlast.roster.entities.map((entity) => [entity.id, entity]))
-        for (const entity of roster.entities) {
-          if (affectedIds.has(entity.id)) retained.set(entity.id, entity)
-        }
-        mobBlastRoster = {
-          ...mobBlast.roster,
-          entities: [...retained.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
-        }
-      }
-    }
-    let loot = Result.isFailure(lootResult) ? undefined : lootResult.success
-    const casualtyExperienceResult = loot === undefined
-      ? undefined
-      : rollCasualtyExperience(mobBlast.casualties, loot.seed)
-    if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
-      if (mobBlast.casualties.length === 0) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
-        })
-      } else {
-        const affectedIds = new Set(mobBlast.casualties.map(({ id: casualtyId }) => casualtyId))
-        for (const casualty of mobBlast.casualties) {
-          yield* recordGameplayEntityStageFault(state, {
-            _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
-          })
-        }
-        const retained = new Map(mobBlastRoster.entities.map((entity) => [entity.id, entity]))
-        for (const entity of roster.entities) {
-          if (affectedIds.has(entity.id)) retained.set(entity.id, entity)
-        }
-        mobBlastRoster = {
-          ...mobBlastRoster,
-          entities: [...retained.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
-        }
-      }
-      loot = undefined
-    }
-    const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
-      ? undefined
-      : casualtyExperienceResult.success
-    const nextTntRewardSeed = casualtyExperience?.seed ?? loot?.seed ?? seed
+    const mobBlastRoster = mobBlast.roster
+    const loot = Result.getOrThrow(rollCasualtyDrops(mobBlast.casualties, seed))
+    const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(mobBlast.casualties, loot.seed))
+    const nextTntRewardSeed = casualtyExperience.seed
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
@@ -1554,7 +1458,7 @@ const runTntSimulation = (
       : undefined
 
     let droppedCandidate: DroppedItemOwnerSnapshot | undefined
-    if ((loot?.drops.length ?? 0) > 0) {
+    if (loot.drops.length > 0) {
       const droppedItemsOwnerId = commit.droppedItemsOwnerId
       if (droppedItemsOwnerId === undefined) {
         yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
@@ -1570,7 +1474,7 @@ const runTntSimulation = (
           actual: droppedSnapshot.revision,
         }))
       }
-      const drops: ReadonlyArray<DroppedItemSpawn> = loot!.drops.map(({ item, count, at }) => ({ item, count, at }))
+      const drops: ReadonlyArray<DroppedItemSpawn> = loot.drops.map(({ item, count, at }) => ({ item, count, at }))
       droppedCandidate = yield* Effect.fromResult(
         appendDroppedItemSpawns(droppedSnapshot.state, drops, outcome.expectedRevision),
       )
@@ -1599,14 +1503,14 @@ const runTntSimulation = (
 
     yield* commit.tntService.commitDetonation({ id: outcome.id, planRevision: outcome.planRevision }, changes)
 
-    if (loot?._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
-    if (casualtyExperience?._tag === 'Unsupported') {
+    if (loot._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
+    if (casualtyExperience._tag === 'Unsupported') {
       yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
     }
     yield* Ref.set(state.rollSeed, nextTntRewardSeed)
-    if ((loot?.drops.length ?? 0) > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot!.drops])
-    if ((casualtyExperience?.experience.length ?? 0) > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience!.experience])
+    if (loot.drops.length > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot.drops])
+    if (casualtyExperience.experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
     }
     if (playerDamage !== undefined) yield* Ref.update(state.playerDamages, (pending) => [...pending, playerDamage])
     const disturbed = outcome.explosion.destroyedBlocks.map(({ x, y, z }) => blockPositionKeyOf(blockPosition(
@@ -1832,47 +1736,10 @@ const runMobSimulation = (
     hostileSpawnSearchDue(stageTick, lastHostileSpawnTick, difficulty),
   )
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
-  const casualtyDropsResult = rollCasualtyDrops(mobCasualties, sweep.seed)
-  if (Result.isFailure(casualtyDropsResult)) {
-    if (mobCasualties.length === 0) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyDropsResult.failure,
-      })
-    } else {
-      for (const casualty of mobCasualties) {
-        yield* recordGameplayEntityStageFault(state, {
-          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyDropsResult.failure,
-        })
-        const entity = tickRoster.entities.find(({ id }) => id === casualty.id)
-        if (entity !== undefined) faultedEntities.set(entity.id, entity)
-      }
-    }
-  }
-  let casualtyDrops = Result.isFailure(casualtyDropsResult) ? undefined : casualtyDropsResult.success
-  const casualtyExperienceResult = casualtyDrops === undefined
-    ? undefined
-    : rollCasualtyExperience(mobCasualties, casualtyDrops.seed)
-  if (casualtyExperienceResult !== undefined && Result.isFailure(casualtyExperienceResult)) {
-    if (mobCasualties.length === 0) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyExperienceResult.failure,
-      })
-    } else {
-      for (const casualty of mobCasualties) {
-        yield* recordGameplayEntityStageFault(state, {
-          _tag: 'MobFrameRuleFault', entityId: casualty.id, failure: casualtyExperienceResult.failure,
-        })
-        const entity = tickRoster.entities.find(({ id }) => id === casualty.id)
-        if (entity !== undefined) faultedEntities.set(entity.id, entity)
-      }
-      casualtyDrops = undefined
-    }
-  }
-  const casualtyExperience = casualtyExperienceResult === undefined || Result.isFailure(casualtyExperienceResult)
-    ? undefined
-    : casualtyExperienceResult.success
+  const casualtyDrops = Result.getOrThrow(rollCasualtyDrops(mobCasualties, sweep.seed))
+  const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(mobCasualties, casualtyDrops.seed))
   let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
-  let nextRollSeed = casualtyExperience?.seed ?? casualtyDrops?.seed ?? sweep.seed
+  let nextRollSeed = casualtyExperience.seed
   const passiveInitialSpawnPending = yield* Ref.get(state.passiveInitialSpawnPending)
   const lastPassiveSpawnTick = yield* Ref.get(state.lastPassiveSpawnTick)
   const hostileWindow = hostileSpawnsAllowed(timeOfDay)
@@ -2158,7 +2025,7 @@ const runMobSimulation = (
   }
 
   let droppedCandidate: DroppedItemOwnerSnapshot | undefined
-  if ((casualtyDrops?.drops.length ?? 0) > 0) {
+  if (casualtyDrops.drops.length > 0) {
     if (commit.droppedItemsOwnerId === undefined) {
       yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
       return
@@ -2173,7 +2040,7 @@ const runMobSimulation = (
         actual: droppedSnapshot.revision,
       }))
     }
-    const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops!.drops.map(({ item, count, at }) => ({ item, count, at }))
+    const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at }))
     droppedCandidate = yield* Effect.fromResult(
       appendDroppedItemSpawns(droppedSnapshot.state, drops, expectedRevision),
     )
@@ -2325,10 +2192,10 @@ const runMobSimulation = (
     })
   }
 
-  if (casualtyDrops?._tag === 'Unsupported') {
+  if (casualtyDrops._tag === 'Unsupported') {
     yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
   }
-  if (casualtyExperience?._tag === 'Unsupported') {
+  if (casualtyExperience._tag === 'Unsupported') {
     yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
   }
 
@@ -2350,16 +2217,16 @@ const runMobSimulation = (
     (Result.isSuccess(spawned) || spawned.failure._tag !== 'EntitySerialExhausted')) {
     yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(offeredAttempts.length))
   }
-  if ((casualtyDrops?.drops.length ?? 0) > 0) {
-    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops!.drops])
+  if (casualtyDrops.drops.length > 0) {
+    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
   }
   if (projectileResolution.drops.length > 0) {
     yield* Ref.update(state.mobDrops, (pending) => [...pending, ...projectileResolution.drops])
   }
-  if ((casualtyExperience?.experience.length ?? 0) > 0 || projectileResolution.experience.length > 0) {
+  if (casualtyExperience.experience.length > 0 || projectileResolution.experience.length > 0) {
     yield* Ref.update(state.mobExperience, (pending) => [
       ...pending,
-      ...(casualtyExperience?.experience ?? []),
+      ...casualtyExperience.experience,
       ...projectileResolution.experience,
     ])
   }

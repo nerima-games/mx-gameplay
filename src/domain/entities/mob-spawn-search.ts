@@ -84,7 +84,7 @@ import {
   type RandomSeed as RandomSeedValue,
 } from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
-import { drawRolls, rollAt, type FrameRollFailure } from '../frame-rolls.js'
+import { drawRolls, type FrameRollFailure } from '../frame-rolls.js'
 import {
   ecosystemDimensionAllows,
   PASSIVE_MOB_KINDS,
@@ -213,9 +213,8 @@ export const searchSpawnCandidates = (
     const spawnKinds: ReadonlyArray<EntityKind> = mode === 'passive'
       ? dimension === 'overworld' ? PASSIVE_MOB_KINDS : []
       : HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension))
-    const rotationResult = rollAt(batch.success, 0)
-    if (Result.isFailure(rotationResult)) return yield* Effect.fail(rotationResult.failure)
-    const rotation = rotationResult.success
+    // The successful fixed-size draw contains the rotation and every ring-cell roll.
+    const rotation = batch.success.rolls[0]!
 
     const attempts: Array<MobSpawnAttempt> = []
     const faults: Array<NonNullable<MobSpawnSearch['faults']>[number]> = []
@@ -276,10 +275,8 @@ export const searchSpawnCandidates = (
         const biome = biomeAt(chunk, local.lx, local.lz)
         const kinds = spawnKinds.filter((kind) => biomeAllowsMob(kind, biome))
         if (kinds.length === 0) continue
-        const kindRoll = rollAt(batch.success, 1 + cellIndex)
-        if (Result.isFailure(kindRoll)) return yield* Effect.fail(kindRoll.failure)
         const kind = kindForRoll(
-          kindRoll.success,
+          batch.success.rolls[1 + cellIndex]!,
           kinds as [EntityKind, ...ReadonlyArray<EntityKind>],
         )
         let columnUnreadable = false

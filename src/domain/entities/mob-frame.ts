@@ -1657,14 +1657,9 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
 
           let teleport: EndermanTeleportProbe | undefined
           if (anchor !== undefined) {
-            const batch = drawRolls(cursor, ENDERMAN_TELEPORT_ROLLS)
-            if (Result.isFailure(batch)) {
-              return {
-                transition: UNCHANGED,
-                emit: { _tag: 'MobFrameRuleFault', entityId: entity.id, failure: batch.failure },
-              }
-            }
-            cursor = batch.success.seed
+            // The successful urge draw supplies a legal seed; the probe budget is fixed.
+            const batch = Result.getOrThrow(drawRolls(cursor, ENDERMAN_TELEPORT_ROLLS))
+            cursor = batch.seed
             // NO `endermanTeleportCandidates(...).length > 0` GATE: it is
             // exhaustively proven always true for every roll this call site can
             // actually produce, so it is not a correctness gate here, only dead
@@ -1692,7 +1687,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
               entityId: entity.id,
               current: entity.feetPosition,
               anchor,
-              rolls: batch.success.rolls,
+              rolls: batch.rolls,
             }
           }
 
@@ -2205,18 +2200,9 @@ const applyMobDamage = (
   vitals: Vitals,
   damage: Damage,
 ): Result.Result<Vitals, DamageApplicationFailure> => {
-  if (typeof vitals !== 'object' || vitals === null) {
-    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals' })
-  }
-  if (typeof damage !== 'object' || damage === null) {
-    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage' })
-  }
+  // Callers construct vitals locally; the previous cause comes only from this rule.
   if (!Number.isFinite(vitals.healthPoints) || vitals.healthPoints < 0) {
     return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals.healthPoints' })
-  }
-  if (!Object.hasOwn(vitals, 'lastDeathCause') ||
-    (vitals.lastDeathCause !== undefined && !isMobDamageCause(vitals.lastDeathCause))) {
-    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals.lastDeathCause' })
   }
   if (!Number.isFinite(damage.amount) || damage.amount < 0) {
     return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' })
@@ -2776,9 +2762,9 @@ export const rollCasualtyDrops = (
         itemIds: table.unsupportedItemIds,
       })
     }
-    const batch = drawRolls(current, dropRollsNeededForTable(table))
-    if (Result.isFailure(batch)) return Result.fail(batch.failure)
-    current = batch.success.seed
+    // The initial draw validates the seed; fixed catalog tables provide the budget.
+    const batch = Result.getOrThrow(drawRolls(current, dropRollsNeededForTable(table)))
+    current = batch.seed
     const playerKill = hasRecentPlayerCredit(casualty)
     const kill: MobKill = {
       ...SLAIN_WITHOUT_LOOTING,
@@ -2791,7 +2777,7 @@ export const rollCasualtyDrops = (
         : { killedByChargedCreeper: casualty.killedByChargedCreeper }),
     }
     drops.push(
-      ...rollMobTable(table, kill, makeMobDropRollSequence(batch.success.rolls)).map((drop) => ({
+      ...rollMobTable(table, kill, makeMobDropRollSequence(batch.rolls)).map((drop) => ({
         ...drop,
         source: casualty.id,
         kind: casualty.kind,
