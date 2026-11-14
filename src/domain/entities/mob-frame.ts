@@ -262,7 +262,7 @@ import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from './entity-w
 import { drawRolls, nextRoll } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
-import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse.js'
+import { CREEPER_FUSE_SECS, DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse.js'
 import {
   ENDERMAN_TELEPORT_ATTEMPTS,
   endermanTeleportCandidateCells,
@@ -967,7 +967,8 @@ const isCreeperFuse = (value: unknown): value is CreeperFuse => {
   }
 
   const burnedSecs = (value as { readonly burnedSecs?: unknown }).burnedSecs
-  return tag === 'Lit' && typeof burnedSecs === 'number' && Number.isFinite(burnedSecs) && burnedSecs >= 0
+  return tag === 'Lit' && typeof burnedSecs === 'number' && Number.isFinite(burnedSecs) &&
+    burnedSecs >= 0 && burnedSecs < CREEPER_FUSE_SECS
 }
 
 /**

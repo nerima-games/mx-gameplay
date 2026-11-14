@@ -19,6 +19,8 @@
  * makes explicitly and none of them had an assertion.
  */
 import { describe, expect, it } from '@effect/vitest'
+import fc from 'fast-check'
+import { afterEach, vi } from 'vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { Brand, Effect, Result, Schema } from 'effect'
 import { NonNegativeTickCount, type Position } from '@nerima-games/mc-kernel'
@@ -35,6 +37,7 @@ import {
   hostileMobSnapshot,
   HOSTILE_KINDS,
   isDroppedItemBehaviour,
+  isHostileMobSnapshot,
   isMobBehaviourRepairFault,
   planEndermanTeleportRoster,
   planMobBlastRoster,
@@ -76,12 +79,37 @@ import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mo
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
-import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
+import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
 import { durabilityForItem, EntityId, EntityKind, MobMovementStateSchema, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+
+const blockTypeControl = vi.hoisted(() => ({ mode: 'native' as 'native' | 'failure' | 'missing' }))
+
+vi.mock('@nerima-games/mc-kernel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nerima-games/mc-kernel')>()
+  const { Result: EffectResult } = await import('effect')
+  const failure = {
+    _tag: 'BlockPropertyFailure',
+    reason: 'type',
+    message: 'registry property resolution failed',
+  } as const
+
+  return {
+    ...actual,
+    blockTypeOfId: (blockId: Parameters<typeof actual.blockTypeOfId>[0]) => {
+      if (blockTypeControl.mode === 'failure') return EffectResult.fail(failure)
+      if (blockTypeControl.mode === 'missing') return EffectResult.succeed(undefined)
+      return actual.blockTypeOfId(blockId)
+    },
+  }
+})
+
+afterEach(() => {
+  blockTypeControl.mode = 'native'
+})
 
 const blockPosition = (x: number, y: number, z: number) =>
   makeBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
@@ -494,10 +522,38 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         _tag: 'MobBehaviourRepairFault',
         failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
       })
+      expect(repairMobBehaviour(CREEPER_KIND, null)).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
+      })
+      expect(repairMobBehaviour(CREEPER_KIND, { _tag: 'Lit', burnedSecs: 0 })).toStrictEqual(
+        hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 0 }),
+      )
+      expect(repairMobBehaviour(CREEPER_KIND, {
+        _tag: 'Lit', burnedSecs: CREEPER_FUSE_SECS - Number.EPSILON,
+      })).toStrictEqual(hostileMobSnapshot({ _tag: 'Lit', burnedSecs: CREEPER_FUSE_SECS - Number.EPSILON }))
+      for (const burnedSecs of [-Number.MIN_VALUE, CREEPER_FUSE_SECS]) {
+        expect(repairMobBehaviour(CREEPER_KIND, { _tag: 'Lit', burnedSecs })).toStrictEqual({
+          _tag: 'MobBehaviourRepairFault',
+          failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
+        })
+      }
       const lit = { _tag: 'Lit' as const, burnedSecs: 0.4 }
       expect(repairMobBehaviour(CREEPER_KIND, lit)).toStrictEqual(hostileMobSnapshot(lit))
     }),
   )
+
+  it('returns a decoded creeper snapshot or typed fault for arbitrary persisted JSON', () => {
+    fc.assert(fc.property(fc.jsonValue(), (storedBehaviour) => {
+      const repaired = repairMobBehaviour(CREEPER_KIND, storedBehaviour)
+      if (isMobBehaviourRepairFault(repaired)) return true
+      if (!isHostileMobSnapshot(repaired)) return false
+      const fuse = repaired.behaviour
+      return fuse === undefined || fuse._tag === 'Dormant' || fuse._tag === 'Detonated' ||
+        (fuse._tag === 'Lit' && typeof fuse.burnedSecs === 'number' &&
+          Number.isFinite(fuse.burnedSecs) && fuse.burnedSecs >= 0 && fuse.burnedSecs < CREEPER_FUSE_SECS)
+    }))
+  })
 
   it.effect('an enderman: only an omitted legacy flinch migrates to steady; malformed state is a typed fault', () =>
     Effect.sync(() => {
@@ -1669,6 +1725,94 @@ describe('planEndermanTeleportRoster', () => {
       }])
       expect(initial.entities[0]).toBe(teleporting)
       expect(initial.entities[1]).toBe(bystander)
+    }),
+  )
+
+  it.effect('moves only the probed enderman to a safe landing', () =>
+    Effect.gen(function* () {
+      const current = atPosition(0, 64, 0)
+      const destination = atPosition(116, 64, 100)
+      const floorCell = blockPosition(destination.x, destination.y - 1, destination.z)
+      const store = yield* makeChunkStoreDouble(world([[floorCell, STONE]]), ['7,6'])
+      const teleporting = mobEntity('e:0', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, current)
+      const bystander = mobEntity('e:1', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, away(1))
+      const initial = mobRoster([teleporting, bystander], 2)
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: teleporting.id,
+        current,
+        anchor: atPosition(100, 70, 100),
+        rolls: [0.75, 0.5],
+      }
+
+      const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
+
+      expect(planned.faults).toStrictEqual([])
+      expect(planned.roster).not.toBe(initial)
+      expect(planned.roster.entities[0]?.feetPosition).toEqual(destination)
+      expect(planned.roster.entities[0]?.healthPoints).toBe(teleporting.healthPoints)
+      expect(planned.roster.entities[0]?.behaviour).toBe(teleporting.behaviour)
+      expect(planned.roster.entities[1]).toBe(bystander)
+    }),
+  )
+
+  it.effect('records a block-type registry failure after resolving the candidate block data', () =>
+    Effect.gen(function* () {
+      blockTypeControl.mode = 'failure'
+      const current = atPosition(0, 64, 0)
+      const destination = atPosition(116, 64, 100)
+      const floorCell = blockPosition(destination.x, destination.y - 1, destination.z)
+      const store = yield* makeChunkStoreDouble(world([[floorCell, STONE]]), ['7,6'])
+      const entity = mobEntity('e:0', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, current)
+      const initial = mobRoster([entity], 1)
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: entity.id,
+        current,
+        anchor: atPosition(100, 70, 100),
+        rolls: [0.75, 0.5],
+      }
+
+      const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
+
+      expect(planned.roster).toBe(initial)
+      expect(planned.faults).toStrictEqual([{
+        _tag: 'EndermanTeleportWorldQueryFailure',
+        entityId: entity.id,
+        failure: {
+          _tag: 'EntityWorldRegistryFailure',
+          cell: floorCell,
+          failure: { _tag: 'BlockPropertyFailure', reason: 'type', message: 'registry property resolution failed' },
+        },
+      }])
+    }),
+  )
+
+  it.effect('records an absent candidate block type as an unregistered block fault', () =>
+    Effect.gen(function* () {
+      blockTypeControl.mode = 'missing'
+      const current = atPosition(0, 64, 0)
+      const destination = atPosition(116, 64, 100)
+      const floorCell = blockPosition(destination.x, destination.y - 1, destination.z)
+      const store = yield* makeChunkStoreDouble(world([[floorCell, STONE]]), ['7,6'])
+      const entity = mobEntity('e:0', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, current)
+      const initial = mobRoster([entity], 1)
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: entity.id,
+        current,
+        anchor: atPosition(100, 70, 100),
+        rolls: [0.75, 0.5],
+      }
+
+      const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
+
+      expect(planned.roster).toBe(initial)
+      expect(planned.faults).toStrictEqual([{
+        _tag: 'EndermanTeleportWorldQueryFailure',
+        entityId: entity.id,
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: floorCell, blockId: STONE },
+      }])
     }),
   )
 
