@@ -6120,6 +6120,31 @@ describe('End portal travel commits the player owner from either source dimensio
 })
 
 describe('portal rechecks cancel travel after the player moves or the chunk unloads', () => {
+  it.effect('records an unknown player-cell block instead of treating it as portal data', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(0xffff)
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'])
+      yield* injectRawBlockId(harness.store.api, cell, unknownBlock)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.state.stageFaults.drain).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'DecodeBlockType',
+        position: cell,
+        reason: expect.objectContaining({
+          _tag: 'BlockTypeDecodeFailed',
+          block: unknownBlock,
+          failure: { _tag: 'UnregisteredBlockId' },
+        }),
+      }))
+    }),
+  )
+
   it.effect('keeps the travel pending when the recheck cannot snapshot the player owner', () =>
     Effect.gen(function* () {
       const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
@@ -6263,6 +6288,56 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
       expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
       expect(yield* Ref.get(harness.state.portalDwell)).toStrictEqual({ _tag: 'Outside' })
       expect(yield* harness.store.blockAt(cell)).toBe(netherPortal)
+    }),
+  )
+
+  it.effect('records an unregistered block seen by the second portal read', () =>
+    Effect.gen(function* () {
+      const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
+      const unknownBlock = BlockId(0xffff)
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([[cell, netherPortal]]), ['0,0'])
+      const portalReads = yield* Ref.make(0)
+      const store: ChunkStoreApi = {
+        ...harness.store.api,
+        getBlock: (position) => {
+          if (blockKey(position) !== blockKey(cell)) return harness.store.api.getBlock(position)
+          return Effect.gen(function* () {
+            const readIndex = yield* Ref.modify(portalReads, (count) => [count, count + 1] as const)
+            if (readIndex === 1) return { _tag: 'Block', block: unknownBlock } satisfies BlockReading
+            return yield* harness.store.api.getBlock(position)
+          })
+        },
+      }
+      const stages = gameplayStages(
+        harness.state,
+        store,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        harness.commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(portalReads)).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* harness.state.stageFaults.drain).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'DecodeBlockType',
+        position: cell,
+        reason: expect.objectContaining({
+          _tag: 'BlockTypeDecodeFailed',
+          block: unknownBlock,
+          failure: { _tag: 'UnregisteredBlockId' },
+        }),
+      }))
     }),
   )
 })

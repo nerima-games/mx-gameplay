@@ -4866,6 +4866,26 @@ describe('schema-valid interaction edge paths', () => {
     expect(await Effect.runPromise(Ref.get(mismatched.state.unsupportedOperations))).toStrictEqual([])
   })
 
+  it('returns a no-op result when bone meal targets a non-crop block', async () => {
+    const boneMealTarget = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[boneMealTarget, stone]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-on-stone', boneMealTarget))
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-on-stone',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'notCrop', at: boneMealTarget, block: 'stone' },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('detects crop-owner revision conflicts for bone meal, planting, and harvesting', async () => {
     const wheatPosition = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
     const plantPosition = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
