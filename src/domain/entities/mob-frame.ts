@@ -233,7 +233,6 @@ import {
   PositionAxis,
   blockPosition,
   blockTypeOfId,
-  capabilityOfBlockId,
   position as kernelPosition,
   type Position,
   type Dimension,
@@ -259,6 +258,7 @@ import {
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from './entity-world-cell.js'
 import { drawRolls, nextRoll } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
@@ -443,6 +443,10 @@ export const isMobBehaviourRepairFault = (value: unknown): value is MobBehaviour
   if (typeof failure !== 'object' || failure === null) return false
   const tag = (failure as { readonly _tag?: unknown })._tag
   if (tag === 'MobMovementStateRepairFailure') return true
+  if (tag === 'MobBehaviourStateRepairFailure') {
+    const kind = (failure as { readonly kind?: unknown }).kind
+    return kind === 'creeper' || kind === 'enderman' || kind === 'primed-tnt' || kind === 'dropped-item'
+  }
   if (tag !== 'EcosystemMobStateRepairFailure') return false
   const field = (failure as { readonly field?: unknown }).field
   return field === '_tag' || field === 'attackCooldownTicks' || field === 'attackCooldownSecs' ||
@@ -738,44 +742,11 @@ export const rollDropsOfKind = (
     : Result.succeed(rollMobTable(table.success, kill, makeMobDropRollSequence(rolls)))
 }
 
-/**
- * The host's `BehaviourRepair` — the function mc-sim's load path delegates to
- * because it cannot check a claim about a type it refuses to know.
- *
- * TOTAL, and it must be: a throw here is a `Cause.Die` on the world-load path
- * that mc-sim's frame loop logs and swallows, so a repairable save would become
- * an unopenable one AND a silent one. Every field is tested on the value before
- * anything can coerce it, exactly as `normaliseRoster` does one layer up.
- *
- * Note the direction each repair fails in. A creeper whose saved fuse is
- * unreadable becomes DORMANT rather than `Detonated` or `Lit`: dormant is the
- * state a fresh creeper is in, so the mob resumes as if it had just arrived,
- * whereas `Lit` would detonate a mob the player never provoked and `Detonated`
- * would leave a creeper on the roster that no input can ever change. A mob of
- * neither kind carrying a behaviour loses it, because there is no rule that would
- * ever read it and keeping it would make the roster's contents depend on which
- * build wrote the save.
- *
- * THE ENDERMAN'S ARM FAILS TOWARDS `Steady`, and both wrong directions are worth
- * naming because one of them MOVES A MOB. A saved flinch that cannot be read
- * becomes `Steady`: the enderman resumes as if nothing had hit it. Falling back
- * to `Struck` instead would roll the damage branch on the first frame after a
- * world load, and 30% of the time would teleport a mob 8 to 32 blocks out of the
- * place the save file put it — a mob that moved for a blow that was never struck,
- * on a frame the player has not yet had a chance to act in. The same rule as the
- * fuse's, applied to the state whose failure is visible rather than fatal.
- *
- * A BEHAVIOUR OF THE WRONG SHAPE FOR ITS KIND IS REPLACED, NOT TRUSTED, and that
- * is now a claim with two sides to it: a creeper carrying a flinch becomes
- * `DORMANT_FUSE` and an enderman carrying a fuse becomes `STEADY_ENDERMAN`.
- * Passing either one through would be worse than losing it — `sweepMobs` reads
- * the tag to decide which rule runs, so a creeper that kept a `Struck` would tick
- * no fuse and consult the teleport rule instead.
- */
+/** Validate persisted state; only explicitly omitted legacy fields are migrated. */
 export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBehaviour => {
   if (isMobBehaviourRepairFault(behaviour)) return behaviour
   if (hasHostileMobSnapshotMetadata(behaviour) && HOSTILE_KINDS.includes(kind)) {
-    const inner = repairHostileInner(kind, behaviour.behaviour)
+    const inner = repairHostileInner(kind, behaviour.behaviour, Object.hasOwn(behaviour, 'behaviour'))
     if (Result.isFailure(inner)) return { _tag: 'MobBehaviourRepairFault', failure: inner.failure }
     const movement = repairMobMovementState(behaviour.movement)
     if (Result.isFailure(movement)) return { _tag: 'MobBehaviourRepairFault', failure: movement.failure }
@@ -791,11 +762,17 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
   }
 
   if (kind === CREEPER_KIND) {
-    return hostileMobSnapshot(isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE)
+    const fuse = repairCreeperFuse(behaviour, behaviour !== undefined)
+    return Result.isFailure(fuse)
+      ? { _tag: 'MobBehaviourRepairFault', failure: fuse.failure }
+      : hostileMobSnapshot(fuse.success)
   }
 
   if (kind === ENDERMAN_KIND) {
-    return hostileMobSnapshot(isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN)
+    const flinch = repairEndermanFlinch(behaviour, behaviour !== undefined)
+    return Result.isFailure(flinch)
+      ? { _tag: 'MobBehaviourRepairFault', failure: flinch.failure }
+      : hostileMobSnapshot(flinch.success)
   }
 
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
@@ -804,39 +781,83 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
     const ecosystem = repairEcosystemMobState(behaviour)
     return Result.isFailure(ecosystem)
       ? { _tag: 'MobBehaviourRepairFault', failure: ecosystem.failure }
-      : hostileMobSnapshot(ecosystem.success ?? initialEcosystemMobState())
+      : hostileMobSnapshot(ecosystem.success ?? migrateLegacyMissingEcosystemMobState())
   }
 
   if (kind === PRIMED_TNT_KIND) {
-    return isPrimedTnt(behaviour) ? behaviour : FRESH_PRIMED_TNT
+    const tnt = repairPrimedTnt(behaviour, behaviour !== undefined)
+    return Result.isFailure(tnt)
+      ? { _tag: 'MobBehaviourRepairFault', failure: tnt.failure }
+      : tnt.success
   }
 
   if (kind === DROPPED_ITEM_KIND) {
     if (isDroppedItemBehaviour(behaviour)) return behaviour
-    if (!isLegacyDroppedItemBehaviour(behaviour)) return undefined
+    if (!isLegacyDroppedItemBehaviour(behaviour)) {
+      return { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'dropped-item' } }
+    }
     return { ...behaviour, durability: durabilityForItem(behaviour.item) }
   }
 
   return undefined
 }
 
+const repairCreeperFuse = (
+  value: unknown,
+  fieldPresent: boolean,
+): Result.Result<CreeperFuse, MobStateRepairFailure> => {
+  if (!fieldPresent) return Result.succeed(migrateLegacyMissingCreeperFuse())
+  return isCreeperFuse(value)
+    ? Result.succeed(value)
+    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' })
+}
+
+const migrateLegacyMissingCreeperFuse = (): CreeperFuse => DORMANT_FUSE
+
+const repairEndermanFlinch = (
+  value: unknown,
+  fieldPresent: boolean,
+): Result.Result<EndermanFlinch, MobStateRepairFailure> => {
+  if (!fieldPresent) return Result.succeed(migrateLegacyMissingEndermanFlinch())
+  return isEndermanFlinch(value)
+    ? Result.succeed(value)
+    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' })
+}
+
+const migrateLegacyMissingEndermanFlinch = (): EndermanFlinch => STEADY_ENDERMAN
+
+const repairPrimedTnt = (
+  value: unknown,
+  fieldPresent: boolean,
+): Result.Result<PrimedTnt, MobStateRepairFailure> => {
+  if (!fieldPresent) return Result.succeed(migrateLegacyMissingPrimedTntFuse())
+  return isPrimedTnt(value)
+    ? Result.succeed(value)
+    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: 'primed-tnt' })
+}
+
+const migrateLegacyMissingPrimedTntFuse = (): PrimedTnt => FRESH_PRIMED_TNT
+
 const repairHostileInner = (
   kind: EntityKind,
   behaviour: unknown,
+  fieldPresent: boolean,
 ): Result.Result<HostileMobSnapshot['behaviour'], MobStateRepairFailure> => {
-  if (kind === CREEPER_KIND) return Result.succeed(isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE)
-  if (kind === ENDERMAN_KIND) return Result.succeed(isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN)
+  if (kind === CREEPER_KIND) return repairCreeperFuse(behaviour, fieldPresent)
+  if (kind === ENDERMAN_KIND) return repairEndermanFlinch(behaviour, fieldPresent)
   if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
     const ecosystem = repairEcosystemMobState(behaviour)
     if (Result.isFailure(ecosystem)) return ecosystem
-    return Result.succeed(ecosystem.success ?? initialEcosystemMobState())
+    return Result.succeed(ecosystem.success ?? migrateLegacyMissingEcosystemMobState())
   }
   return Result.succeed(undefined)
 }
 
+const migrateLegacyMissingEcosystemMobState = (): EcosystemMobState => initialEcosystemMobState()
+
 type HostileMobSnapshotEnvelope = Readonly<{
   _tag: 'HostileMob'
-  behaviour: unknown
+  behaviour?: unknown
   movement?: unknown
   ageTicks: number
   persistent: boolean
@@ -1285,6 +1306,17 @@ export type EndermanTeleportProbe = {
   readonly anchor: EndermanTeleportPosition
   readonly rolls: ReadonlyArray<number>
 }
+
+export type EndermanTeleportRosterFault = Readonly<{
+  _tag: 'EndermanTeleportWorldQueryFailure'
+  entityId: EntityId
+  failure: EntityWorldQueryFailure
+}>
+
+type EndermanTeleportProbeResolution = Readonly<{
+  destinations: ReadonlyMap<EntityId, Position>
+  faults: ReadonlyArray<EndermanTeleportRosterFault>
+}>
 
 /**
  * One frame of every mob: sweep for despawns, burn every creeper's fuse, move
@@ -1896,44 +1928,13 @@ export const resolveEndermanTeleportProbes = (
   roster: EntityManagerApi<MobBehaviour>,
   store: ChunkStoreApi,
   probes: ReadonlyArray<EndermanTeleportProbe>,
-): Effect.Effect<void> =>
+): Effect.Effect<ReadonlyArray<EndermanTeleportRosterFault>> =>
   Effect.gen(function* () {
-    const destinations = new Map<EntityId, Position>()
-
-    for (const probe of probes) {
-      const cells = yield* Effect.forEach(
-        endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
-        (position) => {
-          const cell = teleportCellOf(position)
-          if (cell === undefined) return Effect.succeed(undefined)
-          return Effect.map(store.getBlock(cell), (reading): EndermanTeleportCell | undefined => {
-            if (reading._tag !== 'Block') return undefined
-            const block = Result.getOrUndefined(blockTypeOfId(reading.block))
-            if (block === undefined) return undefined
-            return {
-              position,
-              block,
-              solid: Result.getOrUndefined(capabilityOfBlockId(reading.block, 'validSpawnSurface')) === true,
-            }
-          })
-        },
-      )
-      const destination = resolveSafeEndermanTeleport(
-        probe.current,
-        probe.anchor,
-        probe.rolls,
-        cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
-      )
-      if (destination !== probe.current) {
-        // Changed destinations came from candidate cells that passed BlockAxis validation above.
-        destinations.set(probe.entityId, teleportPositionOf(destination))
-      }
-    }
-
-    if (destinations.size === 0) return
+    const resolved = yield* resolveEndermanTeleportProbeDestinations(store, probes)
+    if (resolved.destinations.size === 0) return resolved.faults
 
     yield* roster.sweep<never>((entity) => {
-      const destination = destinations.get(entity.id)
+      const destination = resolved.destinations.get(entity.id)
       return destination === undefined
         ? IGNORED
         : {
@@ -1945,6 +1946,7 @@ export const resolveEndermanTeleportProbes = (
             emit: undefined,
           }
     })
+    return resolved.faults
   })
 
 /** Resolve teleport probes against the world, then return a roster candidate. */
@@ -1952,40 +1954,14 @@ export const planEndermanTeleportRoster = (
   roster: MobRoster,
   store: ChunkStoreApi,
   probes: ReadonlyArray<EndermanTeleportProbe>,
-): Effect.Effect<MobRoster> => Effect.gen(function* () {
-  if (probes.length === 0) return roster
-
+): Effect.Effect<Readonly<{ roster: MobRoster; faults: ReadonlyArray<EndermanTeleportRosterFault> }>> => Effect.gen(function* () {
+  if (probes.length === 0) return { roster, faults: [] }
+  const resolved = yield* resolveEndermanTeleportProbeDestinations(store, probes)
+  if (resolved.destinations.size === 0) return { roster, faults: resolved.faults }
   const destinations = new Map<EntityId, Position>()
-  for (const probe of probes) {
-    const cells = yield* Effect.forEach(
-      endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
-      (position) => {
-        const cell = teleportCellOf(position)
-        if (cell === undefined) return Effect.succeed(undefined)
-        return Effect.map(store.getBlock(cell), (reading): EndermanTeleportCell | undefined => {
-          if (reading._tag !== 'Block') return undefined
-          const block = Result.getOrUndefined(blockTypeOfId(reading.block))
-          if (block === undefined) return undefined
-          return {
-            position,
-            block,
-            solid: Result.getOrUndefined(capabilityOfBlockId(reading.block, 'validSpawnSurface')) === true,
-          }
-        })
-      },
-    )
-    const destination = resolveSafeEndermanTeleport(
-      probe.current,
-      probe.anchor,
-      probe.rolls,
-      cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
-    )
-    if (destination !== probe.current) {
-      destinations.set(probe.entityId, teleportPositionOf(destination))
-    }
+  for (const [entityId, destination] of resolved.destinations) {
+    destinations.set(entityId, destination)
   }
-
-  if (destinations.size === 0) return roster
   const swept = sweepRoster(roster, (entity) => {
     const destination = destinations.get(entity.id)
     return destination === undefined
@@ -1999,7 +1975,52 @@ export const planEndermanTeleportRoster = (
           emit: undefined,
         }
   })
-  return retainMobMetadata(swept.roster, roster)
+  return { roster: retainMobMetadata(swept.roster, roster), faults: resolved.faults }
+})
+
+const resolveEndermanTeleportProbeDestinations = (
+  store: ChunkStoreApi,
+  probes: ReadonlyArray<EndermanTeleportProbe>,
+): Effect.Effect<EndermanTeleportProbeResolution> => Effect.gen(function* () {
+  const destinations = new Map<EntityId, Position>()
+  const faults: EndermanTeleportRosterFault[] = []
+  for (const probe of probes) {
+    const cells: EndermanTeleportCell[] = []
+    let fault: EndermanTeleportRosterFault | undefined
+    for (const position of endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls)) {
+      const cell = teleportCellOf(position)
+      if (cell === undefined) continue
+      const reading = yield* store.getBlock(cell)
+      if (reading._tag !== 'Block') continue
+      const blockData = entityWorldBlockDataAt(cell, reading.block)
+      if (Result.isFailure(blockData)) {
+        fault = { _tag: 'EndermanTeleportWorldQueryFailure', entityId: probe.entityId, failure: blockData.failure }
+        break
+      }
+      const blockType = blockTypeOfId(reading.block)
+      if (Result.isFailure(blockType)) {
+        fault = {
+          _tag: 'EndermanTeleportWorldQueryFailure',
+          entityId: probe.entityId,
+          failure: { _tag: 'EntityWorldRegistryFailure', cell, failure: blockType.failure },
+        }
+        break
+      }
+      cells.push({
+        position,
+        block: blockType.success,
+        solid: blockData.success.capabilities.validSpawnSurface,
+      })
+    }
+    if (fault !== undefined) {
+      destinations.delete(probe.entityId)
+      faults.push(fault)
+      continue
+    }
+    const destination = resolveSafeEndermanTeleport(probe.current, probe.anchor, probe.rolls, cells)
+    if (destination !== probe.current) destinations.set(probe.entityId, teleportPositionOf(destination))
+  }
+  return { destinations, faults }
 })
 
 // ---------------------------------------------------------------------------

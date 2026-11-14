@@ -2114,7 +2114,7 @@ export type GameplayStageOperationFailure = Readonly<{
 export type EntityStageFault =
   | Readonly<{
       _tag: 'EntityWorldDataFault'
-      source: 'UndeadDaylight' | 'MobMovement' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion'
+      source: 'UndeadDaylight' | 'MobMovement' | 'EndermanTeleport' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion'
       target:
         | Readonly<{ _tag: 'Cell'; cell: EntityWorldCellPosition }>
         | Readonly<{ _tag: 'Entity'; entityId: EntityId }>
@@ -2182,6 +2182,8 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
     case 'MobBehaviourRepairFault': {
       const reason = fault.failure._tag === 'EcosystemMobStateRepairFailure'
         ? `${fault.failure._tag}:${fault.failure.field}`
+        : fault.failure._tag === 'MobBehaviourStateRepairFailure'
+          ? `${fault.failure._tag}:${fault.failure.kind}`
         : fault.failure._tag
       return gameplayEntityStageFaultKey(`entity:${String(fault.entityId)}:${reason}`)
     }

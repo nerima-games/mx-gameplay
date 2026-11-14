@@ -173,7 +173,7 @@ const entityWorldFaultTarget = (
 
 const recordEntityWorldDataFault = (
   state: GameplayStageContext['state'],
-  source: 'UndeadDaylight' | 'MobMovement' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion',
+  source: 'UndeadDaylight' | 'MobMovement' | 'EndermanTeleport' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion',
   failure: EntityWorldQueryFailure,
   entityId?: import('@nerima-games/mc-sim').EntityId,
 ): Effect.Effect<void> => recordGameplayEntityStageFault(state, {
@@ -1647,14 +1647,25 @@ const runMobSimulation = (
     dt,
     undeadDaylight: daylightFacts,
   }, RandomSeed(seed))
-  const teleported = yield* planEndermanTeleportRoster(
+  const teleport = yield* planEndermanTeleportRoster(
     sweep.roster,
     store,
     sweep.teleports,
   )
+  const teleportFaultEntityIds = new Set(teleport.faults.map(({ entityId }) => entityId))
+  for (const fault of teleport.faults) {
+    yield* recordEntityWorldDataFault(state, 'EndermanTeleport', fault.failure, fault.entityId)
+  }
+  for (const entity of tickRoster.entities) {
+    if (teleportFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const teleportRoster = {
+    ...teleport.roster,
+    entities: teleport.roster.entities.filter(({ id }) => !teleportFaultEntityIds.has(id)),
+  }
   const movement = movementWorld === undefined
-    ? { roster: teleported, faults: [] as ReadonlyArray<MobMovementRosterFault> }
-    : Result.getOrThrow(planMobMovementRoster(teleported, playerPosition, movementWorld, stageTick, dimension))
+    ? { roster: teleportRoster, faults: [] as ReadonlyArray<MobMovementRosterFault> }
+    : Result.getOrThrow(planMobMovementRoster(teleportRoster, playerPosition, movementWorld, stageTick, dimension))
   const movementFaultEntityIds = new Set(movement.faults.map(({ entityId }) => entityId))
   for (const fault of movement.faults) {
     yield* recordMobMovementRosterFault(state, fault)
@@ -1666,8 +1677,9 @@ const runMobSimulation = (
     ...movement.roster,
     entities: movement.roster.entities.filter(({ id }) => !movementFaultEntityIds.has(id)),
   }
-  const activeBlastEvents = sweep.blasts.filter(({ source }) => !movementFaultEntityIds.has(source))
-  const activeAttacks = sweep.attacks.filter(({ source }) => !movementFaultEntityIds.has(source))
+  const stageFaultEntityIds = new Set([...teleportFaultEntityIds, ...movementFaultEntityIds])
+  const activeBlastEvents = sweep.blasts.filter(({ source }) => !stageFaultEntityIds.has(source))
+  const activeAttacks = sweep.attacks.filter(({ source }) => !stageFaultEntityIds.has(source))
   const blast = planMobBlastRoster(movementRoster, activeBlastEvents, stageTick)
   const undeadBurnHits: ReadonlyArray<MobDamageHit> = blast.roster.entities.flatMap((entity) => {
     if (entity.kind !== 'zombie' && entity.kind !== 'skeleton') return []
@@ -1735,7 +1747,7 @@ const runMobSimulation = (
     yield* Ref.get(state.hostileContactCooldowns),
     difficulty,
   ))
-  const playerBlasts = resolvePlayerBlastDamage(sweep.blasts, playerPosition, difficulty)
+  const playerBlasts = resolvePlayerBlastDamage(activeBlastEvents, playerPosition, difficulty)
   type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
   type HostileDamageInput = Readonly<{
     event: HostileDamageEvent
@@ -2024,7 +2036,7 @@ const runMobSimulation = (
   const projectileWindow = hasMovableMob ? movementWindow : undefined
   const projectileStep = yield* launchAndStepMobProjectiles(
     context,
-    sweep.attacks,
+    activeAttacks,
     entityCandidate,
     playerPosition,
     dimension,

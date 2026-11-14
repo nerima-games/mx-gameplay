@@ -224,7 +224,7 @@ describe('dropped item entities', () => {
     }),
   )
 
-  it.effect('preserves a restored non-dropped entity after inventory leaves a stack over', () =>
+  it.effect('preserves an invalid restored entity as a typed repair fault after inventory leaves a stack over', () =>
     Effect.gen(function* () {
       const roster = yield* Effect.orDie(
         makeEntityManager<MobBehaviour>(undefined, repairMobBehaviour),
@@ -262,7 +262,10 @@ describe('dropped item entities', () => {
 
       expect(yield* roster.find(spawned.id)).toStrictEqual({
         ...spawned,
-        behaviour: undefined,
+        behaviour: {
+          _tag: 'MobBehaviourRepairFault',
+          failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'dropped-item' },
+        },
       })
       expect(yield* inventory.deposits).toStrictEqual([
         { item: 'gunpowder', count: 1, leftover: 1 },
