@@ -18,6 +18,7 @@ import {
   SKELETON_ATTACK_INTERVAL_TICKS,
   SHEEP_KIND,
   SPIDER_KIND,
+  VILLAGER_KIND,
   stepEcosystemMob,
   ZOMBIFIED_PIGLIN_KIND,
 } from '../src/domain/mob/mob-ecosystem'
@@ -44,6 +45,15 @@ describe('mob ecosystem', () => {
 
     expect(step.feetPosition).toEqual(position(0))
     expect(step.state.movementGoal?.x).toBeLessThan(0)
+    expect(step.attack).toBeUndefined()
+  })
+
+  it('does not apply an approach policy to an unlisted entity kind', () => {
+    const self = position(0)
+    const step = stepEcosystemMob(EntityKind('unlisted-mob'), initialEcosystemMobState(), self, position(4), 0.05)
+
+    expect(step.state.movementGoal).toEqual(self)
+    expect(step.feetPosition).toEqual(self)
     expect(step.attack).toBeUndefined()
   })
 
@@ -172,13 +182,12 @@ describe('mob ecosystem', () => {
     expect(movementGoal(BLAZE_KIND, self, position(48.5))).toEqual(self)
   })
 
-  it('uses the default approach policy for an unlisted entity kind', () => {
-    const villager = EntityKind('villager')
+  it('uses the explicit approach policy for villagers', () => {
     const self = position(0)
     const target = position(8)
 
-    expect(movementGoal(villager, self, target)).toEqual(target)
-    expect(movementGoal(villager, self, position(17))).toEqual(self)
+    expect(movementGoal(VILLAGER_KIND, self, target)).toEqual(target)
+    expect(movementGoal(VILLAGER_KIND, self, position(17))).toEqual(self)
   })
 
   it('propagates provocation only to nearby zombified piglins', () => {
