@@ -252,7 +252,7 @@ const harnessStagesFor = (
   const advanceGameplay: TestingHeadlessHarnessStages['intentsAndRules'] = (input) => {
     const tick = Number(input.tick)
     const advance = Effect.gen(function* () {
-      if (yield* Ref.get(runtime.measurementFailure) !== undefined) return EMPTY_CANDIDATE
+      if ((yield* Ref.get(runtime.measurementFailure)) !== undefined) return EMPTY_CANDIDATE
       yield* Ref.set(runtime.stageTickCount, tick)
       yield* Ref.set(runtime.state.tickCount, tick)
       yield* Effect.orDie(runtime.world.time.advance(SIMULATION_TICK_COUNT))
