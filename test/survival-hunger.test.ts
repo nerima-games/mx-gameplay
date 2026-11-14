@@ -551,7 +551,7 @@ describe('survival hunger', () => {
         owners: [vitalsOwnerRegistration(REPLICATED_VITALS_OWNER, { vitals: SPAWN_PLAYER_VITALS })],
       })
       let concurrentCommitPending = true
-      let beforeNextCommit: Effect.Effect<void, SurvivalActivityInputFailure> = Effect.void
+      let beforeNextCommit: Effect.Effect<void> = Effect.void
       const racingCoordinator: WorldCommitCoordinatorApi = {
         ...coordinator,
         commit: (...args) => Effect.gen(function* () {
@@ -592,7 +592,10 @@ describe('survival hunger', () => {
       expect(afterConflict.revision).toBe(1)
       expect(afterConflict.state.vitals).toStrictEqual(SPAWN_PLAYER_VITALS)
 
-      beforeNextCommit = runtime.submit({ _tag: 'walk', distance: 1 })
+      beforeNextCommit = Effect.gen(function* () {
+        const submission = yield* Effect.result(runtime.submit({ _tag: 'walk', distance: 1 }))
+        expect(Result.isSuccess(submission)).toBe(true)
+      })
       const retry = yield* runtime.tick(DeltaTimeSecs(4))
       expect(retry.exhaustionAdded).toBe(1)
       expect((yield* coordinator.snapshot(

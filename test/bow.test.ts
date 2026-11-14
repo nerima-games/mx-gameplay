@@ -1030,9 +1030,15 @@ const scene = (
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
+    const legacyOwnerEntities = {
+      ...initial,
+      entities: initial.entities.map(({ behaviour, ...entity }) =>
+        behaviour === undefined ? entity : { ...entity, behaviour },
+      ),
+    } as unknown as EntityRoster<MobBehaviour>
     const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
       ...ownerInitial,
-      entities: ownerInitial.entities ?? initial,
+      entities: ownerInitial.entities ?? legacyOwnerEntities,
     })
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator: commit.coordinator,

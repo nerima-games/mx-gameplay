@@ -58,6 +58,11 @@ const MELEE_TARGETS: EntityRoster<MobBehaviour> = {
   nextSerial: EntitySerial(1),
 }
 
+const LEGACY_MELEE_TARGETS = {
+  ...MELEE_TARGETS,
+  entities: MELEE_TARGETS.entities.map(({ behaviour: _behaviour, ...entity }) => entity),
+}
+
 const storageWith = (item?: ItemType): PlayerStorage => {
   const slots = [...emptySlots()]
   if (item !== undefined) slots[0] = Result.getOrThrow(itemStack(item, StackCount(1)))
@@ -129,7 +134,7 @@ const scene = (
     const inventory = yield* makeInventoryDouble(playerStorage.inventory.slots)
     const time = yield* makeTimeService()
     const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
-      entities: MELEE_TARGETS,
+      entities: LEGACY_MELEE_TARGETS as unknown as EntityRoster<MobBehaviour>,
       playerPose: { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
       playerStorage,
     })
@@ -313,7 +318,13 @@ describe('gameplay melee durability stage', () => {
         error: { _tag: 'WorldRevisionConflict' },
       }])
       const failure = failures[0]
-      if (failure === undefined || !('_tag' in failure.error) || failure.error._tag !== 'WorldRevisionConflict') {
+      if (
+        failure === undefined ||
+        typeof failure.error !== 'object' ||
+        failure.error === null ||
+        !('_tag' in failure.error) ||
+        failure.error._tag !== 'WorldRevisionConflict'
+      ) {
         throw new Error('Expected the owner snapshots to have different revisions.')
       }
       expect(failure.error.actual).toBeGreaterThan(failure.error.expected)

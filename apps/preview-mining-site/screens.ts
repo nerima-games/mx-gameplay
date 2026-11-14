@@ -1101,8 +1101,14 @@ export const fuseFraction = (fuse: CreeperFuse): number =>
  * seeing side by side: ignition is 3 blocks and the blast reaches 6, so backing
  * out of the range that lights the fuse is not the same as being safe.
  */
-export const blastCurve = (power: number): ReadonlyArray<readonly [number, number]> =>
-  [0, 1, 2, 3, 4, 5, 6, 7].map((distance) => [distance, explosionDamageAmount(power, distance)] as const)
+export const blastCurve = (power: number): ReadonlyArray<readonly [number, number | string]> =>
+  [0, 1, 2, 3, 4, 5, 6, 7].map((distance) => {
+    const damage = explosionDamageAmount(power, distance)
+    return [
+      distance,
+      Result.isFailure(damage) ? `failure: ${JSON.stringify(damage.failure)}` : damage.success,
+    ] as const
+  })
 
 export const blastRadius: typeof explosionRadius = explosionRadius
 

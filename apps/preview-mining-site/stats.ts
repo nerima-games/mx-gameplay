@@ -623,8 +623,9 @@ const lavaRetentionOverlap = Effect.sync((): Check => {
       lines: [`  splitBudget rejected its fixture: ${JSON.stringify(split.failure)}`],
     } satisfies Check
   }
-  const carried = carryOver(frontier, split)
-  const splitKeys = Object.keys(split)
+  const budgetSplit = split.success
+  const carried = carryOver(frontier, budgetSplit)
+  const splitKeys = Object.keys(budgetSplit)
   const onlyWork = splitKeys.length === 1 && splitKeys[0] === 'work'
 
   return {
@@ -672,9 +673,10 @@ const carryOverKeyCollision = Effect.sync((): Check => {
       lines: [`  splitBudget rejected its fixture: ${JSON.stringify(split.failure)}`],
     } satisfies Check
   }
-  const carried = carryOver(frontier, split)
+  const budgetSplit = split.success
+  const carried = carryOver(frontier, budgetSplit)
 
-  const evaluated = split.work
+  const evaluated = budgetSplit.work
   const shouldSurvive = frontier.filter(
     (item) => !evaluated.some((done) => done.key === item.key && done.kind === item.kind),
   )
@@ -689,7 +691,7 @@ const carryOverKeyCollision = Effect.sync((): Check => {
     lines: [
       `  frontier            ${JSON.stringify(frontier)}`,
       `  lavaTickActive      false  (so no lava cell may be evaluated this tick)`,
-      `  split.work          ${JSON.stringify(split.work)}`,
+      `  split.work          ${JSON.stringify(budgetSplit.work)}`,
       `  carryOver(...)      ${JSON.stringify(carried)}`,
       `  never evaluated     ${JSON.stringify(shouldSurvive)}`,
       `  silently dropped    ${JSON.stringify(lost)}`,

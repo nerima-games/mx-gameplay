@@ -71,13 +71,21 @@ import {
   GAMEPLAY_VITALS_OWNER_ID,
 } from '../src/stages/gameplay-owner-registrations'
 
+type GameplayOwnerEntities = NonNullable<GameplayOwnerInitialState['entities']>
+type GameplayOwnerEntity = GameplayOwnerEntities['entities'][number]
+type PersistedGameplayOwnerInitialState = Omit<GameplayOwnerInitialState, 'entities'> & {
+  readonly entities?: Omit<GameplayOwnerEntities, 'entities'> & {
+    readonly entities: ReadonlyArray<Omit<GameplayOwnerEntity, 'behaviour'> | GameplayOwnerEntity>
+  }
+}
+
 const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStateResult>) =>
   Result.getOrThrow(makeFireLifecycleStateResult(...args))
 
 const makeHarness = (
   initial: ReturnType<typeof world>,
   withCommit: boolean,
-  ownerInitial: GameplayOwnerInitialState = {},
+  ownerInitial: PersistedGameplayOwnerInitialState = {},
 ) => Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeTransactionalChunkStoreDouble(initial, ['0,0'])
@@ -86,7 +94,13 @@ const makeHarness = (
   const player = yield* makePlayerServiceDouble()
   const time = yield* makeTimeService()
   const commit = withCommit
-    ? yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose: SPAWN_POSE, ...ownerInitial })
+    ? yield* makeGameplayCommitServices(store.api, inventory.api, {
+        playerPose: SPAWN_POSE,
+        ...ownerInitial,
+        ...(ownerInitial.entities === undefined ? {} : {
+          entities: ownerInitial.entities as unknown as GameplayOwnerEntities,
+        }),
+      })
     : undefined
   const interactions = gameplayStages(
     state,
@@ -156,7 +170,6 @@ const makeFireCasualtyHarness = (kind = ZOMBIE_KIND) => Effect.gen(function* () 
       PositionAxis(firePosition.z),
     ),
     healthPoints: EntityHealthPoints(1),
-    behaviour: undefined,
   }
   const harness = yield* makeHarness(world([
     [fixtureBlockPosition(firePosition.x, firePosition.y - 1, firePosition.z), supportBlock],
