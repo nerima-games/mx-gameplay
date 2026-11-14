@@ -36,6 +36,7 @@ import {
   makeReplicatedSurvivalHungerRuntime,
   starvationHealthFloor,
   type SurvivalDifficulty,
+  type SurvivalHungerState,
 } from '../src/domain/survival-hunger'
 import {
   ExperienceOrbVitalsOwnerSnapshotSchema,
@@ -104,6 +105,79 @@ const makeReplicatedRuntime = (
   })
 
 describe('survival hunger', () => {
+  it.effect('rejects malformed standalone initial state and difficulty before creating a runtime', () =>
+    Effect.gen(function* () {
+      for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
+        const state = { ...initial('normal'), difficulty } as unknown as SurvivalHungerState
+        expect(yield* Effect.flip(makeSurvivalHungerRuntime(state))).toMatchObject({ _tag: 'SchemaError' })
+      }
+      for (const state of [null, undefined]) {
+        expect(yield* Effect.flip(makeSurvivalHungerRuntime(state as unknown as SurvivalHungerState))).toMatchObject({ _tag: 'SchemaError' })
+      }
+      const defaultRuntime = yield* makeSurvivalHungerRuntime()
+      expect((yield* defaultRuntime.snapshot).difficulty).toBe('normal')
+    }),
+  )
+
+  it.effect('rejects malformed replicated initial difficulty and preserves an omitted default', () =>
+    Effect.gen(function* () {
+      const { coordinator } = yield* makeReplicatedRuntime()
+      for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
+        expect(yield* Effect.flip(makeReplicatedSurvivalHungerRuntime(
+          coordinator,
+          REPLICATED_VITALS_OWNER,
+          difficulty as SurvivalDifficulty,
+        ))).toMatchObject({ _tag: 'SchemaError' })
+      }
+      const runtime = yield* makeReplicatedSurvivalHungerRuntime(coordinator, REPLICATED_VITALS_OWNER)
+      expect((yield* runtime.snapshot).difficulty).toBe('normal')
+    }),
+  )
+
+  for (const kind of ['standalone', 'replicated'] as const) {
+    it.effect(`${kind} rejects invalid difficulty updates and restores without changing state or pending activity`, () =>
+      Effect.gen(function* () {
+        for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
+          const runtime = kind === 'standalone'
+            ? yield* makeSurvivalHungerRuntime(initial('normal'))
+            : (yield* makeReplicatedRuntime()).runtime
+          const before = yield* runtime.snapshot
+          yield* runtime.submit({ _tag: 'sprint', distance: 10 })
+
+          expect(yield* Effect.flip(runtime.setDifficulty(difficulty as SurvivalDifficulty))).toMatchObject({ _tag: 'SchemaError' })
+          expect(yield* runtime.snapshot).toStrictEqual(before)
+          const invalidState = {
+            ...initial('easy', { hungerPoints: HungerPoints(1) }),
+            difficulty,
+          } as unknown as SurvivalHungerState
+          expect(yield* Effect.flip(runtime.restore(invalidState))).toMatchObject({ _tag: 'SchemaError' })
+          expect(yield* runtime.snapshot).toStrictEqual(before)
+
+          const outcome = yield* runtime.tick(DeltaTimeSecs(0))
+          expect(outcome.difficulty).toBe('normal')
+          expect(outcome.exhaustionAdded).toBe(1)
+        }
+      }),
+    )
+
+    it.effect(`${kind} accepts difficulty updates and clears pending activity on a valid restore`, () =>
+      Effect.gen(function* () {
+        const runtime = kind === 'standalone'
+          ? yield* makeSurvivalHungerRuntime(initial('normal'))
+          : (yield* makeReplicatedRuntime()).runtime
+        yield* runtime.setDifficulty('hard')
+        expect((yield* runtime.snapshot).difficulty).toBe('hard')
+        yield* runtime.submit({ _tag: 'sprint', distance: 10 })
+        const restored = initial('easy', { hungerPoints: HungerPoints(10) })
+        yield* runtime.restore(restored)
+        expect(yield* runtime.snapshot).toStrictEqual(restored)
+        const outcome = yield* runtime.tick(DeltaTimeSecs(0))
+        expect(outcome.difficulty).toBe('easy')
+        expect(outcome.exhaustionAdded).toBe(0)
+      }),
+    )
+  }
+
   it('allows sprinting only above six hunger points', () => {
     expect(canSprintAtHungerPoints(6)).toStrictEqual(Result.succeed(false))
     expect(canSprintAtHungerPoints(7)).toStrictEqual(Result.succeed(true))

@@ -106,7 +106,7 @@ export type SurvivalHungerRuntimeApi = {
   readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals, SurvivalHungerError>
   readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome, SurvivalHungerError>
   readonly heal: (amount: number) => Effect.Effect<PlayerVitals, SurvivalHungerError>
-  readonly setDifficulty: (difficulty: SurvivalDifficulty) => Effect.Effect<void>
+  readonly setDifficulty: (difficulty: SurvivalDifficulty) => Effect.Effect<void, SurvivalHungerError>
   readonly snapshot: Effect.Effect<SurvivalHungerState, SurvivalHungerError>
   readonly restore: (state: SurvivalHungerState) => Effect.Effect<void, SurvivalHungerError>
   readonly respawn: Effect.Effect<void, SurvivalHungerError>
@@ -187,6 +187,8 @@ export const starvationHealthFloor = (difficulty: SurvivalDifficulty): number =>
 const isDifficulty = (value: unknown): value is SurvivalDifficulty =>
   value === 'peaceful' || value === 'easy' || value === 'normal' || value === 'hard'
 
+const SurvivalDifficultySchema = Schema.Literals(['peaceful', 'easy', 'normal', 'hard'])
+
 export const isSurvivalHungerState = (value: unknown): value is SurvivalHungerState => {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Partial<SurvivalHungerState>
@@ -195,6 +197,8 @@ export const isSurvivalHungerState = (value: unknown): value is SurvivalHungerSt
     candidate.vitals !== undefined &&
     isValidPlayerVitals(candidate.vitals)
 }
+
+const SurvivalHungerStateSchema = Schema.declare(isSurvivalHungerState)
 
 const runFoodTicks = (
   vitals: InMemoryVitalsApi,
@@ -238,14 +242,15 @@ const runFoodTicks = (
     return { foodTicks, regeneratedHealth, starvationDamage, died }
   })
 
-export const makeSurvivalHungerRuntime = (
-  initial: SurvivalHungerState = {
-    version: SURVIVAL_HUNGER_STATE_VERSION,
-    difficulty: DEFAULT_SURVIVAL_DIFFICULTY,
-    vitals: SPAWN_PLAYER_VITALS,
-  },
-): Effect.Effect<SurvivalHungerRuntimeApi> =>
-  Effect.gen(function* () {
+export function makeSurvivalHungerRuntime(): Effect.Effect<SurvivalHungerRuntimeApi>
+export function makeSurvivalHungerRuntime(initial: SurvivalHungerState): Effect.Effect<SurvivalHungerRuntimeApi, SurvivalHungerError>
+export function makeSurvivalHungerRuntime(
+  ...initialInput: readonly [] | readonly [SurvivalHungerState]
+): Effect.Effect<SurvivalHungerRuntimeApi, SurvivalHungerError> {
+  return Effect.gen(function* () {
+    const initial = initialInput.length === 0
+      ? { version: SURVIVAL_HUNGER_STATE_VERSION, difficulty: DEFAULT_SURVIVAL_DIFFICULTY, vitals: SPAWN_PLAYER_VITALS }
+      : yield* Schema.decodeUnknownEffect(SurvivalHungerStateSchema)(initialInput[0])
     const vitals = yield* makeInMemoryVitals(initial.vitals)
     const difficulty = yield* Ref.make<SurvivalDifficulty>(initial.difficulty)
     const pending = yield* Ref.make<ReadonlyArray<SurvivalActivityInput>>([])
@@ -283,7 +288,10 @@ export const makeSurvivalHungerRuntime = (
         Effect.andThen(vitals.eat(foodPoints, saturationModifier), vitals.snapshot),
       damage: (damage) => vitals.damage(damage),
       heal: (amount) => vitals.heal(amount),
-      setDifficulty: (next) => Ref.set(difficulty, next),
+      setDifficulty: (next) => Effect.flatMap(
+        Schema.decodeUnknownEffect(SurvivalDifficultySchema)(next),
+        (validated) => Ref.set(difficulty, validated),
+      ),
       snapshot: Effect.gen(function* () {
         return {
           version: SURVIVAL_HUNGER_STATE_VERSION,
@@ -293,9 +301,10 @@ export const makeSurvivalHungerRuntime = (
       }),
       restore: (state) =>
         Effect.gen(function* () {
+          const restored = yield* Schema.decodeUnknownEffect(SurvivalHungerStateSchema)(state)
           yield* Ref.set(pending, [])
-          yield* Ref.set(difficulty, state.difficulty)
-          yield* vitals.restore(state.vitals)
+          yield* Ref.set(difficulty, restored.difficulty)
+          yield* vitals.restore(restored.vitals)
         }),
       respawn: Effect.andThen(Ref.set(pending, []), vitals.respawn),
       reset: Effect.gen(function* () {
@@ -305,14 +314,27 @@ export const makeSurvivalHungerRuntime = (
       }),
     }
   })
+}
 
 /** Build the gameplay runtime against the registered WCC vitals owner. */
-export const makeReplicatedSurvivalHungerRuntime = (
+export function makeReplicatedSurvivalHungerRuntime(
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
-  initialDifficulty: SurvivalDifficulty = DEFAULT_SURVIVAL_DIFFICULTY,
-): Effect.Effect<SurvivalHungerRuntimeApi> =>
-  Effect.gen(function* () {
+): Effect.Effect<SurvivalHungerRuntimeApi>
+export function makeReplicatedSurvivalHungerRuntime(
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+  initialDifficulty: SurvivalDifficulty,
+): Effect.Effect<SurvivalHungerRuntimeApi, SurvivalHungerError>
+export function makeReplicatedSurvivalHungerRuntime(
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+  ...initialDifficultyInput: readonly [] | readonly [SurvivalDifficulty]
+): Effect.Effect<SurvivalHungerRuntimeApi, SurvivalHungerError> {
+  return Effect.gen(function* () {
+    const initialDifficulty = initialDifficultyInput.length === 0
+      ? DEFAULT_SURVIVAL_DIFFICULTY
+      : yield* Schema.decodeUnknownEffect(SurvivalDifficultySchema)(initialDifficultyInput[0])
     const difficulty = yield* Ref.make<SurvivalDifficulty>(initialDifficulty)
     const pending = yield* Ref.make<PendingSurvivalActivities>({ nextSequence: 0, queue: [] })
 
@@ -459,7 +481,10 @@ export const makeReplicatedSurvivalHungerRuntime = (
         const candidate = healVitals(vitals, health)
         return { vitals: candidate, result: candidate }
       })),
-      setDifficulty: (next) => Ref.set(difficulty, next),
+      setDifficulty: (next) => Effect.flatMap(
+        Schema.decodeUnknownEffect(SurvivalDifficultySchema)(next),
+        (validated) => Ref.set(difficulty, validated),
+      ),
       snapshot: Effect.gen(function* () {
         const current = yield* coordinator.snapshot(ownerId, ExperienceOrbVitalsOwnerSnapshotSchema)
         return {
@@ -470,9 +495,10 @@ export const makeReplicatedSurvivalHungerRuntime = (
       }),
       restore: (state) =>
         Effect.gen(function* () {
+          const restored = yield* Schema.decodeUnknownEffect(SurvivalHungerStateSchema)(state)
           yield* clearPending
-          yield* Ref.set(difficulty, state.difficulty)
-          yield* transact(() => Effect.succeed({ vitals: state.vitals, result: undefined }))
+          yield* Ref.set(difficulty, restored.difficulty)
+          yield* transact(() => Effect.succeed({ vitals: restored.vitals, result: undefined }))
         }),
       respawn: Effect.andThen(clearPending, transact((vitals) => {
         const candidate = respawnVitals(vitals)
@@ -485,3 +511,4 @@ export const makeReplicatedSurvivalHungerRuntime = (
       }),
     }
   })
+}

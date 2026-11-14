@@ -10,3 +10,5 @@ faults so affected requests or entities can be isolated while the frame continue
 world cells distinct from empty cells and no-target outcomes.
 Reject non-finite boat and minecart motion delta times with `InvalidVehicleDeltaTime` instead of
 treating them as zero elapsed time; retain clamping for finite delta times.
+Validate survival runtime initialization, difficulty updates, and restored state with typed failures
+before mutation. Reject malformed mob spawn positions before they reach the simulator's position repair.
