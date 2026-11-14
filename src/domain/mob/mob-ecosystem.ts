@@ -13,6 +13,7 @@ export const CHICKEN_KIND: EntityKind = EntityKind('chicken')
 export const ZOMBIFIED_PIGLIN_KIND: EntityKind = EntityKind('zombified_piglin')
 export const BLAZE_KIND: EntityKind = EntityKind('blaze')
 export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+export const VILLAGER_KIND: EntityKind = EntityKind('villager')
 
 export const SKELETON_ATTACK_INTERVAL_TICKS = 60
 export const SKELETON_ATTACK_DAMAGE = 3
@@ -107,6 +108,9 @@ export type MobMovementPolicy =
 const PASSIVE_MOVEMENT_POLICY: MobMovementPolicy = {
   _tag: 'FleeOrWander', fleeWithin: mobMovementDistance(8), fleeDistance: mobMovementDistance(8), wanderRadius: mobMovementDistance(4),
 }
+const VILLAGER_MOVEMENT_POLICY: MobMovementPolicy = {
+  _tag: 'Approach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(16),
+}
 
 /** Per-kind movement decisions; SM3 owns the path and physical step that follows. */
 export const MOB_MOVEMENT_POLICIES: ReadonlyMap<EntityKind, MobMovementPolicy> = new Map<EntityKind, MobMovementPolicy>([
@@ -120,16 +124,10 @@ export const MOB_MOVEMENT_POLICIES: ReadonlyMap<EntityKind, MobMovementPolicy> =
   [SKELETON_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(16), followRange: mobMovementDistance(16) }],
   [BLAZE_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(24), followRange: mobMovementDistance(48) }],
   [ZOMBIFIED_PIGLIN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(35) }],
+  [VILLAGER_KIND, VILLAGER_MOVEMENT_POLICY],
 ])
 
-const DEFAULT_MOVEMENT_POLICY: MobMovementPolicy = {
-  _tag: 'Approach',
-  attackDistance: mobMovementDistance(1.5),
-  followRange: mobMovementDistance(16),
-}
-
-const movementPolicyFor = (kind: EntityKind): MobMovementPolicy =>
-  MOB_MOVEMENT_POLICIES.get(kind) ?? DEFAULT_MOVEMENT_POLICY
+const movementPolicyFor = (kind: EntityKind): MobMovementPolicy | undefined => MOB_MOVEMENT_POLICIES.get(kind)
 
 const validPosition = (value: unknown): value is Position => {
   if (typeof value !== 'object' || value === null) return false
@@ -278,6 +276,7 @@ export const movementGoalForEcosystemMob = (
   phase: NonNegativeTickCount = NonNegativeTickCount(state.motionPhase),
 ): Position => {
   const policy = movementPolicyFor(kind)
+  if (policy === undefined) return self
   const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
   switch (policy._tag) {
     case 'FleeOrWander':
@@ -334,6 +333,7 @@ export const stepEcosystemMob = (
   }
   if (target === undefined) return { state: nextState(), feetPosition: self, jumping: false }
   const policy = movementPolicyFor(kind)
+  if (policy === undefined) return { state: nextState(), feetPosition: self, jumping: false }
   if (policy._tag === 'ProvokedApproach' && !state.provoked) return { state: nextState(), feetPosition: self, jumping: false }
   if (policy._tag === 'RangedSpacing' && cooldown === 0 && distance >= policy.minDistance && distance <= policy.maxDistance)
     return attack(
