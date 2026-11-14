@@ -1513,7 +1513,11 @@ describe('the break loop', () => {
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      expect((yield* subscription.drain).changed).toStrictEqual([chunkOf(AT)])
+      expect((yield* subscription.drain).changed).toStrictEqual([{
+        ...chunkOf(AT),
+        min: [3, 64, 7],
+        max: [4, 65, 8],
+      }])
     }),
   )
 })

@@ -168,7 +168,22 @@ import {
   TNT_REPLICATED_OWNER_ID,
 } from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
-import { Effect, Layer } from 'effect'
+import { Effect } from 'effect'
+import {
+  GameplayStageFaults,
+  GameplayStageFaultsLayer,
+} from './gameplay-stage-faults.js'
+export {
+  GameplayStageFaults,
+  GameplayStageFaultsLayer,
+} from './gameplay-stage-faults.js'
+export type {
+  GameplayStageFaultsApi,
+  GameplayStageBlockTypeDecodeFailure,
+  GameplayStageWorldFault,
+  GameplayStageWorldFaultInput,
+  GameplayStageWorldFaultReason,
+} from './gameplay-stage-faults.js'
 import { makeVehiclesStage } from './vehicles-stage.js'
 import { makeInteractionsStage } from './interactions-stage.js'
 import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
@@ -263,13 +278,14 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
   const time = yield* TimeService
   const coordinator = yield* WorldCommitCoordinator
   const eventBus = yield* DomainEventBus
+  const stageFaults = yield* GameplayStageFaults
   const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
   const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID)
   const projectileService = yield* makeProjectileService()
@@ -277,6 +293,7 @@ export const makeGameplayStages: Effect.Effect<
   const state = yield* makeGameplayFrameStateForOwner({
     coordinator,
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    stageFaults,
   })
 
   const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
@@ -352,11 +369,11 @@ export const makeGameplayStages: Effect.Effect<
  */
 
 export const gameplayModule: GameModule<
+  GameplayStageFaults,
   never,
   never,
-  never,
-  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
 > = {
-  layers: Layer.empty,
+  layers: GameplayStageFaultsLayer,
   frameStages: makeGameplayStages,
 }

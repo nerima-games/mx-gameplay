@@ -242,7 +242,11 @@ import {
   spawnEntity,
   sweepRoster,
 } from '@nerima-games/mc-sim'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { drawRolls, nextRoll } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
@@ -1713,7 +1717,7 @@ export const resolveBlasts = (
   roster: EntityManagerApi<MobBehaviour>,
   store: ChunkStoreApi,
   blasts: ReadonlyArray<Blast>,
-): Effect.Effect<BlastResolution> =>
+): Effect.Effect<BlastResolution, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.gen(function* () {
     if (blasts.length === 0) {
       return { casualties: NO_CASUALTIES, disturbed: NO_DISTURBANCES }

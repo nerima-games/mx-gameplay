@@ -62,7 +62,7 @@
  */
 import { Effect, Option, Result } from 'effect'
 import { blockIdOf, blockTypeOfId, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { ChunkStoreApi, LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
 
 /**
  * The brightest a cell may be and still take a mushroom.
@@ -145,7 +145,7 @@ export const mushroomLightObjection = (
   store: ChunkStoreApi,
   block: BlockId,
   position: BlockPosition,
-): Effect.Effect<MushroomLightRefusal | undefined> =>
+): Effect.Effect<MushroomLightRefusal | undefined, LightQueueUnderflowError> =>
   Effect.gen(function* () {
     if (!isMushroomBlock(block)) {
       return undefined

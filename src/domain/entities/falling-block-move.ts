@@ -45,10 +45,17 @@ import {
   blockPositionKeyOf,
   blockPositionOfKey,
   capabilityOfBlockId,
+  type BlockPosition,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId } from '@nerima-games/mc-kernel'
-import type { BlockReading, BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockReading,
+  BlockStateCodecFailure,
+  BlockWriteOutcome,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 
 export type FallingBlockMoves = {
   /** How many blocks actually sank one cell this tick. */
@@ -61,7 +68,14 @@ export type FallingBlockMoves = {
    * stops one cell short of where it belongs.
    */
   readonly destinations: ReadonlyArray<BlockPositionKey>
+  readonly failures?: ReadonlyArray<FallingBlockWriteFailure>
 }
+
+type FallingBlockWriteFailure = Readonly<{
+  operation: 'WriteBlock'
+  position: BlockPosition
+  reason: BlockStateCodecFailure | LightQueueUnderflowError
+}>
 
 /** The block that would fall from `reading`, or `undefined` if none would. */
 const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
@@ -95,6 +109,7 @@ export const applyFallingBlocks = (
 ): Effect.Effect<FallingBlockMoves> =>
   Effect.gen(function* () {
     const destinations: Array<BlockPositionKey> = []
+    const failures: Array<FallingBlockWriteFailure> = []
     let moved = 0
 
     for (const positionKey of batch) {
@@ -119,15 +134,32 @@ export const applyFallingBlocks = (
       // Source first, then destination. The reverse order would duplicate the
       // block if the second write were refused; this order can only ever lose
       // it, and the branch below puts it back.
-      if (!vacated(yield* store.setBlock(source, AIR_BLOCK_ID))) {
+      const vacatedResult = yield* Effect.result(store.setBlock(source, AIR_BLOCK_ID))
+      if (vacatedResult._tag === 'Failure') {
+        failures.push({ operation: 'WriteBlock', position: source, reason: vacatedResult.failure })
+        continue
+      }
+      if (!vacated(vacatedResult.success)) {
         continue
       }
 
-      const placed = yield* store.setBlock(target, material)
+      const placedResult = yield* Effect.result(store.setBlock(target, material))
+      if (placedResult._tag === 'Failure') {
+        failures.push({ operation: 'WriteBlock', position: target, reason: placedResult.failure })
+        const restored = yield* Effect.result(store.setBlock(source, material))
+        if (restored._tag === 'Failure') {
+          failures.push({ operation: 'WriteBlock', position: source, reason: restored.failure })
+        }
+        continue
+      }
+      const placed = placedResult.success
       if (placed._tag !== 'Written' && placed._tag !== 'Unchanged') {
         // The destination can become unavailable between its read and write.
         // Restore the source rather than silently losing the falling block.
-        yield* store.setBlock(source, material)
+        const restored = yield* Effect.result(store.setBlock(source, material))
+        if (restored._tag === 'Failure') {
+          failures.push({ operation: 'WriteBlock', position: source, reason: restored.failure })
+        }
         continue
       }
 
@@ -145,5 +177,5 @@ export const applyFallingBlocks = (
       destinations.push(blockPositionKeyOf(source))
     }
 
-    return { moved, destinations }
+    return failures.length === 0 ? { moved, destinations } : { moved, destinations, failures }
   })

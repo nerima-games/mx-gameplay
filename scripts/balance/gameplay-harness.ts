@@ -251,7 +251,8 @@ const harnessStagesFor = (
   const ordered = scheduleGameplayStages(runtime.stages)
   const advanceGameplay: TestingHeadlessHarnessStages['intentsAndRules'] = (input) => {
     const tick = Number(input.tick)
-    return Effect.gen(function* () {
+    const advance = Effect.gen(function* () {
+      if (yield* Ref.get(runtime.measurementFailure) !== undefined) return EMPTY_CANDIDATE
       yield* Ref.set(runtime.stageTickCount, tick)
       yield* Ref.set(runtime.state.tickCount, tick)
       yield* Effect.orDie(runtime.world.time.advance(SIMULATION_TICK_COUNT))
@@ -355,6 +356,21 @@ const harnessStagesFor = (
       monotonicSecs: MonotonicTimeSecs(tick / BALANCE_HARNESS_TICKS_PER_SECOND),
       wallClockEpochMillis: EpochMillis(0),
     })))
+    return Effect.flatMap(Effect.result(advance), (result) => Effect.gen(function* () {
+      if (Result.isFailure(result)) {
+        yield* Ref.update(runtime.measurementFailure, (current) => current ?? String(result.failure))
+      }
+
+      const stageFaults = yield* runtime.state.stageFaults.drain
+      if (stageFaults.length > 0) {
+        const summary = stageFaults.map((fault) =>
+          `${fault.operation}@${fault.position.x},${fault.position.y},${fault.position.z}:${fault.reason._tag}`,
+        ).join('; ')
+        yield* Ref.update(runtime.measurementFailure, (current) => current ?? `gameplay stage faults: ${summary}`)
+      }
+
+      return Result.isFailure(result) ? EMPTY_CANDIDATE : result.success
+    }))
   }
   const idle = () => Effect.succeed(EMPTY_CANDIDATE)
   return {

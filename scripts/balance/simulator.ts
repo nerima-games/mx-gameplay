@@ -53,6 +53,7 @@ import {
   NoiseSeed,
   surfaceHeightAt,
   type InvalidNaturalStructureCoordinate,
+  type InvalidTerrainLevels,
   type NaturalStructureChunk,
 } from '@nerima-games/mc-worldgen'
 import { cellKey } from '../../src/domain/in-memory-world.js'
@@ -170,7 +171,7 @@ export type SeedSimulationResult =
   | Readonly<{
       status: 'terrain-failed'
       seed: number
-      error: InvalidNaturalStructureCoordinate
+      error: InvalidNaturalStructureCoordinate | InvalidTerrainLevels
     }>
   | Readonly<{
       status: 'invalid-seed'
@@ -412,7 +413,7 @@ const metricAt = (ticks: number): BalanceObservation => ({
 
 const generatedChunk = (seed: number):
   | Readonly<{ status: 'ok'; chunk: NaturalStructureChunk }>
-  | Readonly<{ status: 'failed'; error: InvalidNaturalStructureCoordinate }> => {
+  | Readonly<{ status: 'failed'; error: InvalidNaturalStructureCoordinate | InvalidTerrainLevels }> => {
   const result = generateWorldChunk(NoiseSeed(seed), { cx: ChunkAxis(0), cz: ChunkAxis(0) })
   return Result.isFailure(result)
     ? { status: 'failed', error: result.failure }

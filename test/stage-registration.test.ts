@@ -120,6 +120,7 @@ import {
   makeGameplayFrameStateForOwner,
   makeGameplayStages,
   gameplayModule,
+  GameplayStageFaults,
   GameplayFishingItemUseResultSchema,
   GameplayBrewingItemUseRequestSchema,
   GameplayBrewingItemUseResultSchema,
@@ -360,7 +361,8 @@ const emptyWorldBase = Layer.mergeAll(
   emptyInventoryLayer,
   Layer.succeed(DomainEventBus, registrationEventBus),
 )
-const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
+const emptyHostWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
+const emptyWorld = Layer.merge(emptyHostWorld, gameplayModule.layers)
 const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
 
 const builtStages = Effect.gen(function* () {
@@ -1523,6 +1525,7 @@ describe('stage behaviour', () => {
         'rollSeed',
         'shieldBlocking',
         'spawnAttempts',
+        'stageFaults',
         'survivalHunger',
         'targetPosition',
         'tickCount',
@@ -2361,8 +2364,8 @@ describe('the module contract has caught up with this file’s shape', () => {
    * `stages/registration.ts` used to carry a comment saying it was "NOT yet a
    * `GameModule`" because the service set could not be named until mc-sim
    * published. That diagnosis was half wrong, and the wrong half is what the
-   * spike found: mx-gameplay publishes no service for another repository to call — a rule is not a
- * service (plan.md §2.3-1) — so its Layer is empty and always was.
+   * spike found: mx-gameplay publishes no gameplay state for another repository
+   * to call. The module now publishes only its drainable stage-fault service.
    *
    * The real obstacle was that `GameModule.frameStages` was an ARRAY. These
    * stages are built from `Ref`s allocated in an Effect, so there was no way to
@@ -2377,10 +2380,10 @@ describe('the module contract has caught up with this file’s shape', () => {
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
       const module: GameModule<
+        GameplayStageFaults,
         never,
         never,
-        never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -2405,15 +2408,16 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services to register and exposes nine stages', () =>
+  it.effect('acquires five host services and the module fault service to register nine stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
       > = gameplayModule.frameStages
 
-      // Providing those five — and no local player or inventory services —
+      // Providing the five host services and module-owned fault service — with
+      // no local player or inventory services —
       // discharges the whole registration context.
       // If a stage started demanding another service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
@@ -2467,7 +2471,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')

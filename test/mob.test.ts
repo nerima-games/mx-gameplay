@@ -64,6 +64,7 @@ import {
   biomeAllowsMob,
   HOSTILE_SPAWN_SETTINGS,
   HOSTILE_SPAWN_MAX_BLOCK_LIGHT,
+  MOB_BIOME_SPAWN_TABLE,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
   SkyLightLevel,
@@ -73,6 +74,7 @@ import {
   BLAZE_KIND,
   CHICKEN_KIND,
   COW_KIND,
+  ENDERMAN_KIND,
   PIG_KIND,
   SKELETON_KIND,
   SHEEP_KIND,
@@ -626,6 +628,19 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
         _tag: 'Refused',
         reason: 'wrong-biome',
       })
+    }),
+  )
+
+  it.effect('uses explicit policies for exact kernel biome ids', () =>
+    Effect.sync(() => {
+      expect(biomeAllowsMob(CHICKEN_KIND, 'sunflower_plains')).toBe(true)
+      expect(biomeAllowsMob(COW_KIND, 'mangrove_swamp')).toBe(true)
+      expect(biomeAllowsMob(COW_KIND, 'badlands')).toBe(false)
+      expect(biomeAllowsMob(BLAZE_KIND, 'nether_wastes')).toBe(true)
+      expect(biomeAllowsMob(ZOMBIE_KIND, 'deep_dark')).toBe(false)
+      expect(biomeAllowsMob(ZOMBIE_KIND, 'mushroom_fields')).toBe(false)
+      expect(biomeAllowsMob(ENDERMAN_KIND, 'the_end')).toBe(false)
+      expect(MOB_BIOME_SPAWN_TABLE.dappled_forest).toContain(COW_KIND)
     }),
   )
 

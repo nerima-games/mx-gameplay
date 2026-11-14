@@ -1666,7 +1666,7 @@ const processPlacement = (
           }
         }
 
-        const planned = yield* planPlaceBlock(store, {
+        const plannedResult = yield* Effect.result(planPlaceBlock(store, {
           position,
           heldItem: request.heldItem,
           playerFeet: kernelPosition(
@@ -1674,7 +1674,23 @@ const processPlacement = (
             PositionAxis(playerState.pose.feetPosition.y),
             PositionAxis(playerState.pose.feetPosition.z),
           ),
-        })
+        }))
+        if (Result.isFailure(plannedResult)) {
+          yield* state.stageFaults.record({
+            _tag: 'WorldDataFailure',
+            operation: 'ReadLight',
+            position,
+            reason: plannedResult.failure,
+          })
+          return {
+            requestId: command?.requestId ?? '',
+            success: false,
+            consumed: false,
+            replayed: false,
+            outcome: { _tag: 'WorldDataFailed', reason: plannedResult.failure },
+          }
+        }
+        const planned = plannedResult.success
         if (planned.outcome._tag !== 'Placed') {
           return {
             requestId: command?.requestId ?? '',

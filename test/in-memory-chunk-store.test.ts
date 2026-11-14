@@ -87,11 +87,11 @@ describe('makeInMemoryWorld ChunkStore', () => {
       yield* world.chunkStore.setBlock(AT, DIRT)
 
       expect(yield* first.drain).toStrictEqual({
-        changed: [chunkOf(AT)],
+        changed: [{ ...chunkOf(AT), min: [5, 5, 5], max: [7, 6, 6] }],
         removed: [],
       })
       expect(yield* second.drain).toStrictEqual({
-        changed: [chunkOf(AT)],
+        changed: [{ ...chunkOf(AT), min: [5, 5, 5], max: [7, 6, 6] }],
         removed: [],
       })
       expect(yield* first.drain).toStrictEqual({ changed: [], removed: [] })
