@@ -224,13 +224,10 @@ export const prepareKnockbackDirection = (
 ): Result.Result<KnockbackPreparation, KnockbackPreparationError> => {
   const magnitude = Math.hypot(dx, dz)
   if (!Number.isFinite(magnitude)) return Result.fail('invalid-offset')
-  const direction = knockbackDirection(dx, dz)
-  if (Result.isFailure(direction)) return Result.fail(direction.failure)
-  const prepared = {
-    direction: direction.success,
-    horizontalMagnitude: direction.success._tag === 'Away'
-      ? Math.hypot(direction.success.x, direction.success.z)
+  return Result.map(knockbackDirection(dx, dz), (direction) => ({
+    direction,
+    horizontalMagnitude: direction._tag === 'Away'
+      ? Math.hypot(direction.x, direction.z)
       : 0,
-  }
-  return Result.succeed(prepared)
+  }))
 }

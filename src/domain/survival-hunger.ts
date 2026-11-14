@@ -126,7 +126,7 @@ export const exhaustionForSurvivalActivity = (
     return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: 'activity' })
   }
   const candidate = input as Record<string, unknown>
-  let field: SurvivalActivityInputFailure['field'] | undefined
+  let field: SurvivalActivityInputFailure['field']
   let magnitude: unknown
   let rate: number
   if (candidate['_tag'] === 'walk') {
@@ -160,7 +160,7 @@ export const exhaustionForSurvivalActivity = (
     return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: 'activity' })
   }
   if (typeof magnitude !== 'number' || !Number.isFinite(magnitude) || magnitude < 0) {
-    return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: field ?? 'activity' })
+    return Result.fail({ _tag: 'SurvivalActivityInputFailure', field })
   }
   return Result.succeed(magnitude * rate)
 }
@@ -168,13 +168,10 @@ export const exhaustionForSurvivalActivity = (
 const exhaustionForActivities = (
   inputs: ReadonlyArray<SurvivalActivityInput>,
 ): Result.Result<number, SurvivalActivityInputFailure> => {
-  let total = 0
-  for (const input of inputs) {
-    const activity = exhaustionForSurvivalActivity(input)
-    if (Result.isFailure(activity)) return activity
-    total += activity.success
-  }
-  return Result.succeed(total)
+  return Result.map(
+    Result.all(inputs.map(exhaustionForSurvivalActivity)),
+    (exhaustions) => exhaustions.reduce((total, amount) => total + amount, 0),
+  )
 }
 
 const STARVATION_HEALTH_FLOOR: Readonly<Record<SurvivalDifficulty, number>> = {

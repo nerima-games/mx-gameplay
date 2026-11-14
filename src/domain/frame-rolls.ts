@@ -50,6 +50,11 @@ export type RollDraw = {
   readonly seed: number
 }
 
+const drawNormalisedSeed = (seed: number): RollDraw => {
+  const state = (MULTIPLIER * seed) % MODULUS
+  return { roll: (state - 1) / MODULUS, seed: state }
+}
+
 /**
  * Draw one roll.
  *
@@ -62,9 +67,7 @@ export type RollDraw = {
 export const nextRoll = (seed: number): Result.Result<RollDraw, FrameRollFailure> => {
   const normalised = normaliseSeed(seed)
   if (Result.isFailure(normalised)) return Result.fail(normalised.failure)
-  const state = (MULTIPLIER * normalised.success) % MODULUS
-
-  return Result.succeed({ roll: (state - 1) / MODULUS, seed: state })
+  return Result.succeed(drawNormalisedSeed(normalised.success))
 }
 
 /** Several rolls at once, and the seed to keep. */
@@ -87,12 +90,11 @@ export const drawRolls = (seed: number, count: number): Result.Result<RollBatch,
   if (count === 0) return Result.succeed({ rolls: NO_ROLLS, seed })
 
   const rolls: Array<number> = []
-  let current = seed
+  let current = normalised.success
   for (let index = 0; index < count; index += 1) {
-    const draw = nextRoll(current)
-    if (Result.isFailure(draw)) return Result.fail(draw.failure)
-    rolls.push(draw.success.roll)
-    current = draw.success.seed
+    const draw = drawNormalisedSeed(current)
+    rolls.push(draw.roll)
+    current = draw.seed
   }
 
   return Result.succeed({ rolls, seed: current })

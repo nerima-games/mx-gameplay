@@ -343,26 +343,22 @@ export const blockLoot = (
   context: BlockLootContext = NO_TOOL,
   rolls: ReadonlyArray<number> = NO_LOOT,
 ): Result.Result<ReadonlyArray<MinedItem>, BlockLootFailure> => {
-  const dropResult = dropOfBlockId(block, context)
-  if (Result.isFailure(dropResult)) {
+  let lookup: 'drop' | 'type' = 'drop'
+  const resolved = Result.gen(function* () {
+    const drop = yield* dropOfBlockId(block, context)
+    lookup = 'type'
+    const type = yield* blockTypeOfId(block)
+    return { drop, type }
+  })
+  if (Result.isFailure(resolved)) {
     return Result.fail({
       _tag: 'BlockLootRegistryFailure',
       block,
-      lookup: 'drop',
-      failure: dropResult.failure,
+      lookup,
+      failure: resolved.failure,
     })
   }
-  const typeResult = blockTypeOfId(block)
-  if (Result.isFailure(typeResult)) {
-    return Result.fail({
-      _tag: 'BlockLootRegistryFailure',
-      block,
-      lookup: 'type',
-      failure: typeResult.failure,
-    })
-  }
-  const drop = dropResult.success
-  const type = typeResult.success
+  const { drop, type } = resolved.success
   const roll = rolls[0] ?? 0
 
   const items: Array<MinedItem> = []

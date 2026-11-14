@@ -298,9 +298,8 @@ export const makeInMemoryPlayer = (
       restore: (pose, dimension) => {
         const poseError = invalidPoseError(pose, 'invalid-pose')
         if (poseError !== undefined) return Effect.fail(poseError)
-        const pitch = clampPitch(pose.pitchRadians)
-        if (Result.isFailure(pitch)) return Effect.fail(pitch.failure)
-        const nextPose = { ...pose, pitchRadians: pitch.success }
+        const pitchRadians = Math.min(PITCH_MAX_RADIANS, Math.max(PITCH_MIN_RADIANS, pose.pitchRadians))
+        const nextPose = { ...pose, pitchRadians }
         if (!Schema.is(DimensionIdSchema)(dimension)) {
           return Effect.fail(inputError('invalid-dimension', 'dimension'))
         }

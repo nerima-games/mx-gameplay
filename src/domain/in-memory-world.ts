@@ -117,11 +117,7 @@ const parseChunkKey = (key: string): ChunkCoord | undefined => {
   const cx = Number(parts[0])
   const cz = Number(parts[1])
   if (!Number.isSafeInteger(cx) || !Number.isSafeInteger(cz)) return undefined
-  const chunkX = ChunkAxis.result(cx)
-  const chunkZ = ChunkAxis.result(cz)
-  if (Result.isFailure(chunkX) || Result.isFailure(chunkZ)) return undefined
-
-  return chunkCoord(chunkX.success, chunkZ.success)
+  return chunkCoord(ChunkAxis(cx), ChunkAxis(cz))
 }
 
 const parseCellKey = (key: string): readonly [number, number, number] | undefined => {
@@ -286,22 +282,14 @@ const makeWorldChunkSource = (
       return Result.fail(worldInputFailure('world.blocks', 'invalid'))
     }
     const [x, y, z] = coordinates
-    const blockX = BlockAxis.result(x)
-    const blockY = BlockAxis.result(y)
-    const blockZ = BlockAxis.result(z)
-    if (Result.isFailure(blockX) || Result.isFailure(blockY) || Result.isFailure(blockZ)) {
-      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
-    }
-    if (blockY.success < 0 || blockY.success >= CHUNK_HEIGHT) {
+    const blockX = BlockAxis(x)
+    const blockY = BlockAxis(y)
+    const blockZ = BlockAxis(z)
+    if (blockY < 0 || blockY >= CHUNK_HEIGHT) {
       return Result.fail(worldInputFailure('world.blocks', 'invalid'))
     }
 
-    const chunkX = ChunkAxis.result(Math.floor(blockX.success / CHUNK_SIZE_XZ))
-    const chunkZ = ChunkAxis.result(Math.floor(blockZ.success / CHUNK_SIZE_XZ))
-    if (Result.isFailure(chunkX) || Result.isFailure(chunkZ)) {
-      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
-    }
-    const coord = chunkCoord(chunkX.success, chunkZ.success)
+    const coord = chunkCoord(ChunkAxis(Math.floor(blockX / CHUNK_SIZE_XZ)), ChunkAxis(Math.floor(blockZ / CHUNK_SIZE_XZ)))
     const coordKey = chunkKey(coord)
     let blocks = chunks.get(coordKey)
     if (blocks === undefined) {
@@ -309,9 +297,9 @@ const makeWorldChunkSource = (
       chunks.set(coordKey, blocks)
     }
 
-    const localX = ((blockX.success % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
-    const localZ = ((blockZ.success % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
-    blocks[blockIndex(localX, blockY.success, localZ)] = block
+    const localX = ((blockX % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
+    const localZ = ((blockZ % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
+    blocks[blockIndex(localX, blockY, localZ)] = block
   }
 
   const loaded: Array<ChunkCoord> = []
@@ -389,16 +377,12 @@ export const makeGeneratedWorld = <S>(
     if (typeof spawnXInput !== 'number' || !Number.isFinite(spawnXInput)) {
       return yield* Effect.fail(worldInputFailure('spawnX', 'invalid'))
     }
-    const spawnXResult = PositionAxis.result(spawnXInput)
-    if (Result.isFailure(spawnXResult)) return yield* Effect.fail(worldInputFailure('spawnX', 'invalid'))
-    const spawnX = spawnXResult.success
+    const spawnX = PositionAxis(spawnXInput)
     if (spawnZInput === undefined) return yield* Effect.fail(worldInputFailure('spawnZ', 'undefined'))
     if (typeof spawnZInput !== 'number' || !Number.isFinite(spawnZInput)) {
       return yield* Effect.fail(worldInputFailure('spawnZ', 'invalid'))
     }
-    const spawnZResult = PositionAxis.result(spawnZInput)
-    if (Result.isFailure(spawnZResult)) return yield* Effect.fail(worldInputFailure('spawnZ', 'invalid'))
-    const spawnZ = spawnZResult.success
+    const spawnZ = PositionAxis(spawnZInput)
     const blockX = yield* Effect.fromResult(BlockAxis.result(Math.floor(spawnX)))
     const blockZ = yield* Effect.fromResult(BlockAxis.result(Math.floor(spawnZ)))
     const spawnY = yield* Effect.fromResult(

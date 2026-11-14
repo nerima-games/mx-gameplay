@@ -273,19 +273,17 @@ export const makeFireLifecycleSnapshot = (
     tickAccumulatorSecs < 0 ||
     tickAccumulatorSecs > FIRE_TICK_ACCUMULATOR_MAX_SECS
   ) return Result.fail(invalidFireInput('tickAccumulatorSecs'))
-  const normalisedSeed = normaliseSeed(state.seed)
-  if (Result.isFailure(normalisedSeed)) return Result.fail(normalisedSeed.failure)
   const burningActors = state.burningActors === undefined ? [] : state.burningActors
-  return Result.succeed({
+  return Result.map(normaliseSeed(state.seed), (seed) => ({
     version: FIRE_LIFECYCLE_SNAPSHOT_VERSION,
     fires: state.fires.map((fire) => ({ ...fire, position: copyPosition(fire.position) })),
     burningActors: burningActors.map((actor) => ({
       ...actor,
       position: copyPosition(actor.position),
     })),
-    seed: normalisedSeed.success,
+    seed,
     tickAccumulatorSecs,
-  })
+  }))
 }
 
 export const isFireLifecycleSnapshot = (value: unknown): value is FireLifecycleSnapshot => {
@@ -324,19 +322,17 @@ export const restoreFireLifecycleSnapshot = (
   readonly tickAccumulatorSecs: number
 }, FireLifecycleFailure> => {
   if (!isFireLifecycleSnapshot(snapshot)) return Result.fail(invalidFireInput('snapshot'))
-  const normalisedSeed = normaliseSeed(snapshot.seed)
-  if (Result.isFailure(normalisedSeed)) return Result.fail(normalisedSeed.failure)
-  return Result.succeed({
+  return Result.map(normaliseSeed(snapshot.seed), (seed) => ({
     state: {
       fires: snapshot.fires.map((fire) => ({ ...fire, position: copyPosition(fire.position) })),
       burningActors: snapshot.burningActors.map((actor) => ({
         ...actor,
         position: copyPosition(actor.position),
       })),
-      seed: normalisedSeed.success,
+      seed,
     },
     tickAccumulatorSecs: snapshot.tickAccumulatorSecs,
-  })
+  }))
 }
 
 const advanceBurningActors = (
@@ -450,72 +446,71 @@ export function advanceFireLifecycle(
   if (!['peaceful', 'easy', 'normal', 'hard'].includes(effectiveDifficulty)) {
     return Result.fail(invalidFireInput('difficulty'))
   }
-  const normalisedSeed = normaliseSeed(state.seed)
-  if (Result.isFailure(normalisedSeed)) return Result.fail(normalisedSeed.failure)
+  return Result.gen(function* () {
+    const normalisedSeed = yield* normaliseSeed(state.seed)
+    const cellByKey = new Map(cells.map((cell) => [key(cell.position), cell]))
+    const active = [...state.fires].sort((a, b) => compare(a.position, b.position))
+    const survivors: ActiveFire[] = []
+    const mutations = new Map<string, FireMutation>()
+    const additions = new Map<string, ActiveFire>()
+    let seed = normalisedSeed
 
-  const cellByKey = new Map(cells.map((cell) => [key(cell.position), cell]))
-  const active = [...state.fires].sort((a, b) => compare(a.position, b.position))
-  const survivors: ActiveFire[] = []
-  const mutations = new Map<string, FireMutation>()
-  const additions = new Map<string, ActiveFire>()
-  let seed = normalisedSeed.success
-
-  for (const fire of active.slice(0, FIRE_WORK_BUDGET)) {
-    const cell = cellByKey.get(key(fire.position))
-    if (cell === undefined || cell.block === FIRE_UNAVAILABLE_BLOCK) {
-      const unloadedRetries = (fire.unloadedRetries === undefined ? 0 : fire.unloadedRetries) + 1
-      if (unloadedRetries <= FIRE_UNLOADED_RETRY_LIMIT) survivors.push({ ...fire, unloadedRetries })
-      continue
-    }
-    if (cell.block !== 'fire') continue
-    if ((weather !== 'clear' && cell.exposedToSky === true) || !supported(fire.position, cellByKey)) {
-      mutations.set(key(fire.position), { position: fire.position, block: 'air' })
-      continue
-    }
-    const ageTicks = fire.ageTicks + 1
-    if (ageTicks >= FIRE_NATURAL_LIFETIME_TICKS) {
-      mutations.set(key(fire.position), { position: fire.position, block: 'air' })
-      continue
-    }
-    survivors.push({ position: fire.position, ageTicks })
-    for (const [dx, dy, dz] of offsets) {
-      const position = { x: fire.position.x + dx, y: fire.position.y + dy, z: fire.position.z + dz }
-      const neighbour = cellByKey.get(key(position))
-      if (neighbour === undefined || !hasFlammableCapability(neighbour.block) || additions.has(key(position))) continue
-      const draw = nextRoll(seed)
-      if (Result.isFailure(draw)) return Result.fail(draw.failure)
-      seed = draw.success.seed
-      if (draw.success.roll < FIRE_SPREAD_CHANCE) {
-        mutations.set(key(position), { position, block: 'fire' })
-        additions.set(key(position), { position, ageTicks: 0 })
+    for (const fire of active.slice(0, FIRE_WORK_BUDGET)) {
+      const cell = cellByKey.get(key(fire.position))
+      if (cell === undefined || cell.block === FIRE_UNAVAILABLE_BLOCK) {
+        const unloadedRetries = (fire.unloadedRetries === undefined ? 0 : fire.unloadedRetries) + 1
+        if (unloadedRetries <= FIRE_UNLOADED_RETRY_LIMIT) survivors.push({ ...fire, unloadedRetries })
+        continue
+      }
+      if (cell.block !== 'fire') continue
+      if ((weather !== 'clear' && cell.exposedToSky === true) || !supported(fire.position, cellByKey)) {
+        mutations.set(key(fire.position), { position: fire.position, block: 'air' })
+        continue
+      }
+      const ageTicks = fire.ageTicks + 1
+      if (ageTicks >= FIRE_NATURAL_LIFETIME_TICKS) {
+        mutations.set(key(fire.position), { position: fire.position, block: 'air' })
+        continue
+      }
+      survivors.push({ position: fire.position, ageTicks })
+      for (const [dx, dy, dz] of offsets) {
+        const position = { x: fire.position.x + dx, y: fire.position.y + dy, z: fire.position.z + dz }
+        const neighbour = cellByKey.get(key(position))
+        if (neighbour === undefined || !hasFlammableCapability(neighbour.block) || additions.has(key(position))) continue
+        const draw = yield* nextRoll(seed)
+        seed = draw.seed
+        if (draw.roll < FIRE_SPREAD_CHANCE) {
+          mutations.set(key(position), { position, block: 'fire' })
+          additions.set(key(position), { position, ageTicks: 0 })
+        }
       }
     }
-  }
-  survivors.push(...active.slice(FIRE_WORK_BUDGET))
+    survivors.push(...active.slice(FIRE_WORK_BUDGET))
 
-  const fires = [...new Map([...survivors, ...additions.values()].map((fire) => [key(fire.position), fire])).values()]
-    .sort((a, b) => compare(a.position, b.position))
-  const orderedMutations = [...mutations.values()].sort((a, b) => compare(a.position, b.position))
-  const fireKeys = new Set(fires.map((fire) => key(fire.position)))
-  const existingActors = state.burningActors === undefined ? [] : state.burningActors
-  const actors = advanceBurningActors(
-    existingActors,
-    actorInput(contacts),
-    fireKeys,
-    weather,
-    effectiveDifficulty,
-  )
-  const nextState: FireLifecycleState = {
-    fires,
-    ...(actors.burningActors.length > 0 || Object.hasOwn(state, 'burningActors')
-      ? { burningActors: actors.burningActors }
-      : {}),
-    seed,
-  }
-  return Result.succeed({
-    state: nextState,
-    mutations: orderedMutations,
-    damages: actors.damages,
-    entityDamages: actors.entityDamages,
+    const fires = [...new Map([...survivors, ...additions.values()].map((fire) => [key(fire.position), fire])).values()]
+      .sort((a, b) => compare(a.position, b.position))
+    const orderedMutations = [...mutations.values()].sort((a, b) => compare(a.position, b.position))
+    const fireKeys = new Set(fires.map((fire) => key(fire.position)))
+    const existingActors = state.burningActors === undefined ? [] : state.burningActors
+    const actors = advanceBurningActors(
+      existingActors,
+      actorInput(contacts),
+      fireKeys,
+      weather,
+      effectiveDifficulty,
+    )
+    const nextState: FireLifecycleState = {
+      fires,
+      ...(actors.burningActors.length > 0 || Object.hasOwn(state, 'burningActors')
+        ? { burningActors: actors.burningActors }
+        : {}),
+      seed,
+    }
+    return {
+      state: nextState,
+      mutations: orderedMutations,
+      damages: actors.damages,
+      entityDamages: actors.entityDamages,
+    }
   })
 }

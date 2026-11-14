@@ -206,61 +206,50 @@ const stepVehicle = (
   }
   const readings = vehicleNeighbourhood.readings
   if (vehicle.type === 'boat') {
-    const controlsResult = boatControls(environment, vehicle)
-    if (Result.isFailure(controlsResult)) return { _tag: 'MotionFailure', failure: controlsResult.failure }
-    const controls = controlsResult.success
-    const transitionResult = stepBoat(vehicle, {
+    const controls = yield* Effect.fromResult(boatControls(environment, vehicle))
+    const transition = yield* Effect.fromResult(stepBoat(vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,
       inWater: waterAt(readings, position),
       collided: false,
-    }, dt)
-    if (Result.isFailure(transitionResult)) return { _tag: 'MotionFailure', failure: transitionResult.failure }
-    const transition = transitionResult.success
+    }, dt))
     const next = integrate(transition.vehicle, dt)
     const collision = collidesAt(readings, next)
-    const resolvedResult = collision ? stepBoat(transition.vehicle, {
+    const resolved = yield* Effect.fromResult(collision ? stepBoat(transition.vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,
       inWater: waterAt(readings, position),
       collided: true,
       impactSpeed: speedOf(transition.vehicle),
-    }, dt) : Result.succeed(transition)
-    if (Result.isFailure(resolvedResult)) return { _tag: 'MotionFailure', failure: resolvedResult.failure }
-    const resolved = resolvedResult.success
+    }, dt) : Result.succeed(transition))
     const result = collision ? resolved.vehicle : next
     return resolved.exited === undefined
-      ? { _tag: 'Stepped', vehicle: result }
-      : { _tag: 'Stepped', vehicle: result, exited: { reason: resolved.exited.reason } }
+      ? { _tag: 'Stepped' as const, vehicle: result }
+      : { _tag: 'Stepped' as const, vehicle: result, exited: { reason: resolved.exited.reason } }
   }
 
   const kind = railKindAt(readings, position)
   const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, blockPositionAt(x, y, z)) !== 'none'
-  const shape = resolveRailShape(isRailAt, position.x, position.y, position.z)
-  if (Result.isFailure(shape)) return { _tag: 'MotionFailure', failure: shape.failure }
+  const shape = yield* Effect.fromResult(resolveRailShape(isRailAt, position.x, position.y, position.z))
   const track = {
     kind,
-    shape: shape.success,
+    shape,
     ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
     powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
   } as const
-  const transitionResult = stepMinecart(vehicle, {
+  const transition = yield* Effect.fromResult(stepMinecart(vehicle, {
     ...track,
-  }, { collided: false }, dt)
-  if (Result.isFailure(transitionResult)) return { _tag: 'MotionFailure', failure: transitionResult.failure }
-  const transition = transitionResult.success
+  }, { collided: false }, dt))
   const next = integrate(transition.vehicle, dt)
   const collision = collidesAt(readings, next)
-  const resolvedResult = collision
+  const resolved = yield* Effect.fromResult(collision
     ? stepMinecart(vehicle, track, { collided: true, impactSpeed: speedOf(transition.vehicle) }, dt)
-    : Result.succeed(transition)
-  if (Result.isFailure(resolvedResult)) return { _tag: 'MotionFailure', failure: resolvedResult.failure }
-  const resolved = resolvedResult.success
+    : Result.succeed(transition))
   const result = collision ? resolved.vehicle : next
   return resolved.exited === undefined
-    ? { _tag: 'Stepped', vehicle: result }
-    : { _tag: 'Stepped', vehicle: result, exited: { reason: resolved.exited.reason } }
-})
+    ? { _tag: 'Stepped' as const, vehicle: result }
+    : { _tag: 'Stepped' as const, vehicle: result, exited: { reason: resolved.exited.reason } }
+}).pipe(Effect.catch((failure) => Effect.succeed({ _tag: 'MotionFailure' as const, failure })))
 
 export const advanceVehicles = (
   store: ChunkStoreApi,
