@@ -85,14 +85,14 @@ describe('registration-core typed world faults', () => {
       let portalCellReads = 0
       const store: ChunkStoreApi = {
         ...harness.store.api,
-        getBlock: (position) => {
-          if (sameCell(position, portalCell)) {
+        getBlock: (queryPosition) => {
+          if (sameCell(queryPosition, portalCell)) {
             portalCellReads += 1
             if (portalCellReads === 2) {
               return Effect.succeed({ _tag: 'Block', block: unknownBlockId })
             }
           }
-          return harness.store.api.getBlock(position)
+          return harness.store.api.getBlock(queryPosition)
         },
       }
       const interactions = stageFor(harness, GAMEPLAY_STAGE_IDS.interactions, store)
@@ -136,9 +136,9 @@ describe('registration-core typed world faults', () => {
       yield* Ref.set(harness.state.fluidFrontier, [work])
       const store: ChunkStoreApi = {
         ...harness.store.api,
-        getBlock: (position) => sameCell(position, fluidCell)
+        getBlock: (queryPosition) => sameCell(queryPosition, fluidCell)
           ? Effect.succeed({ _tag: 'Block', block: unknownBlockId })
-          : harness.store.api.getBlock(position),
+          : harness.store.api.getBlock(queryPosition),
       }
 
       yield* stageFor(harness, GAMEPLAY_STAGE_IDS.fluids, store)
@@ -156,10 +156,46 @@ describe('registration-core typed world faults', () => {
     }),
   )
 
-  it.effect('retries a fluid cell after a neighbor fault and still probes the other neighbors', () =>
+  it.effect('records a fluid current-cell fault without requeueing after the retry limit', () =>
+    Effect.gen(function* () {
+      const fluidCell = blockPosition(0, 64, 0)
+      const harness = yield* makeHarness(world([]))
+      const work: FluidWorkItem = {
+        key: blockPositionKeyOf(fluidCell),
+        kind: 'water',
+        level: 0,
+        source: true,
+        falling: false,
+        deferred: 8,
+      }
+      yield* Ref.set(harness.state.fluidFrontier, [work])
+      const store: ChunkStoreApi = {
+        ...harness.store.api,
+        getBlock: (queryPosition) => sameCell(queryPosition, fluidCell)
+          ? Effect.succeed({ _tag: 'Block', block: unknownBlockId })
+          : harness.store.api.getBlock(queryPosition),
+      }
+
+      yield* stageFor(harness, GAMEPLAY_STAGE_IDS.fluids, store)
+        .run(DeltaTimeSecs(0.016))
+        .pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'EntityWorldDataFault',
+        source: 'Fluid',
+        target: { _tag: 'Cell', cell: fluidCell },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: fluidCell, blockId: unknownBlockId },
+      }])
+      expect(yield* Ref.get(harness.state.fluidFrontier)).toStrictEqual([])
+      expect(yield* drainFluidUpdates(harness.state)).toStrictEqual([work])
+    }),
+  )
+
+  it.effect('retries a fluid cell after neighbor faults and still probes the other neighbors', () =>
     Effect.gen(function* () {
       const fluidCell = blockPosition(0, 64, 0)
       const belowCell = blockPosition(0, 63, 0)
+      const horizontalCell = blockPosition(1, 64, 0)
       const fluid = Option.getOrThrow(blockIdOf('water'))
       const harness = yield* makeHarness(world([[fluidCell, fluid]]))
       const work: FluidWorkItem = {
@@ -173,11 +209,11 @@ describe('registration-core typed world faults', () => {
       const reads = yield* Ref.make<ReadonlyArray<BlockPosition>>([])
       const store: ChunkStoreApi = {
         ...harness.store.api,
-        getBlock: (position) => Effect.flatMap(
-          Ref.update(reads, (current) => [...current, position]),
-          () => sameCell(position, belowCell)
+        getBlock: (queryPosition) => Effect.flatMap(
+          Ref.update(reads, (current) => [...current, queryPosition]),
+          () => sameCell(queryPosition, belowCell) || sameCell(queryPosition, horizontalCell)
             ? Effect.succeed({ _tag: 'Block', block: unknownBlockId })
-            : harness.store.api.getBlock(position),
+            : harness.store.api.getBlock(queryPosition),
         ),
       }
 
@@ -185,12 +221,20 @@ describe('registration-core typed world faults', () => {
         .run(DeltaTimeSecs(0.016))
         .pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
-        _tag: 'EntityWorldDataFault',
-        source: 'Fluid',
-        target: { _tag: 'Cell', cell: belowCell },
-        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: belowCell, blockId: unknownBlockId },
-      }])
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([
+        {
+          _tag: 'EntityWorldDataFault',
+          source: 'Fluid',
+          target: { _tag: 'Cell', cell: belowCell },
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: belowCell, blockId: unknownBlockId },
+        },
+        {
+          _tag: 'EntityWorldDataFault',
+          source: 'Fluid',
+          target: { _tag: 'Cell', cell: horizontalCell },
+          failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: horizontalCell, blockId: unknownBlockId },
+        },
+      ])
       expect(yield* Ref.get(harness.state.fluidFrontier)).toStrictEqual([{ ...work, deferred: 1 }])
       expect(yield* drainFluidUpdates(harness.state)).toStrictEqual([work])
       const readPositions = yield* Ref.get(reads)
@@ -287,9 +331,9 @@ describe('registration-core typed world faults', () => {
       const aboveRead = yield* Ref.make({ count: 0, returnedOutOfWorld: false })
       const store: ChunkStoreApi = {
         ...harness.store.api,
-        getBlock: (position) => Effect.tap(
-          harness.store.api.getBlock(position),
-          (reading) => sameCell(position, aboveWorldCell)
+        getBlock: (queryPosition) => Effect.tap(
+          harness.store.api.getBlock(queryPosition),
+          (reading) => sameCell(queryPosition, aboveWorldCell)
             ? Ref.update(aboveRead, (current) => ({
                 count: current.count + 1,
                 returnedOutOfWorld: reading._tag === 'OutOfWorld' || current.returnedOutOfWorld,

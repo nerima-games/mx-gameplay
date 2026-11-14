@@ -634,7 +634,7 @@ export const maxHealthOfKind = (kind: EntityKind): EntityHealthPoints => {
 }
 
 /**
- * The behaviour a freshly spawned hostile carries.
+ * The behaviour a freshly spawned mob carries when its kind has a rule.
  *
  * Creepers start with `DORMANT_FUSE`, endermen with `STEADY_ENDERMAN`, and
  * zombies carry no state because their pursuit rule is stateless.
@@ -643,13 +643,15 @@ export const maxHealthOfKind = (kind: EntityKind): EntityHealthPoints => {
  * fuse and an enderman to a flinch, and `sweepMobs` picks its rule by the tag
  * and guards on the kind. A spawner that handed a creeper a flinch would produce
  * a mob that ticks nothing, which is exactly the mismatch that function's last
- * paragraph is about.
+ * paragraph is about. A kind without one of these rules, including an endermite,
+ * carries no behaviour state.
  */
 export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
   if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return hostileMobSnapshot(initialEcosystemMobState())
   if (kind === ENDERMAN_KIND) return hostileMobSnapshot(STEADY_ENDERMAN)
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
-  return hostileMobSnapshot(DORMANT_FUSE)
+  if (kind === CREEPER_KIND) return hostileMobSnapshot(DORMANT_FUSE)
+  return undefined
 }
 
 /**

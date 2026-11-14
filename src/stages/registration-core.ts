@@ -1092,8 +1092,14 @@ const runFluidPropagation = (
         const horizontalResults = yield* Effect.forEach(horizontalPositions, (candidate) =>
           fluidProbeAt(store, candidate, cell.kind, cells),
         )
-        const neighborFailures = [belowResult, ...horizontalResults]
-          .flatMap((result) => Result.isFailure(result) ? [result.failure] : [])
+        const neighborFailures: EntityWorldQueryFailure[] = []
+        if (Result.isSuccess(belowResult)) belowProbe = belowResult.success
+        else neighborFailures.push(belowResult.failure)
+        const successfulHorizontalProbes: FluidProbe[] = []
+        for (const result of horizontalResults) {
+          if (Result.isSuccess(result)) successfulHorizontalProbes.push(result.success)
+          else neighborFailures.push(result.failure)
+        }
         if (neighborFailures.length > 0) {
           for (const failure of neighborFailures) {
             yield* recordGameplayEntityWorldDataFault(state, 'Fluid', failure)
@@ -1101,10 +1107,7 @@ const runFluidPropagation = (
           retryCurrent()
           continue
         }
-        if (Result.isSuccess(belowResult)) belowProbe = belowResult.success
-        horizontalProbes = horizontalResults.flatMap((result) =>
-          Result.isSuccess(result) ? [result.success] : [],
-        )
+        horizontalProbes = successfulHorizontalProbes
       }
 
       const transition = transitionFluidCell({
