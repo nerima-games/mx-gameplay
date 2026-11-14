@@ -1,5 +1,5 @@
-import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import { Schema } from 'effect'
+import { DeltaTimeSecs, type DeltaTimeSecs as DeltaTimeSecsValue } from '@nerima-games/mc-kernel'
+import { Brand, Result, Schema } from 'effect'
 
 export const STATUS_EFFECT_TYPES = [
   'poison',
@@ -168,9 +168,11 @@ const advancePulsingEffect = (
 
 export const tickStatusEffects = (
   state: StatusEffectState,
-  dt: DeltaTimeSecs,
-): StatusEffectTick => {
-  const elapsedSecs = Number.isFinite(dt) ? Math.max(0, dt) : 0
+  dt: DeltaTimeSecsValue,
+): Result.Result<StatusEffectTick, Brand.BrandError> => {
+  const elapsed = DeltaTimeSecs.result(dt)
+  if (Result.isFailure(elapsed)) return Result.fail(elapsed.failure)
+  const elapsedSecs = elapsed.success
   const effects: Array<ActiveStatusEffect> = []
   let poisonPulses = 0
   let regenerationPulses = 0
@@ -200,7 +202,7 @@ export const tickStatusEffects = (
     }
   }
 
-  return {
+  return Result.succeed({
     state: { effects },
     poisonPulses,
     regenerationPulses,
@@ -211,5 +213,5 @@ export const tickStatusEffects = (
     nauseaAmplifier: effects.some((effect) => effect.type === 'nausea')
       ? finiteAmplifier(effects.find((effect) => effect.type === 'nausea')?.amplifier)
       : null,
-  }
+  })
 }

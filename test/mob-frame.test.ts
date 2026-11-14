@@ -51,7 +51,7 @@ import {
   resolveEndermanTeleportProbes,
   resolveMeleeHits,
   rollSelfDestructDrops,
-  rollCasualtyDrops,
+  rollCasualtyDrops as rollCasualtyDropsResult,
   rollDropsOfKind,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -68,7 +68,7 @@ import {
   type MobSpawnAttempt,
   xpRewardOfKind,
 } from '../src/domain/entities/mob-frame'
-import { rollCasualtyExperience } from '../src/stages/registration-core'
+import { rollCasualtyExperience as rollCasualtyExperienceResult } from '../src/stages/registration-core'
 import {
   BLAZE_XP_REWARD,
   ENDERMAN_XP_REWARD,
@@ -87,6 +87,12 @@ import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, D
 import { durabilityForItem, EntityId, EntityKind, MobMovementStateSchema, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+
+const rollCasualtyDrops = (...args: Parameters<typeof rollCasualtyDropsResult>) =>
+  Result.getOrThrow(rollCasualtyDropsResult(...args))
+
+const rollCasualtyExperience = (...args: Parameters<typeof rollCasualtyExperienceResult>) =>
+  Result.getOrThrow(rollCasualtyExperienceResult(...args))
 
 const blockTypeControl = vi.hoisted(() => ({ mode: 'native' as 'native' | 'failure' | 'missing' }))
 
@@ -584,16 +590,23 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     }),
   )
 
-  it.effect('a zombie handed a RAW value still lands on the snapshot with no inner state', () =>
+  it.effect('a zombie migrates an omitted state and faults on any present inner behaviour', () =>
     Effect.sync(() => {
       // `hostile-despawn-frame.test.ts` only exercises the ZOMBIE_KIND branch
       // through an ALREADY-wrapped snapshot, so `isHostileMobSnapshot` takes the
       // top branch there. This is the raw path underneath it — the shape a save
       // predating the snapshot wrapper would have handed back.
       expect(repairMobBehaviour(ZOMBIE_KIND, undefined)).toStrictEqual(hostileMobSnapshot(undefined))
-      expect(repairMobBehaviour(ZOMBIE_KIND, { _tag: 'Lit', burnedSecs: 1 })).toStrictEqual(
-        hostileMobSnapshot(undefined),
-      )
+      expect(repairMobBehaviour(ZOMBIE_KIND, { _tag: 'Lit', burnedSecs: 1 })).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' },
+      })
+      expect(repairMobBehaviour(ZOMBIE_KIND, {
+        ...hostileMobSnapshot(undefined), behaviour: undefined,
+      })).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' },
+      })
     }),
   )
 
@@ -621,7 +634,6 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
 
       expect(repairMobBehaviour(ZOMBIE_KIND, legacySnapshot)).toStrictEqual({
         _tag: 'HostileMob',
-        behaviour: undefined,
         movement,
         ageTicks: 4,
         persistent: true,
@@ -656,9 +668,22 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
 
   it.effect('an ecosystem hostile snapshot initializes omitted inner state and validates repair fault tags', () =>
     Effect.sync(() => {
+      expect(Object.hasOwn(hostileMobSnapshot(undefined), 'behaviour')).toBe(false)
       expect(repairMobBehaviour(BLAZE_KIND, hostileMobSnapshot(undefined))).toMatchObject({
         _tag: 'HostileMob',
         behaviour: { _tag: 'EcosystemMob' },
+      })
+      expect(repairMobBehaviour(BLAZE_KIND, { ...hostileMobSnapshot(undefined), behaviour: undefined })).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: '_tag' },
+      })
+      expect(repairMobBehaviour(BLAZE_KIND, undefined)).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: { _tag: 'EcosystemMob' },
+      })
+      expect(repairMobBehaviour(ZOMBIE_KIND, { ...hostileMobSnapshot(undefined), movement: undefined })).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobMovementStateRepairFailure' },
       })
       expect(repairMobBehaviour(BLAZE_KIND, hostileMobSnapshot(initialEcosystemMobState()))).toMatchObject({
         _tag: 'HostileMob',
@@ -682,6 +707,10 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       expect(isMobBehaviourRepairFault({
         _tag: 'MobBehaviourRepairFault',
         failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' },
+      })).toBe(true)
+      expect(isMobBehaviourRepairFault({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' },
       })).toBe(true)
       expect(isMobBehaviourRepairFault({
         _tag: 'MobBehaviourRepairFault',
@@ -1701,6 +1730,11 @@ describe('owner-snapshot roster plans', () => {
       expect(empty.casualties).toStrictEqual([])
       expect(invalid.roster).toBe(initial)
       expect(invalid.casualties).toStrictEqual([])
+      expect(invalid.faults).toStrictEqual([{
+        _tag: 'MobRosterDamageFault',
+        entityId: entity.id,
+        failure: { _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' },
+      }])
     }),
   )
 
@@ -1742,6 +1776,11 @@ describe('owner-snapshot roster plans', () => {
         behaviour: moving.behaviour,
       })
       expect(resolution.roster.entities[2]).toBe(dropped)
+      expect(resolution.faults).toStrictEqual([{
+        _tag: 'MobRosterDamageFault',
+        entityId: EntityId('e:invalid'),
+        failure: { _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' },
+      }])
     }),
   )
 
@@ -1773,6 +1812,15 @@ describe('owner-snapshot roster plans', () => {
       expect(noMatch.casualties).toStrictEqual([])
       expect(noOp.casualties).toStrictEqual([])
       expect(belowPrecision.casualties).toStrictEqual([])
+      expect(empty.faults).toStrictEqual([])
+      expect(invalid.faults).toStrictEqual([{
+        _tag: 'MobRosterDamageFault',
+        entityId: entity.id,
+        failure: { _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' },
+      }])
+      expect(noMatch.faults).toStrictEqual([])
+      expect(noOp.faults).toStrictEqual([])
+      expect(belowPrecision.faults).toStrictEqual([])
     }),
   )
 })

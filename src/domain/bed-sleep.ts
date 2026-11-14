@@ -3,8 +3,8 @@ import { InterpolationFraction, PositionAxis, position } from '@nerima-games/mc-
 import type { BlockPosition, Position } from '@nerima-games/mc-kernel'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import { Brand, Effect } from 'effect'
-import { DAWN_FRACTION, isNight } from './day-night.js'
+import { Brand, Effect, Result } from 'effect'
+import { DAWN_FRACTION, isNight, type DayNightInputFailure } from './day-night.js'
 import type { Weather } from './weather.js'
 
 export type SleepRejectionReason =
@@ -42,18 +42,22 @@ export type BedSleepPlayer = Pick<PlayerServiceApi, 'dimension'>
 export type BedSleepTime = Pick<TimeServiceApi, 'timeOfDay' | 'setTimeOfDay'>
 
 /** Decide whether a bed may be used without mutating player or world state. */
-export const resolveBedSleep = (input: BedSleepInput): BedSleepDecision => {
+export const resolveBedSleep = (
+  input: BedSleepInput,
+): Result.Result<BedSleepDecision, DayNightInputFailure> => {
   if (input.dimension !== 'overworld') {
-    return { _tag: 'SleepRejected', reason: 'wrong-dimension' }
+    return Result.succeed({ _tag: 'SleepRejected', reason: 'wrong-dimension' })
   }
   if (input.dangerNearby) {
-    return { _tag: 'SleepRejected', reason: 'danger-nearby' }
+    return Result.succeed({ _tag: 'SleepRejected', reason: 'danger-nearby' })
   }
-  if (!isNight(input.timeOfDay) && input.weather !== 'thunder') {
-    return { _tag: 'SleepRejected', reason: 'not-night-or-thunder' }
+  const night = isNight(input.timeOfDay)
+  if (Result.isFailure(night)) return night
+  if (!night.success && input.weather !== 'thunder') {
+    return Result.succeed({ _tag: 'SleepRejected', reason: 'not-night-or-thunder' })
   }
 
-  return {
+  return Result.succeed({
     _tag: 'SleepAccepted',
     morningTimeOfDay: DAWN_FRACTION,
     respawnLocation: {
@@ -64,7 +68,7 @@ export const resolveBedSleep = (input: BedSleepInput): BedSleepDecision => {
         PositionAxis(input.bedPosition.z),
       ),
     },
-  }
+  })
 }
 
 /** Read authoritative state and advance the clock only after sleep is accepted. */
@@ -72,10 +76,10 @@ export const attemptBedSleep = (
   player: BedSleepPlayer,
   time: BedSleepTime,
   request: BedSleepRequest,
-): Effect.Effect<BedSleepDecision, Brand.BrandError> =>
+): Effect.Effect<BedSleepDecision, Brand.BrandError | DayNightInputFailure> =>
   Effect.gen(function* () {
     const [dimension, timeOfDay] = yield* Effect.all([player.dimension, time.timeOfDay])
-    const decision = resolveBedSleep({ ...request, dimension, timeOfDay })
+    const decision = yield* Effect.fromResult(resolveBedSleep({ ...request, dimension, timeOfDay }))
 
     if (decision._tag === 'SleepAccepted') {
       yield* time.setTimeOfDay(InterpolationFraction(decision.morningTimeOfDay))
@@ -147,16 +151,22 @@ export const reconcileSleepers = (
 })
 
 /** How many of `connectedPlayers` must be sleeping, `ratio` rounded up and floored at one. */
-export const requiredSleeperCount = (connectedPlayers: number, ratio: number): number => {
-  const normalizedRatio = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 1
-  return Math.max(1, Math.ceil(connectedPlayers * normalizedRatio))
-}
+export const requiredSleeperCount = (
+  connectedPlayers: number,
+  ratio: number,
+): Result.Result<number, 'invalid-sleep-ratio'> => Number.isFinite(ratio)
+  ? Result.succeed(Math.max(1, Math.ceil(connectedPlayers * Math.min(1, Math.max(0, ratio)))))
+  : Result.fail('invalid-sleep-ratio')
 
-/** Parses a `playersSleepingPercentage`-shaped game rule string; any unparsable value means "all of them." */
-export const sleepRatioFromPercentage = (value: string | null): number => {
-  if (value === null || value.trim() === '') return 1
+/** Parses a `playersSleepingPercentage` value; missing values default to all players. */
+export const sleepRatioFromPercentage = (
+  value: string | null,
+): Result.Result<number, 'invalid-sleep-percentage'> => {
+  if (value === null || value.trim() === '') return Result.succeed(1)
   const percentage = Number(value)
-  return Number.isFinite(percentage) ? Math.min(100, Math.max(0, percentage)) / 100 : 1
+  return Number.isFinite(percentage)
+    ? Result.succeed(Math.min(100, Math.max(0, percentage)) / 100)
+    : Result.fail('invalid-sleep-percentage')
 }
 
 /**
@@ -172,17 +182,19 @@ export const advanceSleep = (
   connectedSurvivalPlayers: number,
   requiredRatio: number,
   delaySecs: number,
-): SleepAdvance => {
+): Result.Result<SleepAdvance, 'invalid-sleep-ratio'> => {
+  const required = requiredSleeperCount(connectedSurvivalPlayers, requiredRatio)
+  if (Result.isFailure(required)) return required
   const sleepers = state.sleepers.map((sleeper) => ({
     ...sleeper,
     elapsedSecs: sleeper.elapsedSecs + Math.max(0, deltaSecs),
   }))
-  const enoughPlayers = sleepers.length >= requiredSleeperCount(connectedSurvivalPlayers, requiredRatio)
+  const enoughPlayers = sleepers.length >= required.success
   const waitedLongEnough = sleepers.some((sleeper) => sleeper.elapsedSecs >= delaySecs)
-  return {
+  return Result.succeed({
     state: { sleepers },
     skipToMorning: enoughPlayers && waitedLongEnough,
-  }
+  })
 }
 
 /** A respawn point is only valid while its bed still exists. */

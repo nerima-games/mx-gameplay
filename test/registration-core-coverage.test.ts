@@ -53,7 +53,7 @@ import { INITIAL_DIMENSION } from '../src/domain/in-memory-player'
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
-  makeFireLifecycleState,
+  makeFireLifecycleState as makeFireLifecycleStateResult,
 } from '../src/domain/fire-lifecycle'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb'
 import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item'
@@ -70,6 +70,9 @@ import {
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
 } from '../src/stages/gameplay-owner-registrations'
+
+const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStateResult>) =>
+  Result.getOrThrow(makeFireLifecycleStateResult(...args))
 
 const makeHarness = (
   initial: ReturnType<typeof world>,

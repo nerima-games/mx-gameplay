@@ -352,7 +352,7 @@ describe('balance simulation runner', () => {
           GameplayEntityRosterSchema,
         )
         const roster = yield* runtime.world.entities.snapshot
-        const entities = restoreGameplayEntityMetadata(roster, owner.state, 'overworld')
+        const entities = yield* Effect.fromResult(restoreGameplayEntityMetadata(roster, owner.state, 'overworld'))
         yield* runtime.commit.coordinator.commit({
           expectedRevision: owner.revision,
           expectedDimensions: [],

@@ -38,7 +38,8 @@ import {
   ChunkAxis,
   PositionAxis,
   chunkCoord,
-  type BlockId,
+  BlockId,
+  type BlockId as BlockIdType,
   type BlockPosition,
   type ChunkCoord,
   blockPosition,
@@ -81,7 +82,7 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
 /** What a host supplies to stand a world up. */
 export type WorldContents = {
   /** Cell key to block. Cells absent inside a loaded chunk are air. */
-  readonly blocks: ReadonlyMap<string, BlockId>
+  readonly blocks: ReadonlyMap<string, BlockIdType>
   /** Chunk keys that should be resident when the world is created. */
   readonly loaded: Iterable<string>
 }
@@ -107,8 +108,11 @@ const parseChunkKey = (key: string): ChunkCoord | undefined => {
   const cx = Number(parts[0])
   const cz = Number(parts[1])
   if (!Number.isSafeInteger(cx) || !Number.isSafeInteger(cz)) return undefined
+  const chunkX = ChunkAxis.result(cx)
+  const chunkZ = ChunkAxis.result(cz)
+  if (Result.isFailure(chunkX) || Result.isFailure(chunkZ)) return undefined
 
-  return chunkCoord(ChunkAxis(cx), ChunkAxis(cz))
+  return chunkCoord(chunkX.success, chunkZ.success)
 }
 
 const parseCellKey = (key: string): readonly [number, number, number] | undefined => {
@@ -146,6 +150,45 @@ export type GeneratedWorldOptions = {
   readonly vitals?: PlayerVitals
 }
 
+export type WorldInputFailure = Readonly<{
+  readonly _tag: 'WorldInputFailure'
+  readonly field:
+    | 'world'
+    | 'world.blocks'
+    | 'world.loaded'
+    | 'spawnPose'
+    | 'dimension'
+    | 'inventory'
+    | 'vitals'
+    | 'chunkSource'
+    | 'yawRadians'
+    | 'pitchRadians'
+  readonly reason: 'undefined' | 'invalid'
+}>
+
+const worldInputFailure = (
+  field: WorldInputFailure['field'],
+  reason: WorldInputFailure['reason'],
+): WorldInputFailure => ({ _tag: 'WorldInputFailure', field, reason })
+
+const isIterable = (value: unknown): value is Iterable<unknown> =>
+  value !== null
+  && (typeof value === 'object' || typeof value === 'string')
+  && typeof (value as { readonly [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function'
+
+const isReadonlyMap = (value: unknown): value is ReadonlyMap<unknown, unknown> =>
+  value !== null
+  && typeof value === 'object'
+  && typeof (value as { readonly get?: unknown }).get === 'function'
+  && typeof (value as { readonly has?: unknown }).has === 'function'
+  && isIterable(value)
+
+const isWorldContents = (value: unknown): value is WorldContents => {
+  if (value === null || typeof value !== 'object') return false
+  const candidate = value as { readonly blocks?: unknown; readonly loaded?: unknown }
+  return isReadonlyMap(candidate.blocks) && isIterable(candidate.loaded)
+}
+
 /**
  * The service handles, plus the Layer that provides the stage-facing services.
  *
@@ -172,21 +215,8 @@ export type GeneratedWorld<S> = InMemoryWorld<S> & {
 
 const GENERATED_WORLD_CHUNK_CAPACITY = ChunkCapacity(256)
 
-/**
- * `ChunkStoreApi` is `@nerima-games/mc-worldgen`'s real type now — no
- * coordinate or block-id branding conversion is needed here any more. The one
- * thing this repository still cannot take unmodified is `load`/`unload`'s
- * `ChunkPersistenceError` channel: nothing downstream of `ChunkStore` in this
- * repository is written to handle it, so it is turned into a defect at this
- * boundary, same as `WorldgenChunkStoreApi` used to be adapted for branding.
- * `worldgenChunkStore` on `GeneratedWorld` keeps the raw, un-widened store for
- * a consumer (mc-render, mc-meshing) that wants the real error channel.
- */
-export const adaptGeneratedChunkStore = (store: ChunkStoreApi): ChunkStoreApi => ({
-  ...store,
-  load: (coord) => store.load(coord).pipe(Effect.orDie),
-  unload: (coord) => store.unload(coord).pipe(Effect.orDie),
-})
+/** Keep the public adapter name while preserving the store's typed failures. */
+export const adaptGeneratedChunkStore = (store: ChunkStoreApi): ChunkStoreApi => store
 
 const makeWorldWithStore = <S>(
   chunkStore: ChunkStoreApi,
@@ -196,11 +226,16 @@ const makeWorldWithStore = <S>(
     readonly inventory?: ReadonlyArray<Slot> | undefined
     readonly vitals?: PlayerVitals | undefined
   },
-): Effect.Effect<InMemoryWorld<S>> =>
-  Effect.orDie(Effect.gen(function* () {
-    const inventory = yield* Effect.orDie(makeInMemoryInventory(options.inventory))
+) => Effect.gen(function* () {
+    for (const field of ['spawnPose', 'dimension', 'inventory', 'vitals'] as const) {
+      if (Object.hasOwn(options, field) && options[field] === undefined) {
+        return yield* Effect.fail(worldInputFailure(field, 'undefined'))
+      }
+    }
+
+    const inventory = yield* makeInMemoryInventory(options.inventory)
     const player = yield* makeInMemoryPlayer(options.spawnPose, options.dimension)
-    const entities = yield* Effect.orDie(makeInMemoryEntityManager<S>())
+    const entities = yield* makeInMemoryEntityManager<S>()
     const time = yield* makeTimeService()
     const vitals = yield* makeInMemoryVitals(options.vitals)
 
@@ -213,7 +248,7 @@ const makeWorldWithStore = <S>(
     )
 
     return { layer, chunkStore, inventory, player, time, entities, vitals }
-  }))
+  })
 
 /**
  * Stand up a world.
@@ -224,19 +259,37 @@ const makeWorldWithStore = <S>(
  */
 const makeWorldChunkSource = (
   world: WorldContents,
-): { readonly source: ChunkSource; readonly loaded: ReadonlyArray<ChunkCoord> } => {
+): Result.Result<
+  { readonly source: ChunkSource; readonly loaded: ReadonlyArray<ChunkCoord> },
+  WorldInputFailure
+> => {
   const chunks = new Map<string, Uint16Array>()
 
   for (const [cell, block] of world.blocks) {
+    if (typeof cell !== 'string' || Result.isFailure(BlockId.result(block))) {
+      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
+    }
     const coordinates = parseCellKey(cell)
-    if (coordinates === undefined) continue
+    if (coordinates === undefined) {
+      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
+    }
     const [x, y, z] = coordinates
-    if (y < 0 || y >= CHUNK_HEIGHT) continue
+    const blockX = BlockAxis.result(x)
+    const blockY = BlockAxis.result(y)
+    const blockZ = BlockAxis.result(z)
+    if (Result.isFailure(blockX) || Result.isFailure(blockY) || Result.isFailure(blockZ)) {
+      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
+    }
+    if (blockY.success < 0 || blockY.success >= CHUNK_HEIGHT) {
+      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
+    }
 
-    const coord = chunkCoord(
-      ChunkAxis(Math.floor(x / CHUNK_SIZE_XZ)),
-      ChunkAxis(Math.floor(z / CHUNK_SIZE_XZ)),
-    )
+    const chunkX = ChunkAxis.result(Math.floor(blockX.success / CHUNK_SIZE_XZ))
+    const chunkZ = ChunkAxis.result(Math.floor(blockZ.success / CHUNK_SIZE_XZ))
+    if (Result.isFailure(chunkX) || Result.isFailure(chunkZ)) {
+      return Result.fail(worldInputFailure('world.blocks', 'invalid'))
+    }
+    const coord = chunkCoord(chunkX.success, chunkZ.success)
     const coordKey = chunkKey(coord)
     let blocks = chunks.get(coordKey)
     if (blocks === undefined) {
@@ -244,14 +297,20 @@ const makeWorldChunkSource = (
       chunks.set(coordKey, blocks)
     }
 
-    const localX = ((x % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
-    const localZ = ((z % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
-    blocks[blockIndex(localX, y, localZ)] = block
+    const localX = ((blockX.success % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
+    const localZ = ((blockZ.success % CHUNK_SIZE_XZ) + CHUNK_SIZE_XZ) % CHUNK_SIZE_XZ
+    blocks[blockIndex(localX, blockY.success, localZ)] = block
   }
 
-  const loaded = [...world.loaded]
-    .map(parseChunkKey)
-    .filter((coord): coord is ChunkCoord => coord !== undefined)
+  const loaded: Array<ChunkCoord> = []
+  for (const key of world.loaded) {
+    if (typeof key !== 'string') {
+      return Result.fail(worldInputFailure('world.loaded', 'invalid'))
+    }
+    const coord = parseChunkKey(key)
+    if (coord === undefined) return Result.fail(worldInputFailure('world.loaded', 'invalid'))
+    loaded.push(coord)
+  }
 
   const source: ChunkSource = (coord) => {
     const resident = chunks.get(chunkKey(coord))
@@ -264,60 +323,80 @@ const makeWorldChunkSource = (
     return Effect.succeed(chunk)
   }
 
-  return { source, loaded }
+  return Result.succeed({ source, loaded })
 }
 export const makeInMemoryWorld = <S>(
   options: InMemoryWorldOptions = {},
-): Effect.Effect<InMemoryWorld<S>> =>
-  Effect.orDie(
-    Effect.gen(function* () {
-      const { source, loaded } = makeWorldChunkSource(options.world ?? EMPTY_WORLD)
-      const context = yield* Effect.scoped(
-        Layer.build(ChunkStoreLayer(source, ChunkCapacity(Number.MAX_SAFE_INTEGER))),
-      )
-      const chunkStore = Context.get(context, ChunkStore)
+) => Effect.gen(function* () {
+    const world = Object.hasOwn(options, 'world') ? options.world : EMPTY_WORLD
+    if (world === undefined) return yield* Effect.fail(worldInputFailure('world', 'undefined'))
+    if (!isWorldContents(world)) return yield* Effect.fail(worldInputFailure('world', 'invalid'))
+    const { source, loaded } = yield* Effect.fromResult(makeWorldChunkSource(world))
+    const context = yield* Effect.scoped(
+      Layer.build(ChunkStoreLayer(source, ChunkCapacity(Number.MAX_SAFE_INTEGER))),
+    )
+    const chunkStore = Context.get(context, ChunkStore)
 
-      for (const coord of loaded) {
-        yield* chunkStore.load(coord)
-      }
+    for (const coord of loaded) {
+      yield* chunkStore.load(coord)
+    }
 
-      return yield* makeWorldWithStore<S>(chunkStore, options)
-    }),
-  )
+    return yield* makeWorldWithStore<S>(chunkStore, options)
+  })
 
 /** Stand up a deterministic generated world backed by mc-worldgen's real store. */
 export const makeGeneratedWorld = <S>(
   options: GeneratedWorldOptions = {},
-): Effect.Effect<GeneratedWorld<S>> =>
-  Effect.orDie(Effect.gen(function* () {
-    const seed = yield* Effect.fromResult(NoiseSeed.result(options.seed ?? 8675309))
-    const spawnX = yield* Effect.fromResult(PositionAxis.result(options.spawnX ?? 0.5))
-    const spawnZ = yield* Effect.fromResult(PositionAxis.result(options.spawnZ ?? 0.5))
+) => Effect.gen(function* () {
+    const seedInput = Object.hasOwn(options, 'seed') ? options.seed : 8675309
+    const spawnXInput = Object.hasOwn(options, 'spawnX') ? options.spawnX : 0.5
+    const spawnZInput = Object.hasOwn(options, 'spawnZ') ? options.spawnZ : 0.5
+    const seed = yield* Effect.fromResult(NoiseSeed.result(seedInput))
+    const spawnX = yield* Effect.fromResult(PositionAxis.result(spawnXInput))
+    const spawnZ = yield* Effect.fromResult(PositionAxis.result(spawnZInput))
     const blockX = yield* Effect.fromResult(BlockAxis.result(Math.floor(spawnX)))
     const blockZ = yield* Effect.fromResult(BlockAxis.result(Math.floor(spawnZ)))
     const spawnY = yield* Effect.fromResult(
       PositionAxis.result(surfaceHeightAt(seed, blockX, blockZ) + 1),
     )
-    const worldgenStore = yield* makeChunkStore(
-      options.chunkSource ?? generatedChunkSource(seed),
-      GENERATED_WORLD_CHUNK_CAPACITY,
-    )
+    const chunkSource = Object.hasOwn(options, 'chunkSource')
+      ? options.chunkSource
+      : generatedChunkSource(seed)
+    if (chunkSource === undefined) {
+      return yield* Effect.fail(worldInputFailure('chunkSource', 'undefined'))
+    }
+    if (typeof chunkSource !== 'function') {
+      return yield* Effect.fail(worldInputFailure('chunkSource', 'invalid'))
+    }
+    const worldgenStore = yield* makeChunkStore(chunkSource, GENERATED_WORLD_CHUNK_CAPACITY)
     const chunkStore = adaptGeneratedChunkStore(worldgenStore)
+    const yawRadians = Object.hasOwn(options, 'yawRadians') ? options.yawRadians : 0
+    const pitchRadians = Object.hasOwn(options, 'pitchRadians') ? options.pitchRadians : 0
+    if (typeof yawRadians !== 'number' || !Number.isFinite(yawRadians)) {
+      return yield* Effect.fail(
+        worldInputFailure('yawRadians', yawRadians === undefined ? 'undefined' : 'invalid'),
+      )
+    }
+    if (typeof pitchRadians !== 'number' || !Number.isFinite(pitchRadians)) {
+      return yield* Effect.fail(
+        worldInputFailure('pitchRadians', pitchRadians === undefined ? 'undefined' : 'invalid'),
+      )
+    }
     const spawnPose: PlayerPose = {
       feetPosition: worldPosition(spawnX, spawnY, spawnZ),
-      yawRadians: options.yawRadians ?? 0,
-      pitchRadians: options.pitchRadians ?? 0,
+      yawRadians,
+      pitchRadians,
     }
 
     const world = yield* makeWorldWithStore<S>(chunkStore, {
       spawnPose,
-      dimension: options.dimension,
-      inventory: options.inventory,
-      vitals: options.vitals,
+      ...(Object.hasOwn(options, 'dimension') ? { dimension: options.dimension } : {}),
+      ...(Object.hasOwn(options, 'inventory') ? { inventory: options.inventory } : {}),
+      ...(Object.hasOwn(options, 'vitals') ? { vitals: options.vitals } : {}),
     })
 
     return { ...world, worldgenChunkStore: worldgenStore }
-  }))
+  })
 
 /**
  * Is this cell something a body cannot pass through?

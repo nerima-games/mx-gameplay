@@ -381,13 +381,15 @@ export const prepareMeleeAttack = (
   if (Result.isFailure(decodedEvent) || decodedEvent.success._tag !== 'EntityDamaged') {
     return Result.fail('invalid-authoritative-state')
   }
+  const knockback = knockbackDirection(
+    match.entity.feetPosition.x - pose.feetPosition.x,
+    match.entity.feetPosition.z - pose.feetPosition.z,
+  )
+  if (Result.isFailure(knockback)) return Result.fail('invalid-authoritative-state')
   return Result.succeed({
     target: match.target,
     event: decodedEvent.success,
-    knockback: knockbackDirection(
-      match.entity.feetPosition.x - pose.feetPosition.x,
-      match.entity.feetPosition.z - pose.feetPosition.z,
-    ),
+    knockback: knockback.success,
     targetDamageState: invulnerability.success.state,
   })
 }

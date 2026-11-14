@@ -137,15 +137,46 @@ describe('survival hunger', () => {
   })
 
   it('maps player activity to deterministic exhaustion and rejects invalid magnitudes', () => {
-    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toBe(0)
-    expect(exhaustionForSurvivalActivity({ _tag: 'sprint', distance: 10 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toBe(0.1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toBe(0.4)
-    expect(exhaustionForSurvivalActivity({ _tag: 'swim', distance: 100 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'mine', blocks: 200 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: 10 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: -1 })).toBe(0)
-    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: Number.NaN })).toBe(0)
+    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toEqual(Result.succeed(0))
+    expect(exhaustionForSurvivalActivity({ _tag: 'sprint', distance: 10 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toEqual(Result.succeed(0.1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toEqual(Result.succeed(0.4))
+    expect(exhaustionForSurvivalActivity({ _tag: 'swim', distance: 100 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'mine', blocks: 200 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: 10 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: -1 })).toEqual(Result.fail({
+      _tag: 'SurvivalActivityInputFailure', field: 'distance',
+    }))
+    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: Number.NaN })).toEqual(Result.fail({
+      _tag: 'SurvivalActivityInputFailure', field: 'count',
+    }))
+  })
+
+  it('property: activity decoding never throws and returns only a valid exhaustion or a typed failure', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), (input: unknown) => {
+        const result = exhaustionForSurvivalActivity(input)
+        return Result.isFailure(result)
+          ? result.failure._tag === 'SurvivalActivityInputFailure'
+          : Number.isFinite(result.success) && result.success >= 0
+      }),
+    )
+  })
+
+  it.effect('rejects invalid activity before it enters the pending tick queue', () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeSurvivalHungerRuntime()
+      expect(yield* Effect.flip(runtime.submit({ _tag: 'walk', distance: Number.NaN }))).toEqual({
+        _tag: 'SurvivalActivityInputFailure', field: 'distance',
+      })
+      expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
+    }),
+  )
+
+  it('rejects arbitrary activity values at the helper boundary', () => {
+    for (const input of [null, 'walk', {}, { _tag: 'unknown', distance: 1 }]) {
+      expect(Result.isFailure(exhaustionForSurvivalActivity(input))).toBe(true)
+    }
   })
 
   it.effect('consumes saturation before hunger and applies food recovery', () =>

@@ -24,13 +24,30 @@ type TargetBlockFailure = Extract<ReturnType<typeof targetBlockFromPlayerPose>, 
   | GameplayStageBlockTypeDecodeFailure
   | BlockRegistryResolutionFailure
 
+export type TargetedRightClickRouteInputFailure = Readonly<{
+  readonly _tag: 'TargetedRightClickRouteInputFailure'
+  readonly field: 'maxDistance'
+  readonly reason: 'undefined'
+}>
+
 /** Resolve the route from a pose read from the authoritative gameplay player owner. */
 export const targetedRightClickRoute = (
   store: ChunkStoreApi,
   pose: PlayerPose,
-  maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<RightClickRoute | undefined, TargetBlockFailure> =>
+  ...maxDistanceArgument: [] | [maxDistance: number]
+): Effect.Effect<RightClickRoute | undefined, TargetBlockFailure | TargetedRightClickRouteInputFailure> =>
   Effect.gen(function* () {
+    const maxDistance = maxDistanceArgument.length === 0
+      ? DEFAULT_BLOCK_REACH
+      : maxDistanceArgument[0]
+    if (maxDistance === undefined) {
+      return yield* Effect.fail({
+        _tag: 'TargetedRightClickRouteInputFailure',
+        field: 'maxDistance',
+        reason: 'undefined',
+      } satisfies TargetedRightClickRouteInputFailure)
+    }
+
     const candidates: Array<BlockPosition> = []
     // No dedup Set: `@nerima-games/mc-physics`'s `voxelRaycast` DDA walk
     // (`domain/dda.js`) advances exactly one axis by exactly one cell per

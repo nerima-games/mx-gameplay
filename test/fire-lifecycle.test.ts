@@ -8,18 +8,46 @@ import {
   FIRE_LIFECYCLE_SNAPSHOT_VERSION,
   FIRE_NATURAL_LIFETIME_TICKS,
   FIRE_TICK_INTERVAL_SECS,
+  FIRE_TICK_ACCUMULATOR_MAX_SECS,
   FIRE_UNAVAILABLE_BLOCK,
   FIRE_UNLOADED_RETRY_LIMIT,
   FIRE_WORK_BUDGET,
-  advanceFireLifecycle,
+  advanceFireLifecycle as advanceFireLifecycleResult,
   extinguishFire,
   isFireLifecycleSnapshot,
-  makeFireLifecycleSnapshot,
-  makeFireLifecycleState,
-  restoreFireLifecycleSnapshot,
+  makeFireLifecycleSnapshot as makeFireLifecycleSnapshotResult,
+  makeFireLifecycleState as makeFireLifecycleStateResult,
+  restoreFireLifecycleSnapshot as restoreFireLifecycleSnapshotResult,
+  type FireActorContact,
   type FireCell,
+  type FirePosition,
   type FireLifecycleState,
 } from '../src/domain/fire-lifecycle'
+import type { SurvivalDifficulty } from '../src/domain/survival-hunger'
+import type { Weather } from '../src/domain/weather'
+
+const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStateResult>) =>
+  Result.getOrThrow(makeFireLifecycleStateResult(...args))
+
+const makeFireLifecycleSnapshot = (...args: Parameters<typeof makeFireLifecycleSnapshotResult>) =>
+  Result.getOrThrow(makeFireLifecycleSnapshotResult(...args))
+
+const restoreFireLifecycleSnapshot = (...args: Parameters<typeof restoreFireLifecycleSnapshotResult>) =>
+  Result.getOrThrow(restoreFireLifecycleSnapshotResult(...args))
+
+const advanceFireLifecycle = (
+  state: FireLifecycleState,
+  cells: ReadonlyArray<FireCell>,
+  weather: Weather,
+  contacted?: ReadonlyArray<FirePosition | FireActorContact>,
+  difficulty?: SurvivalDifficulty,
+) => Result.getOrThrow(
+  contacted === undefined
+    ? advanceFireLifecycleResult(state, cells, weather)
+    : difficulty === undefined
+    ? advanceFireLifecycleResult(state, cells, weather, contacted)
+    : advanceFireLifecycleResult(state, cells, weather, contacted, difficulty),
+)
 
 const fire = { position: { x: 0, y: 1, z: 0 }, block: 'fire', exposedToSky: true }
 const coveredFire = { ...fire, exposedToSky: false }
@@ -369,7 +397,7 @@ describe('fire lifecycle', () => {
         damageCooldownTicks: 2,
       }],
     }
-    const snapshot = makeFireLifecycleSnapshot(state, 99)
+    const snapshot = makeFireLifecycleSnapshot(state, FIRE_TICK_ACCUMULATOR_MAX_SECS)
     expect(snapshot.version).toBe(FIRE_LIFECYCLE_SNAPSHOT_VERSION)
     expect(snapshot.tickAccumulatorSecs).toBe(FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET)
     expect(snapshot.fires[0]?.position).not.toBe(state.fires[0]?.position)
@@ -377,6 +405,7 @@ describe('fire lifecycle', () => {
     expect(isFireLifecycleSnapshot(snapshot)).toBe(true)
     expect(isFireLifecycleSnapshot({ ...snapshot, version: 2 })).toBe(false)
     expect(isFireLifecycleSnapshot({ ...snapshot, fires: [{ ageTicks: -1 }] })).toBe(false)
+    expect(Result.isFailure(makeFireLifecycleSnapshotResult(state, 99))).toBe(true)
 
     const restored = restoreFireLifecycleSnapshot(snapshot)
     expect(restored.state).toStrictEqual({
@@ -385,11 +414,40 @@ describe('fire lifecycle', () => {
       seed: snapshot.seed,
     })
     expect(restored.state.fires[0]?.position).not.toBe(snapshot.fires[0]?.position)
-    expect(makeFireLifecycleSnapshot(state, Number.NaN).tickAccumulatorSecs).toBe(0)
+    expect(makeFireLifecycleSnapshotResult(state, Number.NaN)).toStrictEqual(Result.fail({
+      _tag: 'InvalidFireLifecycleInput',
+      field: 'tickAccumulatorSecs',
+    }))
   })
 
   it('rejects a bare null snapshot without touching its shape', () => {
     expect(isFireLifecycleSnapshot(null)).toBe(false)
+  })
+
+  it('returns typed failures for malformed runtime state and world reads', () => {
+    const explicitUndefinedRetry = {
+      fires: [{ position: fire.position, ageTicks: 0, unloadedRetries: undefined }],
+      seed: 1,
+    } as unknown as FireLifecycleState
+    const explicitUndefinedActors = {
+      fires: [],
+      burningActors: undefined,
+      seed: 1,
+    } as unknown as FireLifecycleState
+
+    expect(advanceFireLifecycleResult(explicitUndefinedRetry, [], 'clear')).toStrictEqual(Result.fail({
+      _tag: 'InvalidFireLifecycleInput',
+      field: 'unloadedRetries',
+    }))
+    expect(advanceFireLifecycleResult(explicitUndefinedActors, [], 'clear')).toStrictEqual(Result.fail({
+      _tag: 'InvalidFireLifecycleInput',
+      field: 'burningActors',
+    }))
+    expect(advanceFireLifecycleResult(
+      { fires: [], seed: 1 },
+      [{ position: fire.position, block: undefined } as unknown as FireCell],
+      'clear',
+    )).toStrictEqual(Result.fail({ _tag: 'InvalidFireLifecycleInput', field: 'cell' }))
   })
 
   it('validates unloadedRetries when present, and both burning-actor kinds', () => {
@@ -407,6 +465,10 @@ describe('fire lifecycle', () => {
 
     expect(isFireLifecycleSnapshot({ ...base, fires: [validFire] })).toBe(true)
     expect(isFireLifecycleSnapshot({ ...base, fires: [invalidFire] })).toBe(false)
+    expect(isFireLifecycleSnapshot({
+      ...base,
+      fires: [{ ...base.fires[0]!, unloadedRetries: undefined }],
+    })).toBe(false)
     expect(isFireLifecycleSnapshot({ ...base, burningActors: [entityActor] })).toBe(true)
     expect(isFireLifecycleSnapshot({ ...base, burningActors: [invalidKindActor] })).toBe(false)
   })

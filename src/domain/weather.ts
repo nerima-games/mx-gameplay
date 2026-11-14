@@ -1,3 +1,5 @@
+import { Result } from 'effect'
+
 /**
  * The weather RULE. It holds nothing.
  *
@@ -134,14 +136,12 @@ export const isWeatherState = (value: unknown): value is WeatherState => {
   )
 }
 
-/**
- * Applies a host-provided state only when it satisfies the persisted boundary.
- * Returning a fresh value prevents later host mutation from changing domain state.
- */
-export const applyWeatherState = (current: WeatherState, candidate: unknown): WeatherState =>
-  isWeatherState(candidate)
-    ? { weather: candidate.weather, remainingSecs: candidate.remainingSecs }
-    : current
+/** Decode a host-provided persisted state, copying it to prevent later host mutation. */
+export const applyWeatherState = (
+  candidate: unknown,
+): Result.Result<WeatherState, 'invalid-weather-state'> => isWeatherState(candidate)
+  ? Result.succeed({ weather: candidate.weather, remainingSecs: candidate.remainingSecs })
+  : Result.fail('invalid-weather-state')
 
 /** Clamp into `[0, 1]`. `weather.ts:30` — INCLUSIVE of 1, which the oracle pins. */
 const clampUnit = (value: number): number =>

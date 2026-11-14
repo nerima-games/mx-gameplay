@@ -171,7 +171,11 @@ import {
   StackCount,
 } from '@nerima-games/mc-kernel'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
-import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
+import {
+  DEFAULT_ROLL_SEED,
+  drawRolls as drawRollsResult,
+  nextRoll as nextRollResult,
+} from '../src/domain/frame-rolls'
 import {
   FIRE_NATURAL_LIFETIME_TICKS,
   FIRE_TICK_INTERVAL_SECS,
@@ -186,7 +190,10 @@ import {
   ENDERMAN_TELEPORT_MIN_BLOCKS,
   endermanTeleportCandidates,
 } from '../src/domain/mob/enderman-teleport'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import {
+  CREEPER_EXPLOSION_POWER,
+  explosionDamageAmount as explosionDamageAmountResult,
+} from '../src/domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
@@ -251,6 +258,11 @@ import {
 } from './support/inventory-service-double'
 import { runFrame, runFrames } from './support/frame-runner'
 import { FrameServicesLayer } from './support/frame-services'
+
+const drawRolls = (...args: Parameters<typeof drawRollsResult>) => Result.getOrThrow(drawRollsResult(...args))
+const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
+const explosionDamageAmount = (...args: Parameters<typeof explosionDamageAmountResult>) =>
+  Result.getOrThrow(explosionDamageAmountResult(...args))
 
 // ---------------------------------------------------------------------------
 // The column under test. Chunk (0, 0), which is the only resident one unless a
@@ -344,7 +356,7 @@ const withMiningDroppedItemsOwner = (
       yield* inventory.storageSnapshot,
     )
     const droppedItems = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)({ items: [] })
-    const registrations = gameplayOwnerRegistrations({ playerStorage, droppedItems })
+    const registrations = Result.getOrThrow(gameplayOwnerRegistrations({ playerStorage, droppedItems }))
     const miningCoordinator = yield* makeWorldCommitCoordinator({
       world: coordinator.worldId,
       owners: [

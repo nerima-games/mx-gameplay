@@ -7,6 +7,7 @@ import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
 import {
   BLAZE_KIND,
   CHICKEN_KIND,
+  ENDERMITE_KIND,
   COW_KIND,
   ecosystemDimensionAllows,
   initialEcosystemMobState,
@@ -38,6 +39,15 @@ describe('mob ecosystem', () => {
     expect(ecosystemDimensionAllows(COW_KIND, 'nether')).toBe(false)
     expect(ecosystemDimensionAllows(BLAZE_KIND, 'nether')).toBe(true)
     expect(ecosystemDimensionAllows(BLAZE_KIND, 'end')).toBe(false)
+    expect(ecosystemDimensionAllows(ENDERMITE_KIND, 'nether')).toBe(true)
+    expect(ecosystemDimensionAllows(ENDERMITE_KIND, 'end')).toBe(true)
+  })
+
+  it('approaches players within the Endermite follow range', () => {
+    const self = position(0)
+
+    expect(movementGoal(ENDERMITE_KIND, self, position(16))).toEqual(position(16))
+    expect(movementGoal(ENDERMITE_KIND, self, position(16.5))).toEqual(self)
   })
 
   it('makes passive mobs flee a nearby player', () => {
@@ -425,6 +435,13 @@ describe('repairEcosystemMobState', () => {
     }))
   })
 
+  it('migrates an omitted ecosystem state but faults when the enclosing field is present and undefined', () => {
+    expect(repairEcosystemMobState(undefined)).toEqual(Result.succeed(undefined))
+    expect(repairEcosystemMobState(undefined, true)).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: '_tag',
+    }))
+  })
+
   it('rejects omissions that are not part of the legacy ecosystem migration', () => {
     expect(repairEcosystemMobState({
       _tag: 'EcosystemMob', attackCooldownSecs: 0, provoked: false,
@@ -531,6 +548,18 @@ describe('repairEcosystemMobState', () => {
       _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0, provoked: false,
       hasHeadProtection: false, burningTicks: 0,
     }
+    expect(repairEcosystemMobState({ ...base, attackCooldownTicks: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownTicks',
+    }))
+    expect(repairEcosystemMobState({ ...base, attackCooldownSecs: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownSecs',
+    }))
+    expect(repairEcosystemMobState({ ...base, motionPhase: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'motionPhase',
+    }))
+    expect(repairEcosystemMobState({ ...base, provoked: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'provoked',
+    }))
     expect(repairEcosystemMobState({ ...base, movementGoal: { x: '2', y: 64, z: 3 } })).toEqual(Result.fail({
       _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal',
     }))
@@ -540,6 +569,15 @@ describe('repairEcosystemMobState', () => {
     })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal' }))
     expect(repairEcosystemMobState({ ...base, movementGoal: null })).toEqual(Result.fail({
       _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal',
+    }))
+    expect(repairEcosystemMobState({ ...base, movementGoal: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal',
+    }))
+    expect(repairEcosystemMobState({ ...base, burningTicks: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks',
+    }))
+    expect(repairEcosystemMobState({ ...base, hasHeadProtection: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'hasHeadProtection',
     }))
     expect(repairEcosystemMobState({ ...base, burningTicks: 161 })).toEqual(Result.fail({
       _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks',

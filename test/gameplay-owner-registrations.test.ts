@@ -5,6 +5,7 @@ import {
   EntityId,
   EntityKind,
   EntityHealthPoints,
+  EntitySerial,
   makeTntService,
   makeWorldCommitCoordinator,
   PROJECTILE_REPLICATED_OWNER_ID,
@@ -19,7 +20,9 @@ import {
   GAMEPLAY_OWNER_REGISTRATIONS,
   GameplayEntityRosterSchema,
   GameplayMobBehaviourSchema,
+  gameplayOwnerRegistrations,
   restoreGameplayEntityMetadata,
+  type GameplayOwnerInitialState,
 } from '../src/stages/gameplay-owner-registrations.js'
 
 describe('gameplay replicated owner registrations', () => {
@@ -210,10 +213,33 @@ describe('gameplay replicated owner registrations', () => {
       })
       const narrowed = { entities: [], nextSerial: previous.nextSerial }
 
-      const restored = restoreGameplayEntityMetadata(narrowed, previous, 'overworld')
+      const restored = Result.getOrThrow(restoreGameplayEntityMetadata(narrowed, previous, 'overworld'))
 
       expect(restored.resolvedMobProjectileIds).toStrictEqual([projectileId])
       expect(restored.pendingMobProjectileImpacts).toStrictEqual(previous.pendingMobProjectileImpacts)
+    }),
+  )
+
+  it.effect('returns typed failures for explicitly undefined persisted metadata and registration fields', () =>
+    Effect.sync(() => {
+      const previous = Result.getOrThrow(Schema.decodeUnknownResult(GameplayEntityRosterSchema)({
+        entities: [],
+        nextSerial: EntitySerial(0),
+      }))
+      const malformed = {
+        entities: [],
+        nextSerial: previous.nextSerial,
+        resolvedMobProjectileIds: undefined,
+      } as unknown as typeof previous & { resolvedMobProjectileIds?: ReadonlyArray<never> }
+      expect(restoreGameplayEntityMetadata(malformed, previous, 'overworld')).toStrictEqual(Result.fail({
+        _tag: 'InvalidGameplayEntityMetadata',
+        field: 'resolvedMobProjectileIds',
+      }))
+
+      expect(gameplayOwnerRegistrations({ playerStorage: undefined } as unknown as GameplayOwnerInitialState)).toStrictEqual(Result.fail({
+        _tag: 'ExplicitUndefinedGameplayOwnerInitialState',
+        field: 'playerStorage',
+      }))
     }),
   )
 })

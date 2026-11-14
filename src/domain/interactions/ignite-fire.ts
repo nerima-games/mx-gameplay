@@ -79,8 +79,8 @@ export type IgniteFireCommitContext = {
   readonly coordinator: WorldCommitCoordinatorApi
   readonly dimension: Dimension
   readonly changes: ReadonlyArray<ReplicatedOwnerCandidate>
-  readonly expectedRevision?: WorldRevision
-  readonly expectedDimensionRevision?: DimensionRevision
+  readonly expectedRevision?: WorldRevision | undefined
+  readonly expectedDimensionRevision?: DimensionRevision | undefined
 }
 
 /**
@@ -99,6 +99,11 @@ export type IgniteFireOutcome =
   | { readonly _tag: 'OutOfWorld' }
   /** The host did not provide the coordinator and dimension required for C4. */
   | { readonly _tag: 'CommitContextMissing' }
+  /** A supplied revision field was explicitly undefined and cannot be defaulted. */
+  | {
+      readonly _tag: 'InvalidCommitContext'
+      readonly field: 'expectedRevision' | 'expectedDimensionRevision'
+    }
   /** The atomic C4 block commit was rejected or could not be validated. */
   | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError }
 
@@ -120,12 +125,28 @@ export const igniteFire = (
   Effect.gen(function* () {
     const fireBlock = Option.getOrThrow(blockIdOf('fire'))
 
+    if (commitContext !== undefined) {
+      if (Object.hasOwn(commitContext, 'expectedRevision') && commitContext.expectedRevision === undefined) {
+        return { _tag: 'InvalidCommitContext', field: 'expectedRevision' }
+      }
+      if (
+        Object.hasOwn(commitContext, 'expectedDimensionRevision') &&
+        commitContext.expectedDimensionRevision === undefined
+      ) {
+        return { _tag: 'InvalidCommitContext', field: 'expectedDimensionRevision' }
+      }
+    }
+
     const expectedRevision = commitContext === undefined
       ? undefined
-      : commitContext.expectedRevision ?? (yield* commitContext.coordinator.revision)
+      : Object.hasOwn(commitContext, 'expectedRevision')
+      ? commitContext.expectedRevision
+      : yield* commitContext.coordinator.revision
     const expectedDimensionRevision = commitContext === undefined
       ? undefined
-      : commitContext.expectedDimensionRevision ?? (yield* commitContext.coordinator.dimensionRevision(commitContext.dimension))
+      : Object.hasOwn(commitContext, 'expectedDimensionRevision')
+      ? commitContext.expectedDimensionRevision
+      : yield* commitContext.coordinator.dimensionRevision(commitContext.dimension)
 
     const target = yield* store.getBlock(position)
     if (target._tag === 'ChunkNotLoaded') {

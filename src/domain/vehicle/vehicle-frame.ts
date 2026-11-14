@@ -14,7 +14,7 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
 import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 import { isAscendingAhead } from './rail-ascent.js'
 import { resolveRailShape } from './rail-shape.js'
-import { stepBoat, stepMinecart, type VehicleExitReason } from './vehicle-motion.js'
+import { stepBoat, stepMinecart, type VehicleExitReason, type VehicleMotionFailure } from './vehicle-motion.js'
 
 export type VehicleControlInput = Readonly<{
   throttle: number
@@ -30,6 +30,13 @@ export type VehicleFrameEnvironment = Readonly<{
 
 export type VehicleFrameFailure =
   | Readonly<{ _tag: 'VehicleWorldDataFault'; vehicleId: VehicleId; failure: EntityWorldQueryFailure }>
+  | Readonly<{
+      _tag: 'VehicleWorldUnavailable'
+      vehicleId: VehicleId
+      position: BlockPosition
+      reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+    }>
+  | Readonly<{ _tag: 'VehicleMotionFailure'; vehicleId: VehicleId; failure: VehicleMotionFailure }>
   | Readonly<{ _tag: 'VehicleUpdateFailure'; vehicleId: VehicleId; failure: VehicleOperationError }>
 
 const blockKey = (position: BlockPosition): string => `${position.x},${position.y},${position.z}`
@@ -107,18 +114,30 @@ const neighbourhood = (position: BlockPosition): ReadonlyArray<BlockPosition> =>
 const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effect.Effect<
   | Readonly<{ _tag: 'Loaded'; readings: ReadonlyMap<string, BlockReading> }>
   | Readonly<{ _tag: 'WorldDataFault'; failure: EntityWorldQueryFailure }>
+  | Readonly<{
+      _tag: 'Unavailable'
+      position: BlockPosition
+      reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+    }>
 > => Effect.gen(function* () {
   const cells = neighbourhood(position)
   const values = yield* Effect.forEach(cells, (cell) => store.getBlock(cell))
   const readings = new Map<string, BlockReading>()
+  let unavailable: Readonly<{
+    position: BlockPosition
+    reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+  }> | undefined
   for (const [index, reading] of values.entries()) {
     const cell = cells[index]!
     if (reading._tag === 'Block') {
       const data = entityWorldBlockDataAt(cell, reading.block)
       if (Result.isFailure(data)) return { _tag: 'WorldDataFault', failure: data.failure }
+    } else {
+      unavailable ??= { position: cell, reading }
     }
     readings.set(blockKey(cell), reading)
   }
+  if (unavailable !== undefined) return { _tag: 'Unavailable', ...unavailable }
   return { _tag: 'Loaded', readings }
 })
 
@@ -139,6 +158,12 @@ const stepVehicle = (
 ): Effect.Effect<
   | Readonly<{ _tag: 'Stepped'; vehicle: Vehicle; exited?: Readonly<{ reason: VehicleExitReason }> }>
   | Readonly<{ _tag: 'WorldDataFault'; failure: EntityWorldQueryFailure }>
+  | Readonly<{
+      _tag: 'WorldUnavailable'
+      position: BlockPosition
+      reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
+    }>
+  | Readonly<{ _tag: 'MotionFailure'; failure: VehicleMotionFailure }>
 > => Effect.gen(function* () {
   const position = blockPositionAt(
     Math.floor(vehicle.position.x),
@@ -146,25 +171,33 @@ const stepVehicle = (
     Math.floor(vehicle.position.z),
   )
   const vehicleNeighbourhood = yield* readNeighbourhood(store, position)
-  if (vehicleNeighbourhood._tag === 'WorldDataFault') return vehicleNeighbourhood
+  if (vehicleNeighbourhood._tag !== 'Loaded') {
+    return vehicleNeighbourhood._tag === 'Unavailable'
+      ? { ...vehicleNeighbourhood, _tag: 'WorldUnavailable' as const }
+      : vehicleNeighbourhood
+  }
   const readings = vehicleNeighbourhood.readings
   const controls = environment.controlsForVehicle?.(vehicle) ?? { throttle: 0, steering: 0 }
   if (vehicle.type === 'boat') {
-    const transition = stepBoat(vehicle, {
+    const transitionResult = stepBoat(vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,
       inWater: waterAt(readings, position),
       collided: false,
     }, dt)
+    if (Result.isFailure(transitionResult)) return { _tag: 'MotionFailure', failure: transitionResult.failure }
+    const transition = transitionResult.success
     const next = integrate(transition.vehicle, dt)
     const collision = collidesAt(readings, next)
-    const resolved = collision ? stepBoat(transition.vehicle, {
+    const resolvedResult = collision ? stepBoat(transition.vehicle, {
       throttle: controls.throttle,
       steering: controls.steering,
       inWater: waterAt(readings, position),
       collided: true,
       impactSpeed: speedOf(transition.vehicle),
-    }, dt) : transition
+    }, dt) : Result.succeed(transition)
+    if (Result.isFailure(resolvedResult)) return { _tag: 'MotionFailure', failure: resolvedResult.failure }
+    const resolved = resolvedResult.success
     const result = collision ? resolved.vehicle : next
     return resolved.exited === undefined
       ? { _tag: 'Stepped', vehicle: result }
@@ -173,20 +206,26 @@ const stepVehicle = (
 
   const kind = railKindAt(readings, position)
   const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, blockPositionAt(x, y, z)) !== 'none'
-  const transition = stepMinecart(vehicle, {
+  const shape = resolveRailShape(isRailAt, position.x, position.y, position.z)
+  if (Result.isFailure(shape)) return { _tag: 'MotionFailure', failure: shape.failure }
+  const track = {
     kind,
-    shape: resolveRailShape(isRailAt, position.x, position.y, position.z),
+    shape: shape.success,
     ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
     powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
+  } as const
+  const transitionResult = stepMinecart(vehicle, {
+    ...track,
   }, { collided: false }, dt)
+  if (Result.isFailure(transitionResult)) return { _tag: 'MotionFailure', failure: transitionResult.failure }
+  const transition = transitionResult.success
   const next = integrate(transition.vehicle, dt)
   const collision = collidesAt(readings, next)
-  const resolved = collision ? stepMinecart(vehicle, {
-    kind,
-    shape: resolveRailShape(isRailAt, position.x, position.y, position.z),
-    ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
-    powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
-  }, { collided: true, impactSpeed: speedOf(transition.vehicle) }, dt) : transition
+  const resolvedResult = collision
+    ? stepMinecart(vehicle, track, { collided: true, impactSpeed: speedOf(transition.vehicle) }, dt)
+    : Result.succeed(transition)
+  if (Result.isFailure(resolvedResult)) return { _tag: 'MotionFailure', failure: resolvedResult.failure }
+  const resolved = resolvedResult.success
   const result = collision ? resolved.vehicle : next
   return resolved.exited === undefined
     ? { _tag: 'Stepped', vehicle: result }
@@ -208,6 +247,19 @@ export const advanceVehicles = (
     const transition = yield* stepVehicle(store, vehicle, environment, elapsed)
     if (transition._tag === 'WorldDataFault') {
       failures.push({ _tag: 'VehicleWorldDataFault', vehicleId: vehicle.id, failure: transition.failure })
+      continue
+    }
+    if (transition._tag === 'WorldUnavailable') {
+      failures.push({
+        _tag: 'VehicleWorldUnavailable',
+        vehicleId: vehicle.id,
+        position: transition.position,
+        reading: transition.reading,
+      })
+      continue
+    }
+    if (transition._tag === 'MotionFailure') {
+      failures.push({ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: transition.failure })
       continue
     }
     if (transition.exited !== undefined) environment.onVehicleExit?.(vehicle, transition.exited.reason)

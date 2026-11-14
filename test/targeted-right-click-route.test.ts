@@ -93,6 +93,50 @@ describe('targetedRightClickRoute', () => {
     }),
   )
 
+  it.effect('returns a typed failure for an explicitly undefined maximum distance', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const result = yield* Effect.result(
+        targetedRightClickRoute(world.chunkStore, world.pose, undefined as unknown as number),
+      )
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: 'TargetedRightClickRouteInputFailure',
+          field: 'maxDistance',
+          reason: 'undefined',
+        })
+      }
+    }),
+  )
+
+  it.effect('propagates a typed player-pose failure', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const result = yield* Effect.result(targetedRightClickRoute(world.chunkStore, {
+        ...world.pose,
+        yawRadians: Number.NaN,
+      }))
+
+      expect(Result.isFailure(result)).toBe(true)
+    }),
+  )
+
+  it.effect('propagates a typed block-id failure from the world read', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
+      const store = {
+        ...world.chunkStore,
+        getBlock: (_position: BlockPosition) =>
+          Effect.succeed({ _tag: 'Block' as const, block: 70_000 as never }),
+      }
+      const result = yield* Effect.result(targetedRightClickRoute(store, world.pose))
+
+      expect(Result.isFailure(result)).toBe(true)
+    }),
+  )
+
   it.effect('supports asynchronous block reads without reading a coordinate twice', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)

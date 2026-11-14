@@ -23,6 +23,7 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
+  recordGameplayRequestFault,
   recordGameplayEntityWorldDataFault,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
@@ -76,6 +77,7 @@ import type {
   BrewingItemUseResult,
   IgnitionItemType,
   ItemUseRequest,
+  ItemUseWorldReadRefusal,
   ItemUseResult,
   FishingItemUseRequest,
   MeleeAttackRequest,
@@ -170,7 +172,7 @@ import {
   prepareMeleeAttack,
   type MeleeAttackIntent,
 } from '../domain/interactions/melee-attack.js'
-import { knockbackDirection } from '../domain/interactions/knockback.js'
+import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback.js'
 import { directionComponent, normalizeDirection3 } from '../domain/math/direction.js'
 import {
   ENDER_PEARL_DAMAGE,
@@ -189,6 +191,20 @@ import type { Damage } from '../domain/death-cause.js'
 import { solidityFromStore } from '../domain/in-memory-world.js'
 import { entityWorldBlockTypeAt } from '../domain/entities/entity-world-cell.js'
 import type { EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
+
+const blockPositionForRequest = (
+  state: GameplayStageContext['state'],
+  key: BlockPositionKey,
+  source: 'Mining' | 'BlockUse' | 'ItemUse' | 'Tnt',
+  requestId?: string,
+): Effect.Effect<BlockPosition | undefined> => Effect.gen(function* () {
+  const result = blockPositionForKey(key)
+  if (Result.isFailure(result)) {
+    yield* recordGameplayRequestFault(state, source, requestId)
+    return undefined
+  }
+  return result.success
+})
 
 const cropAt = (
   snapshot: CropSnapshot,
@@ -313,15 +329,40 @@ const commitMobDamage = (
       }],
       tick,
     )
-    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(restoreGameplayEntityMetadata(
+    const rosterResult = restoreGameplayEntityMetadata(
       damage.roster,
       entitySnapshot.state,
       dimension,
-    ))
+    )
+    if (Result.isFailure(rosterResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: rosterResult.failure,
+      })
+      return false
+    }
+    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(rosterResult.success)
 
     const seed = yield* Ref.get(state.rollSeed)
-    const drops = rollCasualtyDrops(damage.casualties, seed)
-    const casualtyExperience = rollCasualtyExperience(damage.casualties, drops.seed)
+    for (const fault of damage.faults) yield* recordGameplayEntityStageFault(state, fault)
+    const dropsResult = rollCasualtyDrops(damage.casualties, seed)
+    if (Result.isFailure(dropsResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: dropsResult.failure,
+      })
+    }
+    const drops = Result.isFailure(dropsResult) ? undefined : dropsResult.success
+    const experienceResult = drops === undefined
+      ? undefined
+      : rollCasualtyExperience(damage.casualties, drops.seed)
+    if (experienceResult !== undefined && Result.isFailure(experienceResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: experienceResult.failure,
+      })
+    }
+    const casualtyExperience = experienceResult === undefined || Result.isFailure(experienceResult)
+      ? undefined
+      : experienceResult.success
+    const nextRollSeed = casualtyExperience?.seed ?? drops?.seed
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
       changes.push({ ownerId, state: roster })
@@ -329,7 +370,7 @@ const commitMobDamage = (
     if (storageCandidate !== undefined && context.playerStorageOwnerId !== undefined) {
       changes.push({ ownerId: context.playerStorageOwnerId, state: storageCandidate })
     }
-    if (drops.drops.length > 0) {
+    if ((drops?.drops.length ?? 0) > 0) {
       const droppedItemsOwnerId = context.droppedItemsOwnerId
       if (droppedItemsOwnerId === undefined) {
         yield* recordGameplayUnsupportedOperation(state, {
@@ -359,7 +400,7 @@ const commitMobDamage = (
       }
       const appended = Result.getOrThrow(appendDroppedItemSpawns(
         droppedSnapshot.success.state,
-        drops.drops.map(({ item, count, at }) => ({ item, count, at })),
+        drops!.drops.map(({ item, count, at }) => ({ item, count, at })),
         entitySnapshot.revision,
       ))
       changes.push({ ownerId: droppedItemsOwnerId, state: appended })
@@ -377,18 +418,18 @@ const commitMobDamage = (
       })
       return false
     }
-    if (drops._tag === 'Unsupported') {
+    if (drops?._tag === 'Unsupported') {
       yield* recordMobRuleIssues(state, 'MobDrop', drops.issues)
     }
-    if (casualtyExperience._tag === 'Unsupported') {
+    if (casualtyExperience?._tag === 'Unsupported') {
       yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
     }
-    if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, casualtyExperience.seed)
-    if (drops.drops.length > 0) {
-      yield* Ref.update(state.mobDrops, (pending) => [...pending, ...drops.drops])
+    if (damage.casualties.length > 0 && nextRollSeed !== undefined) yield* Ref.set(state.rollSeed, nextRollSeed)
+    if ((drops?.drops.length ?? 0) > 0) {
+      yield* Ref.update(state.mobDrops, (pending) => [...pending, ...drops!.drops])
     }
-    if (casualtyExperience.experience.length > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
+    if ((casualtyExperience?.experience.length ?? 0) > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience!.experience])
     }
     if (event !== undefined && context.eventBus !== undefined) {
       const published = yield* Effect.result(context.eventBus.publish(event))
@@ -485,7 +526,7 @@ const processBowShot = (
       },
     )
     let hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined
-    let knockback: ReturnType<typeof knockbackDirection> | undefined
+    let knockback: KnockbackDirection | undefined
     if (target !== undefined) {
       const unitAim = { x: directionComponent(0), y: directionComponent(0), z: directionComponent(0) }
       normalizeDirection3(
@@ -526,12 +567,19 @@ const processBowShot = (
           yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
           return
         }
-        hit = { id: target.hit.id, damage: { amount: amount.success, cause: 'projectile' } }
         const pose = player.success.state.pose.feetPosition
-        knockback = knockbackDirection(
+        const direction = knockbackDirection(
           target.candidate.feetPosition.x - pose.x,
           target.candidate.feetPosition.z - pose.z,
         )
+        if (Result.isFailure(direction)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: direction.failure,
+          })
+        } else {
+          hit = { id: target.hit.id, damage: { amount: amount.success, cause: 'projectile' } }
+          knockback = direction.success
+        }
       }
     }
 
@@ -1065,7 +1113,20 @@ const processFishingItemUse = (
         const tick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
         const seed = yield* Ref.get(state.rollSeed)
         const batch = drawRolls(seed, 1)
-        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(rollAt(batch, 0))
+        if (Result.isFailure(batch)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: batch.failure,
+          })
+          return
+        }
+        const roll = rollAt(batch.success, 0)
+        if (Result.isFailure(roll)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: roll.failure,
+          })
+          return
+        }
+        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(roll.success)
         const intent = {
           actor: request.actor,
           tick,
@@ -1670,7 +1731,16 @@ const processPlacement = (
         if (playerState === undefined) {
           return unsupported('OwnerRegistrationUnavailable')
         }
-        const position = yield* blockPositionForKey(request.positionKey)
+        const position = yield* blockPositionForRequest(state, request.positionKey, 'ItemUse', command?.requestId)
+        if (position === undefined) {
+          return {
+            requestId: command?.requestId ?? '',
+            success: false,
+            consumed: false,
+            replayed: false,
+            outcome: { _tag: 'InvalidPosition' },
+          }
+        }
         const dimension = playerState.pose.feetPosition.dimension
         const observed = yield* Effect.result(context.coordinator.observe(
           context.playerStorageOwnerId,
@@ -1773,9 +1843,14 @@ const processPlacement = (
           }
         }
         for (const edit of planned.edits) {
-          // A successful coordinator commit cannot have a negative edit Y, so stepping down stays safe.
-          const below = Result.getOrThrow(adjacentBlockPosition(edit.position, 'down'))
-          disturbed.push(blockPositionKeyOf(below))
+          const below = adjacentBlockPosition(edit.position, 'down')
+          if (Result.isFailure(below)) {
+            yield* recordGameplayRequestFault(
+              state, 'ItemUse', command?.requestId, 'NeighbourPositionOverflow',
+            )
+            continue
+          }
+          disturbed.push(blockPositionKeyOf(below.success))
         }
         if (storageCandidate !== undefined) {
           yield* Ref.update(state.consumedItems, (items) => [...items, request.heldItem])
@@ -1842,7 +1917,20 @@ const processEnderPearlThrow = (
 
     const seed = yield* Ref.get(state.rollSeed)
     const roll = drawRolls(seed, 1)
-    const spawnEndermite = shouldSpawnEndermite(rollAt(roll, 0))
+    if (Result.isFailure(roll)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: roll.failure,
+      })
+      return
+    }
+    const pearlRoll = rollAt(roll.success, 0)
+    if (Result.isFailure(pearlRoll)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: pearlRoll.failure,
+      })
+      return
+    }
+    const spawnEndermite = shouldSpawnEndermite(pearlRoll.success)
     const entitiesOwnerId = spawnEndermite ? context.entitiesOwnerId : undefined
     if (spawnEndermite && entitiesOwnerId === undefined) {
       yield* unsupported('OwnerRegistrationUnavailable')
@@ -1971,14 +2059,21 @@ const processEnderPearlThrow = (
         })
         return
       }
-      changes.push({
-        ownerId: entitiesOwnerId,
-        state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)(restoreGameplayEntityMetadata(
-          spawned.success.roster,
-          entities.success.state,
-          currentPose.feetPosition.dimension,
-        )),
-      })
+      const entityCandidate = restoreGameplayEntityMetadata(
+        spawned.success.roster,
+        entities.success.state,
+        currentPose.feetPosition.dimension,
+      )
+      if (Result.isFailure(entityCandidate)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Entities', error: entityCandidate.failure,
+        })
+      } else {
+        changes.push({
+          ownerId: entitiesOwnerId,
+          state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidate.success),
+        })
+      }
     }
 
     const outcome = Schema.decodeUnknownSync(EnderPearlOutcomeSchema)({ displacement, damage })
@@ -2000,7 +2095,8 @@ const processEnderPearlThrow = (
 
 type ItemUseBlockRead =
   | Readonly<{ _tag: 'Block'; blockType: BlockType }>
-  | Readonly<{ _tag: 'Failure'; failure: GameplayStageItemUseWorldFailure }>
+  | Readonly<{ _tag: 'ChunkNotLoaded' }>
+  | Readonly<{ _tag: 'Failure'; failure: GameplayStageItemUseWorldFailure | ItemUseWorldReadRefusal }>
   | Readonly<{ _tag: 'Fault'; failure: EntityWorldQueryFailure }>
 
 const itemUseBlockTypeAt = (
@@ -2020,13 +2116,13 @@ const itemUseBlockTypeAt = (
     return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
   }
 
-  if (blockRead.reading._tag !== 'Block') {
+  if (blockRead.reading._tag === 'ChunkNotLoaded') return { _tag: 'ChunkNotLoaded' }
+  if (blockRead.reading._tag === 'OutOfWorld') {
     return {
       _tag: 'Failure',
       failure: {
-        _tag: 'WorldUnavailable',
+        _tag: 'OutOfWorld',
         position,
-        state: blockRead.reading._tag,
       },
     }
   }
@@ -2335,9 +2431,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           breakPosition: BlockPosition,
         ) => {
           const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
-          return {
-            seed: batch.seed,
-            drops: blockLoot(yielded, tool, batch.rolls).map((item) => ({
+          if (Result.isFailure(batch)) return Result.fail(batch.failure)
+          return Result.succeed({
+            seed: batch.success.seed,
+            drops: blockLoot(yielded, tool, batch.success.rolls).map((item) => ({
               ...item,
               at: {
                 x: PositionAxis(breakPosition.x),
@@ -2345,7 +2442,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 z: PositionAxis(breakPosition.z),
               },
             })),
-          }
+          })
         }
 
         const batchHeldTool = yield* Ref.get(state.heldTool)
@@ -2353,7 +2450,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           if (playerDead) continue
           const request = snapshots.get(index)
           const tool = request?.lootContext ?? batchHeldTool
-          const breakPosition = yield* blockPositionForKey(positionKey)
+          const breakPosition = yield* blockPositionForRequest(
+            state, positionKey, 'Mining', request === undefined ? undefined : String(request.requestId),
+          )
+          if (breakPosition === undefined) continue
           if (commit === undefined) {
             yield* recordGameplayUnsupportedOperation(state, {
               _tag: 'Unsupported',
@@ -2375,7 +2475,13 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             if (plan._tag === 'PlannedCascade') {
               const seed = yield* Ref.get(state.rollSeed)
               const plannedLoot = plannedDropsForBrokenBlock(seed, plan.yielded, tool, breakPosition)
-              const drops = plannedLoot.drops
+              if (Result.isFailure(plannedLoot)) {
+                yield* recordGameplayStageFailure(state, {
+                  _tag: 'Failed', operation: 'PlanBuild', subject: 'Mining', error: plannedLoot.failure,
+                })
+                continue
+              }
+              const drops = plannedLoot.success.drops
               let candidate: PlayerStorage = plan.candidateStorage
               const leftovers: Array<DroppedItemSpawn> = []
               for (const item of drops) {
@@ -2497,7 +2603,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             })
             continue
           }
-          const position = yield* blockPositionForKey(request.positionKey)
+          const position = yield* blockPositionForRequest(state, request.positionKey, 'BlockUse', request.requestId)
+          if (position === undefined) continue
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
           blockUseResults.push({
             requestId: request.requestId,
@@ -2538,7 +2645,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                const position = yield* blockPositionForKey(request.positionKey)
+                const position = yield* blockPositionForRequest(state, request.positionKey, 'ItemUse', request.requestId)
+                if (position === undefined) break itemUseAction
                 const activePlayerState = Option.getOrThrow(Option.fromNullishOr(playerState))
                 const dimension = activePlayerState.pose.feetPosition.dimension
                 const observed = yield* Effect.result(commit.coordinator.observe(
@@ -2556,7 +2664,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
-                if (blockRead._tag === 'Fault') {
+                if (blockRead._tag === 'Fault' || blockRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2668,16 +2776,20 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break itemUseAction
               }
               else if (request.action === 'TillSoil') {
-                const ground = yield* blockPositionForKey(request.positionKey)
-                const above = Result.getOrUndefined(cellAbove(ground))
-                if (commit === undefined || above === undefined) {
+                const ground = yield* blockPositionForRequest(state, request.positionKey, 'ItemUse', request.requestId)
+                if (ground === undefined) break itemUseAction
+                const aboveResult = cellAbove(ground)
+                if (Result.isFailure(aboveResult)) {
+                  yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'NeighbourPositionOverflow')
+                  break itemUseAction
+                }
+                const above = aboveResult.success
+                if (commit === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
                     action: 'TillSoil',
                     requestId: request.requestId,
-                    reason: commit === undefined
-                      ? 'WorldCommitCoordinatorUnavailable'
-                      : 'OwnerRegistrationUnavailable',
+                    reason: 'WorldCommitCoordinatorUnavailable',
                   })
                   break itemUseAction
                 }
@@ -2699,7 +2811,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const groundRead = yield* itemUseBlockTypeAt(state, ground, observed.success.blocks[0])
                 const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
-                if (groundRead._tag === 'Fault') {
+                if (groundRead._tag === 'Fault' || groundRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2714,7 +2826,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                if (aboveRead._tag === 'Fault') {
+                if (aboveRead._tag === 'Fault' || aboveRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2786,7 +2898,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break itemUseAction
               }
               else if (request.action === 'PlantPotato') {
-                const soil = yield* blockPositionForKey(request.positionKey)
+                const soil = yield* blockPositionForRequest(state, request.positionKey, 'ItemUse', request.requestId)
+                if (soil === undefined) break itemUseAction
                 const above = Result.getOrUndefined(cropCellAbove(soil))
                 if (commit === undefined || commit.cropOwnerId === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
@@ -2854,7 +2967,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const soilRead = yield* itemUseBlockTypeAt(state, soil, observed.success.blocks[0])
                 const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
-                if (soilRead._tag === 'Fault') {
+                if (soilRead._tag === 'Fault' || soilRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2869,7 +2982,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                if (aboveRead._tag === 'Fault') {
+                if (aboveRead._tag === 'Fault' || aboveRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2968,7 +3081,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                const position = yield* blockPositionForKey(request.positionKey)
+                const position = yield* blockPositionForRequest(state, request.positionKey, 'ItemUse', request.requestId)
+                if (position === undefined) break itemUseAction
                 const activePlayerState = Option.getOrThrow(Option.fromNullishOr(playerState))
                 const dimension = activePlayerState.pose.feetPosition.dimension
                 const observed = yield* Effect.result(commit.coordinator.observe(
@@ -3013,7 +3127,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
-                if (blockRead._tag === 'Fault') {
+                if (blockRead._tag === 'Fault' || blockRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -3363,7 +3477,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                const position = yield* blockPositionForKey(request.positionKey)
+                const position = yield* blockPositionForRequest(state, request.positionKey, 'ItemUse', request.requestId)
+                if (position === undefined) break itemUseAction
                 const bucketResult = yield* Effect.result(useBucket(
                   commit.coordinator,
                   state.fluidFrontier,
@@ -3454,7 +3569,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             continue
           }
           const activePlayerState = Option.getOrThrow(Option.fromNullishOr(playerState))
-          const ignitionPosition = yield* blockPositionForKey(request.positionKey)
+          const ignitionPosition = yield* blockPositionForRequest(state, request.positionKey, 'Tnt', String(request.requestId))
+          if (ignitionPosition === undefined) continue
           const targetBlock = yield* store.getBlock(ignitionPosition)
           if (targetBlock._tag === 'Block' && targetBlock.block === TNT_BLOCK_ID) {
             const dimension = activePlayerState.pose.feetPosition.dimension
@@ -3756,6 +3872,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
         }
-      }).pipe(Effect.orDie),
+      }),
   }
 }

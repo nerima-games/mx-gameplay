@@ -190,19 +190,43 @@ describe('hostile spawn properties', () => {
     )
   })
 
-  it('rejects non-finite and out-of-range light readings as unmeasurable', () => {
+  it('returns typed failures for malformed measurements across their full numeric domain', () => {
     fc.assert(
       fc.property(
         fc.double({ noNaN: false, noDefaultInfinity: false }),
-        fc.constantFrom('blockLight' as const, 'skyLight' as const),
+        fc.constantFrom(
+          'distanceToPlayerBlocksXZ' as const,
+          'blockLight' as const,
+          'skyLight' as const,
+          'timeOfDay' as const,
+        ),
         (reading, field) => {
           const verdict = canMobSpawnAt(CREEPER_KIND, { ...validCandidate, [field]: reading })
-          if (!Number.isInteger(reading) || reading < 0 || reading > 15) {
-            expect(verdict).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
+          const valid = field === 'timeOfDay'
+            ? Number.isFinite(reading)
+            : field === 'distanceToPlayerBlocksXZ'
+            ? Number.isFinite(reading) && reading >= 0
+            : Number.isInteger(reading) && reading >= 0 && reading <= 15
+          if (!valid) {
+            expect(verdict).toStrictEqual(field === 'timeOfDay'
+              ? { _tag: 'InvalidDayNightInput', field: 'timeOfDay' }
+              : { _tag: 'InvalidSpawnCandidate', field })
+          } else {
+            expect(verdict._tag).not.toBe('InvalidSpawnCandidate')
+            expect(verdict._tag).not.toBe('InvalidDayNightInput')
           }
         },
       ),
     )
+  })
+
+  it('keeps an absent player distance as the named unmeasurable refusal', () => {
+    const candidate = { ...validCandidate }
+    delete (candidate as Partial<SpawnCandidate>).distanceToPlayerBlocksXZ
+    expect(canMobSpawnAt(CREEPER_KIND, candidate as SpawnCandidate)).toStrictEqual({
+      _tag: 'Refused',
+      reason: 'unmeasurable',
+    })
   })
 
   it('returns a typed failure or a boolean due result for arbitrary valid ticks', () => {

@@ -1,13 +1,18 @@
 import { blockIdOf, propertyOfBlockId } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
 import { Option, Result } from 'effect'
 import { applyDamage, deathMessage, fullHealth } from '../src/domain/death-cause'
 import {
   ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS,
   INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
-  resolveEnvironmentalContactDamage,
+  resolveEnvironmentalContactDamage as resolveEnvironmentalContactDamageResult,
   type EnvironmentalContact,
 } from '../src/domain/environmental-contact-damage'
+
+const resolveEnvironmentalContactDamage = (
+  ...args: Parameters<typeof resolveEnvironmentalContactDamageResult>
+) => Result.getOrThrow(resolveEnvironmentalContactDamageResult(...args))
 
 const contact = (block: EnvironmentalContact['block']): EnvironmentalContact => {
   const blockId = Option.getOrElse(blockIdOf(block), () => {
@@ -103,36 +108,48 @@ describe('environmental contact damage', () => {
       5,
     )
     const rewound = resolveEnvironmentalContactDamage(first.state, [contact('lava')], 1)
-    const invalid = resolveEnvironmentalContactDamage(rewound.state, [contact('lava')], Number.NaN)
+    const invalid = resolveEnvironmentalContactDamageResult(rewound.state, [contact('lava')], Number.NaN)
 
     expect(rewound.damages).toStrictEqual([{ amount: 4, cause: 'lava' }])
     expect(resolveEnvironmentalContactDamage(rewound.state, [contact('lava')], 1).damages).toStrictEqual([])
-    expect(invalid).toStrictEqual({
-      state: INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
-      damages: [],
-    })
+    expect(Result.isFailure(invalid)).toBe(true)
   })
 
-  it('ignores a contact whose resolved damage is non-finite or non-positive', () => {
+  it('accepts zero damage and rejects negative or non-finite contact damage', () => {
     const zeroed = resolveEnvironmentalContactDamage(
       INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
-      [
-        { block: 'cactus', contactDamage: 0 },
-        { block: 'lava', contactDamage: Number.NaN },
-      ],
+      [{ block: 'cactus', contactDamage: 0 }],
       0,
     )
     expect(zeroed.damages).toStrictEqual([])
 
-    const mixed = resolveEnvironmentalContactDamage(
-      INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
-      [
-        { block: 'cactus', contactDamage: -5 },
-        { block: 'lava', contactDamage: 4 },
-      ],
-      0,
-    )
-    expect(mixed.damages).toStrictEqual([{ amount: 4, cause: 'lava' }])
+    for (const contactDamage of [-Number.MIN_VALUE, -5, Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
+      expect(Result.isFailure(resolveEnvironmentalContactDamageResult(
+        INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+        [{ block: 'cactus', contactDamage: contactDamage as number }],
+        0,
+      ))).toBe(true)
+    }
+  })
+
+  it('property: finite non-negative contact damage and elapsed time resolve; invalid numbers fail', () => {
+    const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+    FastCheck.assert(FastCheck.property(anyNumber, (contactDamage) => {
+      const result = resolveEnvironmentalContactDamageResult(
+        INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+        [{ block: 'lava', contactDamage }],
+        0,
+      )
+      return Result.isFailure(result) === (!Number.isFinite(contactDamage) || contactDamage < 0)
+    }))
+    FastCheck.assert(FastCheck.property(anyNumber, (simulationElapsedSecs) => {
+      const result = resolveEnvironmentalContactDamageResult(
+        INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+        [contact('lava')],
+        simulationElapsedSecs,
+      )
+      return Result.isFailure(result) === (!Number.isFinite(simulationElapsedSecs) || simulationElapsedSecs < 0)
+    }))
   })
 
   it('preserves cactus as the fatal cause through applyDamage', () => {
@@ -146,6 +163,6 @@ describe('environmental contact damage', () => {
       throw new Error('expected immediate cactus damage')
     }
 
-    expect(deathMessage(applyDamage(fullHealth, damage))).toBe('You were pricked to death.')
+    expect(deathMessage(Result.getOrThrow(applyDamage(fullHealth, damage)))).toBe('You were pricked to death.')
   })
 })

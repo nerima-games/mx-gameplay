@@ -1,4 +1,5 @@
 import { describe, it } from '@effect/vitest'
+import { Result } from 'effect'
 import * as FastCheck from 'fast-check'
 import { DeltaTimeSecs, type ItemType } from '@nerima-games/mc-kernel'
 import { durabilityForItem } from '@nerima-games/mc-sim'
@@ -155,13 +156,13 @@ describe('player systems properties', () => {
         const before = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
         const exact = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
         const after = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
-
-        return before.state.effects[0]?.remainingSecs === 1 &&
-          before.movementSpeedMultiplier > 1 &&
-          exact.state.effects.length === 0 &&
-          exact.movementSpeedMultiplier === 1 &&
-          after.state.effects.length === 0 &&
-          after.movementSpeedMultiplier === 1
+        return Result.isSuccess(before) && Result.isSuccess(exact) && Result.isSuccess(after) &&
+          before.success.state.effects[0]?.remainingSecs === 1 &&
+          before.success.movementSpeedMultiplier > 1 &&
+          exact.success.state.effects.length === 0 &&
+          exact.success.movementSpeedMultiplier === 1 &&
+          after.success.state.effects.length === 0 &&
+          after.success.movementSpeedMultiplier === 1
       }),
     )
   })

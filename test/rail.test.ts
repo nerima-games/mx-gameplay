@@ -11,14 +11,20 @@
  * argument that docs/responsibility.md §5 makes in prose.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import * as FastCheck from 'fast-check'
+import { Effect, Result } from 'effect'
 import { isAscendingAhead, RAIL_HEADING_EPSILON } from '../src/domain/vehicle/rail-ascent'
 import {
-  projectMinecartVelocity,
-  resolveRailShape,
+  projectMinecartVelocity as projectMinecartVelocityResult,
+  resolveRailShape as resolveRailShapeResult,
   type IsRailAt,
   type RailShape,
 } from '../src/domain/vehicle/rail-shape'
+
+const resolveRailShape = (...args: Parameters<typeof resolveRailShapeResult>) =>
+  Result.getOrThrow(resolveRailShapeResult(...args))
+const projectMinecartVelocity = (...args: Parameters<typeof projectMinecartVelocityResult>) =>
+  Result.getOrThrow(projectMinecartVelocityResult(...args))
 
 /** A rail world as a set of cells. The reference's helper (`rail-shape.test.ts:10-13`). */
 const railsAt = (cells: ReadonlyArray<readonly [number, number, number]>): IsRailAt => {
@@ -276,7 +282,7 @@ describe('resolveRailShape: the ±1 slope tolerance and what it costs', () => {
 // Totality: the guard the reference does not have
 // ---------------------------------------------------------------------------
 
-describe('resolveRailShape: a non-finite cell answers isolated WITHOUT reading the world', () => {
+describe('resolveRailShape: invalid coordinates fail before reading the world', () => {
   const BROKEN: ReadonlyArray<readonly [string, number, number, number]> = [
     ['x is NaN', Number.NaN, 60, 0],
     ['y is NaN', 0, Number.NaN, 0],
@@ -297,9 +303,16 @@ describe('resolveRailShape: a non-finite cell answers isolated WITHOUT reading t
           isRailAt(px, py, pz)
           return true
         }
-        expect(resolveRailShape(everywhere, wx, wy, wz)).toBe('isolated')
+        expect(Result.isFailure(resolveRailShapeResult(everywhere, wx, wy, wz))).toBe(true)
         expect(probes).toStrictEqual([])
       }
+      const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+      FastCheck.assert(FastCheck.property(anyNumber, anyNumber, anyNumber, (wx, wy, wz) => {
+        const result = resolveRailShapeResult(() => false, wx, wy, wz)
+        expect(Result.isFailure(result)).toBe(
+          !Number.isFinite(wx) || !Number.isFinite(wy) || !Number.isFinite(wz),
+        )
+      }))
     }),
   )
 })
@@ -570,13 +583,11 @@ describe('projectMinecartVelocity', () => {
     }),
   )
 
-  it.effect('non-finite inputs refuse to propagate', () =>
+  it.effect('non-finite inputs return typed failures', () =>
     Effect.sync(() => {
-      expect(projectMinecartVelocity('ew', Number.NaN, 4)).toStrictEqual({ vx: 0, vz: 0 })
-      expect(projectMinecartVelocity('ns', 3, Number.POSITIVE_INFINITY)).toStrictEqual({
-        vx: 0,
-        vz: 0,
-      })
+      expect(Result.isFailure(projectMinecartVelocityResult('ew', Number.NaN, 4))).toBe(true)
+      expect(Result.isFailure(projectMinecartVelocityResult('ns', 3, Number.POSITIVE_INFINITY))).toBe(true)
+      expect(Result.isFailure(projectMinecartVelocityResult('ns', 3, undefined as unknown as number))).toBe(true)
     }),
   )
 
