@@ -11,7 +11,7 @@ import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
 import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition, type ItemType } from '@nerima-games/mc-kernel'
-import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { LightQueueUnderflowError, type BlockReading, type ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
@@ -384,6 +384,7 @@ const builtStages = Effect.gen(function* () {
     roster,
     inventory,
     player,
+    time,
     commit,
     stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
   }
@@ -674,6 +675,36 @@ describe('fire lifecycle stage integration', () => {
       expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
         { position, ageTicks: 0, unloadedRetries: 1 },
       ])
+    }),
+  )
+
+  it.effect('records and skips an active fire whose host light read fails under rain', () =>
+    Effect.gen(function* () {
+      const { state, store, roster, inventory, player, time, commit } = yield* builtStages
+      const position = fixtureBlockPosition(1, 64, 0)
+      const initialFire = makeFireLifecycleState([position], 7)
+      yield* store.api.setBlock(position, FIRE)
+      const rain: WeatherState = { weather: 'rain', remainingSecs: 100 }
+      yield* Ref.set(state.weather, rain)
+      yield* Ref.set(state.fireLifecycle, initialFire)
+      const brokenStore: ChunkStoreApi = {
+        ...store.api,
+        getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+      }
+      const stages = gameplayStages(state, brokenStore, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(initialFire.fires)
+      expect(yield* state.stageFaults.drain).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'ReadLight',
+        position,
+        reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
+      }))
     }),
   )
 
