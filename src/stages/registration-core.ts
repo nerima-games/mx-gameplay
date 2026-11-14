@@ -163,6 +163,12 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import {
+  makeGameplayStageFaults,
+  type GameplayStageBlockTypeDecodeFailure,
+  type GameplayStageFaultsApi,
+  type GameplayStageItemUseWorldFailure,
+} from './gameplay-stage-faults.js'
+import {
   type EntityKind,
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
@@ -217,7 +223,11 @@ import {
   type BrewingBottleCollectionResult,
   type BrewingIngredient,
 } from '../domain/brewing.js'
-import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import {
+  ChunkStore,
+  type ChunkStoreApi,
+  type LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 import {
   chunkCoordsAround,
   openChunkWindow,
@@ -1178,6 +1188,7 @@ const runFluidPropagation = (
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
+  readonly stageFaults: GameplayStageFaultsApi
   readonly operationFailures: Ref.Ref<ReadonlyArray<GameplayStageOperationFailure>>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
@@ -1344,6 +1355,7 @@ export type BlockPlacementCommand = PlacementRequest & {
 
 export type BlockPlacementCommandOutcome =
   | PlaceOutcome
+  | { readonly _tag: 'WorldDataFailed'; readonly reason: LightQueueUnderflowError }
   | { readonly _tag: 'InventoryUnavailable' }
   | { readonly _tag: 'RequestIdConflict' }
   | { readonly _tag: 'PlayerDead' }
@@ -1599,7 +1611,7 @@ export type FarmingItemUseResult =
       readonly heldItem: HoeItemType
       readonly success: boolean
       readonly durabilityDamage: 0 | 1
-      readonly outcome: TillOutcome
+      readonly outcome: TillOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'ApplyBoneMeal'
@@ -1607,7 +1619,7 @@ export type FarmingItemUseResult =
       readonly heldItem: 'bone_meal'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: BoneMealOutcome
+      readonly outcome: BoneMealOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'PlantPotato'
@@ -1615,14 +1627,14 @@ export type FarmingItemUseResult =
       readonly heldItem: 'potato'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: PlantOutcome
+      readonly outcome: PlantOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'HarvestPotato'
       readonly requestId: ItemUseRequestId
       readonly positionKey: BlockPositionKey
       readonly success: boolean
-      readonly outcome: CropDropOutcome
+      readonly outcome: CropDropOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'EatPotato'
@@ -2075,6 +2087,7 @@ export type GameplayUnsupportedOperation = Readonly<{
 export type GameplayFrameStateOptions = Readonly<{
   coordinator: WorldCommitCoordinatorApi
   vitalsOwnerId: ReplicatedOwnerId
+  stageFaults?: GameplayStageFaultsApi
 }>
 
 export type GameplayStageOperationFailure = Readonly<{
@@ -2116,6 +2129,7 @@ const makeGameplayFrameStateWithOptions = (
   options?: GameplayFrameStateOptions,
 ): Effect.Effect<GameplayFrameState> => Effect.gen(function* () {
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
+  const stageFaults = options?.stageFaults ?? (yield* makeGameplayStageFaults)
   const survivalHunger = options === undefined
     ? yield* makeSurvivalHungerRuntime()
     : yield* makeReplicatedSurvivalHungerRuntime(options.coordinator, options.vitalsOwnerId)
@@ -2220,6 +2234,7 @@ const makeGameplayFrameStateWithOptions = (
   const state: GameplayFrameState = {
     enderDragonEncounter,
     survivalHunger,
+    stageFaults,
     operationFailures,
     pendingBreaks,
     pendingPlacements,
@@ -2361,15 +2376,28 @@ const stepPortalTravel = (
 
     const reading = yield* store.getBlock(cell)
     const blockId = reading._tag === 'Block' ? reading.block : undefined
-    const block = blockId !== undefined
-      ? yield* resultOrDie(blockTypeOfId(blockId))
-      : undefined
+    let block: BlockType | undefined
+    if (blockId !== undefined) {
+      const decoded = blockTypeOfId(blockId)
+      if (Result.isFailure(decoded) || decoded.success === undefined) {
+        const reason: GameplayStageBlockTypeDecodeFailure = {
+          _tag: 'BlockTypeDecodeFailed',
+          position: cell,
+          block: blockId,
+          failure: Result.isFailure(decoded) ? decoded.failure : { _tag: 'UnregisteredBlockId' },
+        }
+        yield* state.stageFaults.record({
+          _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: cell, reason,
+        })
+        return
+      }
+      block = decoded.success
+    }
     const inPortal =
       block !== undefined &&
       (block === 'nether_portal' || (blockId !== undefined && isEndPortalBlock(blockId)))
 
     const step = stepPortalDwell(yield* Ref.get(state.portalDwell), inPortal, dt)
-    yield* Ref.set(state.portalDwell, step.dwell)
 
     if (!step.travels) {
       yield* Ref.set(state.portalDwell, step.dwell)
@@ -2405,15 +2433,30 @@ const stepPortalTravel = (
     }
     const currentReading = yield* store.getBlock(currentCell)
     const currentBlockId = currentReading._tag === 'Block' ? currentReading.block : undefined
-    const currentBlock = currentBlockId === undefined
-      ? undefined
-      : Result.getOrUndefined(blockTypeOfId(currentBlockId))
+    let currentBlock: BlockType | undefined
+    if (currentBlockId !== undefined) {
+      const decoded = blockTypeOfId(currentBlockId)
+      if (Result.isFailure(decoded) || decoded.success === undefined) {
+        const reason: GameplayStageBlockTypeDecodeFailure = {
+          _tag: 'BlockTypeDecodeFailed',
+          position: currentCell,
+          block: currentBlockId,
+          failure: Result.isFailure(decoded) ? decoded.failure : { _tag: 'UnregisteredBlockId' },
+        }
+        yield* state.stageFaults.record({
+          _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: currentCell, reason,
+        })
+        return
+      }
+      currentBlock = decoded.success
+    }
     const stillInPortal = currentBlock === 'nether_portal' ||
       (currentBlockId !== undefined && isEndPortalBlock(currentBlockId))
     if (!stillInPortal) {
       yield* Ref.set(state.portalDwell, OUTSIDE_PORTAL)
       return
     }
+    yield* Ref.set(state.portalDwell, step.dwell)
 
     const sourceDimension = currentPose.feetPosition.dimension
     const isEndPortal = currentBlockId !== undefined && isEndPortalBlock(currentBlockId)
@@ -3630,25 +3673,61 @@ const stepFireTick = (
 
     const weather = (yield* Ref.get(state.weather)).weather
     const cells: FireCell[] = []
+    const faultedPositions = new Set<string>()
     for (const position of positions.values()) {
-      const reading = yield* store.getBlock(blockPosition(position.x, position.y, position.z))
-      const block = reading._tag === 'Block'
-        ? (yield* resultOrDie(blockTypeOfId(reading.block))) ?? '__unknown_fire_block__'
-        : reading._tag === 'ChunkNotLoaded'
-          ? FIRE_UNAVAILABLE_BLOCK
-          : 'air'
+      const worldPosition = blockPosition(position.x, position.y, position.z)
+      const reading = yield* store.getBlock(worldPosition)
+      let block: BlockType | typeof FIRE_UNAVAILABLE_BLOCK
+      if (reading._tag === 'Block') {
+        const decoded = blockTypeOfId(reading.block)
+        if (Result.isFailure(decoded) || decoded.success === undefined) {
+          const reason: GameplayStageBlockTypeDecodeFailure = {
+            _tag: 'BlockTypeDecodeFailed',
+            position: worldPosition,
+            block: reading.block,
+            failure: Result.isFailure(decoded) ? decoded.failure : { _tag: 'UnregisteredBlockId' },
+          }
+          yield* state.stageFaults.record({
+            _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: worldPosition, reason,
+          })
+          faultedPositions.add(firePositionKey(position))
+          continue
+        }
+        block = decoded.success
+      } else {
+        block = reading._tag === 'ChunkNotLoaded' ? FIRE_UNAVAILABLE_BLOCK : 'air'
+      }
       let exposedToSky = false
       if (weather !== 'clear' &&
         (activeKeys.has(firePositionKey(position)) || contacts.some((contact) =>
           firePositionKey(contact.position) === firePositionKey(position)))) {
-        const light = yield* store.getLight(blockPosition(position.x, position.y, position.z))
+        const lightResult = yield* Effect.result(store.getLight(worldPosition))
+        if (Result.isFailure(lightResult)) {
+          yield* state.stageFaults.record({
+            _tag: 'WorldDataFailure',
+            operation: 'ReadLight',
+            position: worldPosition,
+            reason: lightResult.failure,
+          })
+          faultedPositions.add(firePositionKey(position))
+          continue
+        }
+        const light = lightResult.success
         exposedToSky = light._tag === 'Light' && light.sky === 15
       }
       cells.push({ position, block, exposedToSky })
     }
 
+    const skippedFires = current.fires.filter((fire) => faultedPositions.has(firePositionKey(fire.position)))
+    const tickState = skippedFires.length === 0
+      ? current
+      : {
+          ...current,
+          fires: current.fires.filter((fire) => !faultedPositions.has(firePositionKey(fire.position))),
+        }
+    const tickContacts = contacts.filter((contact) => !faultedPositions.has(firePositionKey(contact.position)))
     const cellByPosition = new Map(cells.map((cell) => [firePositionKey(cell.position), cell]))
-    const hydratedContacts = contacts.map((contact) => {
+    const hydratedContacts = tickContacts.map((contact) => {
       const cell = cellByPosition.get(firePositionKey(contact.position))
       return {
         ...contact,
@@ -3656,7 +3735,7 @@ const stepFireTick = (
         exposedToSky: cell?.exposedToSky === true,
       }
     })
-    const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
+    const step = advanceFireLifecycle(tickState, cells, weather, hydratedContacts, survival.difficulty)
     const validEntityHits = step.entityDamages.map(({ actorId, damage }) => ({
       id: Schema.decodeUnknownSync(EntityIdSchema)(actorId),
       damage,
@@ -3818,7 +3897,7 @@ const stepFireTick = (
 
     yield* Ref.set(state.fireLifecycle, {
       ...step.state,
-      fires: [...step.state.fires].sort((a, b) =>
+      fires: [...step.state.fires, ...skippedFires].sort((a, b) =>
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
       burningActors: step.state.burningActors ?? [],
     })

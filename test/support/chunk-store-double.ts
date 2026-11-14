@@ -36,20 +36,26 @@
  * that quietly answers `load` would let a rule start scanning chunks and the
  * test suite would not notice.
  */
-import { Effect, Layer, Ref } from 'effect'
-import { AIR_BLOCK_ID, BlockId, ChunkAxis, chunkCoord, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Effect, Layer, Ref, Result } from 'effect'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, ChunkAxis, chunkCoord, localCoordOfBlock, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
   ChunkStore,
   blockIndex,
   type BlockReading,
+  type BlockStateCodecFailure,
   type BlockWriteOutcome,
   type ChunkDirtyBatch,
+  type ChunkDirtyChunk,
   type ChunkDirtySubscription,
   type ChunkStoreApi,
   type ChunkBiomeType,
   type LightReading,
-  type ReadonlyChunk,
+  type ReadonlyChunkWithBlockStates,
 } from '@nerima-games/mc-worldgen'
+import {
+  defaultBlockState,
+  encodeBlockState,
+} from '@nerima-games/mc-kernel/domain/block-state'
 
 /** Block ids, transcribed from kernel's `BLOCK_REGISTRY`. */
 export const STONE: BlockId = BlockId(2)
@@ -59,6 +65,17 @@ export const GRAVEL: BlockId = BlockId(8)
 
 export const CHUNK_SIDE = 16
 export const WORLD_HEIGHT = 256
+
+const encodeDefaultBlockState = (
+  block: BlockId,
+): Result.Result<number, BlockStateCodecFailure> => {
+  const state = defaultBlockState(block)
+  return Result.isFailure(state)
+    ? Result.fail(state.failure)
+    : encodeBlockState(block, state.success)
+}
+
+const DEFAULT_AIR_BLOCK_STATE = encodeDefaultBlockState(AIR_BLOCK_ID)
 
 /**
  * The double's own key encoding, deliberately NOT kernel's `blockPositionKeyOf`.
@@ -140,7 +157,7 @@ type Doubles = {
   readonly lights: Map<string, LightLevels>
   readonly biomes: Map<string, ChunkBiomeType>
   readonly loadedChunks: Set<string>
-  readonly subscribers: Map<number, Set<string>>
+  readonly subscribers: Map<number, Map<string, ChunkDirtyChunk>>
   nextSubscriber: number
   reads: number
   writes: number
@@ -185,14 +202,35 @@ export const makeChunkStoreDouble = (
       const notImplemented = Effect.die('not exercised by this test')
 
       const markDirty = (doubles: Doubles, position: BlockPosition): void => {
+        const local = localCoordOfBlock(position)
+        const coord = chunkCoordOf(position)
+        const key = chunkKeyOf(position)
+        const next: ChunkDirtyChunk = {
+          ...coord,
+          min: [BlockAxis(local.lx), BlockAxis(local.ly), BlockAxis(local.lz)],
+          max: [BlockAxis(local.lx + 1), BlockAxis(local.ly + 1), BlockAxis(local.lz + 1)],
+        }
         for (const pending of doubles.subscribers.values()) {
-          pending.add(chunkKeyOf(position))
+          const previous = pending.get(key)
+          pending.set(key, previous === undefined ? next : {
+            ...coord,
+            min: [
+              BlockAxis(Math.min(previous.min[0], next.min[0])),
+              BlockAxis(Math.min(previous.min[1], next.min[1])),
+              BlockAxis(Math.min(previous.min[2], next.min[2])),
+            ],
+            max: [
+              BlockAxis(Math.max(previous.max[0], next.max[0])),
+              BlockAxis(Math.max(previous.max[1], next.max[1])),
+              BlockAxis(Math.max(previous.max[2], next.max[2])),
+            ],
+          })
         }
       }
 
       const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (doubles) => {
         const id = doubles.nextSubscriber
-        doubles.subscribers.set(id, new Set())
+        doubles.subscribers.set(id, new Map())
 
         const subscription: ChunkDirtySubscription = {
           // `@nerima-games/mc-worldgen` exports no public constructor for
@@ -204,15 +242,12 @@ export const makeChunkStoreDouble = (
           // an unchecked value has an unverified shape.
           id: id as ChunkDirtySubscription['id'],
           drain: Ref.modify(state, (current) => {
-            const pending = current.subscribers.get(id) ?? new Set<string>()
+            const pending = current.subscribers.get(id) ?? new Map<string, ChunkDirtyChunk>()
             const batch: ChunkDirtyBatch = {
-              changed: [...pending].map((entry) => {
-                const [cx, cz] = entry.split(',')
-                return chunkCoord(ChunkAxis(Number(cx)), ChunkAxis(Number(cz)))
-              }),
+              changed: [...pending.values()],
               removed: [],
             }
-            current.subscribers.set(id, new Set())
+            current.subscribers.set(id, new Map())
             return [batch, current] as const
           }),
           unsubscribe: Ref.update(state, (current) => {
@@ -246,35 +281,64 @@ export const makeChunkStoreDouble = (
          * `domain/chunk-window.ts`'s `UNREADABLE_BLOCK` reachable.
          */
         peek: (coord) =>
-          Ref.modify(state, (doubles): readonly [ReadonlyChunk | undefined, Doubles] => {
-            doubles.peeks += 1
-            const key = `${String(coord.cx)},${String(coord.cz)}`
-            if (!doubles.loadedChunks.has(key)) {
-              return [undefined, doubles] as const
-            }
+          Effect.flatMap(
+            Ref.modify(state, (doubles): readonly [Result.Result<ReadonlyChunkWithBlockStates | undefined, BlockStateCodecFailure>, Doubles] => {
+              doubles.peeks += 1
+              const key = `${String(coord.cx)},${String(coord.cz)}`
+              if (!doubles.loadedChunks.has(key)) {
+                return [Result.succeed(undefined), doubles] as const
+              }
 
-            const blocks = new Uint16Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
-            for (const [cell, block] of doubles.blocks) {
-              const [x, y, z] = cell.split(',').map(Number)
-              if (x === undefined || y === undefined || z === undefined) continue
-              if (Math.floor(x / CHUNK_SIDE) !== coord.cx) continue
-              if (Math.floor(z / CHUNK_SIDE) !== coord.cz) continue
-              if (y < 0 || y >= WORLD_HEIGHT) continue
+              const blocks = new Uint16Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
+              if (Result.isFailure(DEFAULT_AIR_BLOCK_STATE)) {
+                return [Result.fail(DEFAULT_AIR_BLOCK_STATE.failure), doubles] as const
+              }
+              const blockStates = new Uint32Array(blocks.length)
+              blockStates.fill(DEFAULT_AIR_BLOCK_STATE.success)
+              const defaultStates = new Map<number, number>([[AIR_BLOCK_ID, DEFAULT_AIR_BLOCK_STATE.success]])
 
-              const lx = ((x % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
-              const lz = ((z % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
-              blocks[blockIndex(lx, y, lz)] = block
-            }
-            const chunkBiomes = Array.from({ length: CHUNK_SIDE * CHUNK_SIDE }, (_, index) => {
-              const lx = index % CHUNK_SIDE
-              const lz = Math.floor(index / CHUNK_SIDE)
-              const x = coord.cx * CHUNK_SIDE + lx
-              const z = coord.cz * CHUNK_SIDE + lz
-              return doubles.biomes.get(`${String(x)},${String(z)}`) ?? 'PLAINS'
-            })
+              for (const [cell, block] of doubles.blocks) {
+                const [x, y, z] = cell.split(',').map(Number)
+                if (x === undefined || y === undefined || z === undefined) continue
+                if (Math.floor(x / CHUNK_SIDE) !== coord.cx) continue
+                if (Math.floor(z / CHUNK_SIDE) !== coord.cz) continue
+                if (y < 0 || y >= WORLD_HEIGHT) continue
 
-            return [{ coord, blocks, biomes: chunkBiomes }, doubles] as const
-          }),
+                const lx = ((x % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
+                const lz = ((z % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
+                const index = blockIndex(lx, y, lz)
+                blocks[index] = block
+
+                let encoded = defaultStates.get(block)
+                if (encoded === undefined) {
+                  const blockState = encodeDefaultBlockState(block)
+                  if (Result.isFailure(blockState)) {
+                    return [Result.fail(blockState.failure), doubles] as const
+                  }
+                  encoded = blockState.success
+                  defaultStates.set(block, encoded)
+                }
+                blockStates[index] = encoded
+              }
+              const chunkBiomes = Array.from({ length: CHUNK_SIDE * CHUNK_SIDE }, (_, index) => {
+                const lx = index % CHUNK_SIDE
+                const lz = Math.floor(index / CHUNK_SIDE)
+                const x = coord.cx * CHUNK_SIDE + lx
+                const z = coord.cz * CHUNK_SIDE + lz
+                return doubles.biomes.get(`${String(x)},${String(z)}`) ?? 'PLAINS'
+              })
+
+              return [Result.succeed({
+                coord,
+                blocks,
+                blockStates,
+                biomes: chunkBiomes,
+              }), doubles] as const
+            }),
+            (result) => Result.isFailure(result)
+              ? Effect.die(result.failure)
+              : Effect.succeed(result.success),
+          ),
 
         snapshot: () => notImplemented,
         isLoaded: (coord) =>
@@ -299,6 +363,8 @@ export const makeChunkStoreDouble = (
               doubles,
             ] as const
           }),
+
+        getBlockWithState: () => notImplemented,
 
         setBlock: (position, block) =>
           Ref.modify(state, (doubles): readonly [BlockWriteOutcome, Doubles] => {

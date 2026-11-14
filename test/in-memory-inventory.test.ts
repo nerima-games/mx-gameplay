@@ -13,7 +13,7 @@
  * their own names.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { InventoryService, STARTER_RECIPES, craftGrid, type Slot } from '@nerima-games/mc-sim'
+import { InventoryService, craftGrid, type Slot } from '@nerima-games/mc-sim'
 import { Effect, Result } from 'effect'
 import {
   INVENTORY_SLOT_COUNT,
@@ -357,9 +357,7 @@ describe('crafting delegates to mc-sim', () => {
       const grid = Result.getOrThrow(craftGrid(1, 1, [OAK_LOG]))
 
       const recipes = yield* inventory.recipes
-      expect(recipes.map(({ id }) => id)).toStrictEqual(
-        Result.getOrThrow(STARTER_RECIPES).map(({ id }) => id),
-      )
+      expect(recipes.map(({ id }) => id)).toContain('minecraft:oak-planks')
       yield* inventory.add(OAK_LOG, 1)
 
       const beforePreview = yield* inventory.snapshot

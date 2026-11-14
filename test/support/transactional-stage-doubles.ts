@@ -10,8 +10,20 @@ import {
   type InventoryServiceApi,
   type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
-import { AIR_BLOCK_ID, WorldIdSchema, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
-import { ChunkStore, type ChunkBiomeType, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import {
+  AIR_BLOCK_ID,
+  WorldIdSchema,
+  chunkCoordOfBlock,
+  localCoordOfBlock,
+  type BlockId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
+import {
+  ChunkStore,
+  blockIndex,
+  type ChunkBiomeType,
+  type ChunkStoreApi,
+} from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Schema } from 'effect'
 import { makeInMemoryWorld } from '../../src/domain/in-memory-world.js'
 import {
@@ -34,6 +46,23 @@ import type { GameplayStageCommitServices } from '../../src/stages/registration-
 import type { ChunkStoreDouble, StoreCalls } from './chunk-store-double.js'
 
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests')
+
+/** Inject a corrupt persisted id after the valid chunk has been loaded. */
+export const injectRawBlockId = (
+  store: ChunkStoreApi,
+  position: BlockPosition,
+  block: BlockId,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const chunk = yield* store.peek(chunkCoordOfBlock(position))
+    if (chunk === undefined) return yield* Effect.die(new Error('Raw block injection requires a loaded chunk'))
+
+    const local = localCoordOfBlock(position)
+    const index = blockIndex(local.lx, local.ly, local.lz)
+    if (!Reflect.set(chunk.blocks, index, block)) {
+      return yield* Effect.die(new Error('Raw block injection could not update the chunk buffer'))
+    }
+  })
 
 export const makeTransactionalChunkStoreDouble = (
   initial: ReadonlyMap<string, BlockId>,

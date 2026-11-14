@@ -31,7 +31,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { EntityKind, makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import { Effect, Option, Ref } from 'effect'
 import { hostileSpawnsAllowed, NOON_FRACTION } from '../src/domain/day-night'
 import {
   BlockId,
@@ -419,11 +419,14 @@ describe('weather gameplay fixture from generated terrain', () => {
         ChunkCapacity(1),
       )
       const chunk = yield* store.load(chunkCoordinate)
-      const candidatePosition = blockPosition(10, 75, 0)
+      const candidatePosition = blockPosition(0, 77, 1)
+      const candidateStoredId = Option.getOrThrow(Option.fromNullishOr(chunk.blocks[blockIndex(0, 77, 1)]))
       const candidateId = yield* Effect.fromResult(
-        BlockId.result(chunk.blocks[blockIndex(10, 75, 0)] ?? 0),
+        BlockId.result(candidateStoredId),
       )
-      const candidateType = yield* Effect.fromResult(blockTypeOfId(candidateId))
+      const candidateType = Option.getOrThrow(Option.fromNullishOr(
+        yield* Effect.fromResult(blockTypeOfId(candidateId)),
+      ))
       const flammable = yield* Effect.fromResult(capabilityOfBlockId(candidateId, 'flammable'))
       const light = yield* store.getLight(candidatePosition)
       const exposedToSky = light._tag === 'Light' && light.sky === 15
@@ -437,7 +440,7 @@ describe('weather gameplay fixture from generated terrain', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
         kind: EntityKind('creeper'),
-        feetPosition: position(10.5, 75, 0.5),
+        feetPosition: position(0.5, 77, 1.5),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       })
@@ -461,7 +464,7 @@ describe('weather gameplay fixture from generated terrain', () => {
       expect(candidateType).toBe('oak_leaves')
       expect(flammable).toBe(true)
       expect(input.blocks).toStrictEqual([{
-        position: '10,75,0',
+        position: '0,77,1',
         block: 'flammable',
         exposedToSky: true,
       }])

@@ -357,6 +357,10 @@ import {
   type FurnaceRuntimeOutcome,
 } from ${JSON.stringify(packageName)}
 import { Effect } from "effect"
+import type {
+  BlockStateCodecFailure,
+  LightQueueUnderflowError,
+} from "@nerima-games/mc-worldgen"
 
 const item: PlaceableItemType = 'redstone_dust'
 const block = blockOfPlaceableItem(item)
@@ -433,7 +437,10 @@ void furnaceOutcome
 declare const blockStore: Parameters<typeof breakBlock>[0]
 declare const blockPosition: Parameters<typeof breakBlock>[1]
 declare const transactionContext: BreakTransactionContext
-const legacyBreak: Effect.Effect<BreakOutcome> = breakBlock(blockStore, blockPosition)
+const legacyBreak: Effect.Effect<
+  BreakOutcome,
+  BlockStateCodecFailure | LightQueueUnderflowError
+> = breakBlock(blockStore, blockPosition)
 const transactionBreak: Effect.Effect<BreakTransactionResult> = breakBlock(blockStore, blockPosition, transactionContext)
 void legacyBreak
 void transactionBreak

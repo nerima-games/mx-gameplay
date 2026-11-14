@@ -118,10 +118,8 @@ export type FootstepAdvanceInput = {
  * map should not owe a footstep for the teleport, and one still rising from a
  * jump should not credit the ground they left.
  *
- * A surface with no registered cue (`footstepCueFor` returning `undefined`,
- * today only `'default'`) still advances the distance counter — the walk is
- * real even where this repository has no sound for it yet — it just never
- * calls `play`.
+ * If the block ID or its footstep material cannot be resolved, the distance
+ * still advances because the walk happened, but no cue is played.
  */
 export const advanceFootstepRuntime = (
   state: FootstepRuntimeState,

@@ -44,7 +44,11 @@
  * refuses to invent.
  */
 import { Effect } from 'effect'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 import type { BlockPosition, ItemType } from '@nerima-games/mc-kernel'
 import { igniteFire, type IgniteFireCommitContext, type IgniteFireOutcome } from './ignite-fire.js'
 import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal.js'
@@ -119,7 +123,7 @@ export const useFlintAndSteel = (
   position: BlockPosition,
   item: IgnitionItemType,
   commitContext?: IgniteFireCommitContext,
-): Effect.Effect<IgnitionOutcome> =>
+): Effect.Effect<IgnitionOutcome, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.gen(function* () {
     void item
 
