@@ -140,7 +140,7 @@ export const exhaustionForSurvivalActivity = (
   } else if (candidate['_tag'] === 'jump') {
     field = 'count'
     magnitude = candidate['count']
-    if (candidate['sprinting'] !== undefined && typeof candidate['sprinting'] !== 'boolean') {
+    if (Object.hasOwn(candidate, 'sprinting') && typeof candidate['sprinting'] !== 'boolean') {
       return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: 'activity' })
     }
     rate = candidate['sprinting'] === true ? SURVIVAL_EXHAUSTION.sprintJump : SURVIVAL_EXHAUSTION.jump

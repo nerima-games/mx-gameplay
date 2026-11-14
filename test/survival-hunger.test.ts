@@ -163,6 +163,17 @@ describe('survival hunger', () => {
     )
   })
 
+  it('distinguishes an omitted sprint flag from malformed present flags', () => {
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toStrictEqual(Result.succeed(0.1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: false })).toStrictEqual(Result.succeed(0.1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toStrictEqual(Result.succeed(0.4))
+    for (const sprinting of [undefined, null, 'false', 0]) {
+      expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting })).toStrictEqual(Result.fail({
+        _tag: 'SurvivalActivityInputFailure', field: 'activity',
+      }))
+    }
+  })
+
   it.effect('rejects invalid activity before it enters the pending tick queue', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime()
