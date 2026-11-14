@@ -42,9 +42,9 @@ import {
   type BlockPosition,
   type ChunkCoord,
   blockPosition,
-  capabilityOfBlockId,
   position as worldPosition,
 } from '@nerima-games/mc-kernel'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from './entities/entity-world-cell.js'
 import {
   InventoryService,
   TimeService,
@@ -335,14 +335,17 @@ export const makeGeneratedWorld = <S>(
  */
 export const solidityFromStore =
   (store: ChunkStoreApi) =>
-  (position: { readonly x: number; readonly y: number; readonly z: number }): boolean => {
+  (position: { readonly x: number; readonly y: number; readonly z: number }): Result.Result<boolean, EntityWorldQueryFailure> => {
     const x = Result.getOrUndefined(BlockAxis.result(Math.floor(position.x)))
     const y = Result.getOrUndefined(BlockAxis.result(Math.floor(position.y)))
     const z = Result.getOrUndefined(BlockAxis.result(Math.floor(position.z)))
-    if (x === undefined || y === undefined || z === undefined) return true
-    const reading = Effect.runSync(store.getBlock(blockPosition(x, y, z)))
-    if (reading._tag !== 'Block') return true
-    return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'passable')) !== true
+    if (x === undefined || y === undefined || z === undefined) return Result.succeed(true)
+    const cell = blockPosition(x, y, z)
+    const reading = Effect.runSync(store.getBlock(cell))
+    if (reading._tag !== 'Block') return Result.succeed(true)
+    const data = entityWorldBlockDataAt(cell, reading.block)
+    if (Result.isFailure(data)) return Result.fail(data.failure)
+    return Result.succeed(!data.success.capabilities.passable)
   }
 
 /** Only loaded, non-air cells can be selected by a player interaction ray. */

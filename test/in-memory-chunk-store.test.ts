@@ -2,7 +2,7 @@
  * The in-memory world adapts supplied sparse blocks to mc-worldgen's ChunkStore.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   blockIdOf,
@@ -209,7 +209,7 @@ describe('makeInMemoryWorld ChunkStore', () => {
       ] as const
 
       for (const point of invalidPositions) {
-        expect(isSolid(point)).toBe(true)
+        expect(Result.getOrThrow(isSolid(point))).toBe(true)
         expect(isTargetable(point.x, point.y, point.z)).toBe(false)
       }
     }),
