@@ -39,6 +39,7 @@ import {
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
   isMobBehaviourRepairFault,
+  initialBehaviourOfKind,
   planEndermanTeleportRoster,
   planMobBlastRoster,
   planMobDamageRoster,
@@ -598,8 +599,20 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
 
   it.effect('migrates a hostile snapshot whose legacy inner behaviour field was omitted', () =>
     Effect.sync(() => {
+      const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
+        id: EntityId('mob:legacy-movement'),
+        body: { kind: 'dynamic', x: 0, y: 64.975, z: 0, vx: 0, vy: 0, vz: 0 },
+        profile: { kind: 'ground', width: 0.6, height: 1.95, canJump: true },
+        goal: { x: 1, y: 64, z: 0 },
+        path: [],
+        pathIndex: 0,
+        stuckTicks: 0,
+        isGrounded: true,
+        movementSpeed: 2.5,
+      })
       const legacySnapshot = {
         _tag: 'HostileMob',
+        movement,
         ageTicks: 4,
         persistent: true,
         named: false,
@@ -609,6 +622,7 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       expect(repairMobBehaviour(ZOMBIE_KIND, legacySnapshot)).toStrictEqual({
         _tag: 'HostileMob',
         behaviour: undefined,
+        movement,
         ageTicks: 4,
         persistent: true,
         named: false,
@@ -858,6 +872,14 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       expect(repairMobBehaviour(ZOMBIE_KIND, fault)).toBe(fault)
     }),
   )
+})
+
+describe('initialBehaviourOfKind', () => {
+  it('gives the creeper its named fuse and leaves unruled kinds without behaviour', () => {
+    expect(initialBehaviourOfKind(CREEPER_KIND)).toStrictEqual(hostileMobSnapshot(DORMANT_FUSE))
+    expect(initialBehaviourOfKind(ENDERMITE_KIND)).toBeUndefined()
+    expect(initialBehaviourOfKind(EntityKind('unlisted-mob'))).toBeUndefined()
+  })
 })
 
 describe('sweepMobs: TNT belongs to its replicated owner', () => {
