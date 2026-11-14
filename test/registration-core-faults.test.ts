@@ -4,8 +4,14 @@ import { PlayerServiceSnapshotSchema, makeTimeService } from '@nerima-games/mc-s
 import {
   BlockId,
   DeltaTimeSecs,
+  EntityHealthPoints,
+  EntityId,
+  EntityKind,
+  EntitySerial,
+  PositionAxis,
   blockIdOf,
   blockPositionKeyOf,
+  position,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import { Effect, Option, Ref } from 'effect'
@@ -19,6 +25,7 @@ import {
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
+import type { GameplayOwnerInitialState } from '../src/stages/gameplay-owner-registrations'
 import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
@@ -27,7 +34,10 @@ import { world } from './support/chunk-store-double'
 import { blockPosition } from './support/coordinate-fixtures'
 import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 
-const makeHarness = (initial: ReadonlyMap<string, BlockId>) =>
+const makeHarness = (
+  initial: ReadonlyMap<string, BlockId>,
+  ownerInitial: GameplayOwnerInitialState = {},
+) =>
   Effect.gen(function* () {
     const state = yield* makeGameplayFrameState
     const store = yield* makeTransactionalChunkStoreDouble(initial, ['0,0', '-1,0', '0,-1', '-1,-1'])
@@ -35,7 +45,10 @@ const makeHarness = (initial: ReadonlyMap<string, BlockId>) =>
     const inventory = yield* makeInventoryDouble(emptySlots())
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
-    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose: SPAWN_POSE })
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      playerPose: SPAWN_POSE,
+      ...ownerInitial,
+    })
     return { state, store, roster, inventory, player, time, commit }
   })
 
@@ -187,6 +200,77 @@ describe('registration-core typed world faults', () => {
       expect(readPositions).toContainEqual(blockPosition(1, 64, 0))
       expect(readPositions).toContainEqual(blockPosition(0, 64, -1))
       expect(readPositions).toContainEqual(blockPosition(0, 64, 1))
+    }),
+  )
+
+  it.effect('spreads a supported water source into its open horizontal neighbors', () =>
+    Effect.gen(function* () {
+      const fluidCell = blockPosition(0, 64, 0)
+      const supportCell = blockPosition(0, 63, 0)
+      const water = Option.getOrThrow(blockIdOf('water'))
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      const harness = yield* makeHarness(world([
+        [fluidCell, water],
+        [supportCell, stone],
+      ]))
+      const work: FluidWorkItem = {
+        key: blockPositionKeyOf(fluidCell),
+        kind: 'water',
+        level: 0,
+        source: true,
+        falling: false,
+      }
+      yield* Ref.set(harness.state.fluidFrontier, [work])
+
+      yield* stageFor(harness, GAMEPLAY_STAGE_IDS.fluids)
+        .run(DeltaTimeSecs(0.016))
+        .pipe(Effect.provide(FrameServicesLayer))
+
+      for (const neighbor of [
+        blockPosition(-1, 64, 0),
+        blockPosition(1, 64, 0),
+        blockPosition(0, 64, -1),
+        blockPosition(0, 64, 1),
+      ]) {
+        expect(yield* harness.store.blockAt(neighbor)).toBe(water)
+      }
+      expect(yield* harness.store.blockAt(fluidCell)).toBe(water)
+      expect(yield* harness.store.blockAt(supportCell)).toBe(stone)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
+      expect(yield* drainFluidUpdates(harness.state)).toStrictEqual([work])
+    }),
+  )
+
+  it.effect('records malformed persisted mob behaviour with its typed repair kind', () =>
+    Effect.gen(function* () {
+      const entityId = EntityId('test:malformed-creeper-state')
+      const entityKind = EntityKind('creeper')
+      const repairFailure = { _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' } as const
+      const behaviour: MobBehaviour = { _tag: 'MobBehaviourRepairFault', failure: repairFailure }
+      const harness = yield* makeHarness(world([]), {
+        entities: {
+          entities: [{
+            id: entityId,
+            kind: entityKind,
+            feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+            healthPoints: EntityHealthPoints(20),
+            behaviour,
+          }],
+          nextSerial: EntitySerial(1),
+        },
+      })
+
+      yield* stageFor(harness, GAMEPLAY_STAGE_IDS.entities)
+        .run(DeltaTimeSecs(0.016))
+        .pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
+        _tag: 'MobBehaviourRepairFault',
+        entityId,
+        entityKind,
+        failure: repairFailure,
+      }])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
     }),
   )
 
