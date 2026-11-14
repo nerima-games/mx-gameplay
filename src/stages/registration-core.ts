@@ -1135,13 +1135,13 @@ const runFluidPropagation = (
 
       if (current.state === 'same-fluid') {
         cells.set(cell.key, cell)
-        const belowResult = yield* fluidProbeAt(store, belowPosition, cell.kind, cells)
+        const belowProbeResult = yield* fluidProbeAt(store, belowPosition, cell.kind, cells)
         const horizontalResults = yield* Effect.forEach(horizontalPositions, (candidate) =>
           fluidProbeAt(store, candidate, cell.kind, cells),
         )
         const neighborFailures: EntityWorldQueryFailure[] = []
-        if (Result.isSuccess(belowResult)) belowProbe = belowResult.success
-        else neighborFailures.push(belowResult.failure)
+        if (Result.isSuccess(belowProbeResult)) belowProbe = belowProbeResult.success
+        else neighborFailures.push(belowProbeResult.failure)
         const successfulHorizontalProbes: FluidProbe[] = []
         for (const result of horizontalResults) {
           if (Result.isSuccess(result)) successfulHorizontalProbes.push(result.success)
@@ -3421,6 +3421,12 @@ export type TargetedPrimaryAttackOptions = {
   readonly toolLocation?: StorageLocation
 }
 
+const TargetedPrimaryAttackNumericOptionsSchema = Schema.Struct({
+  blockReach: Schema.optionalKey(Schema.Number),
+  meleeReach: Schema.optionalKey(Schema.Number),
+  meleeDamage: Schema.optionalKey(Schema.Number),
+})
+
 /** Resolve one primary click without mutating either gameplay inbox. */
 const resolveTargetedPrimaryAttackWithSnapshots = (
   store: ChunkStoreApi,
@@ -3428,6 +3434,7 @@ const resolveTargetedPrimaryAttackWithSnapshots = (
   options: TargetedPrimaryAttackOptions,
 ) =>
   Effect.gen(function* () {
+    yield* Schema.decodeUnknownEffect(TargetedPrimaryAttackNumericOptionsSchema)(options)
     const snapshots = yield* readGameplayTargetingSnapshots(context)
     const pose = snapshots.player.state.pose
     const blockTarget = yield* Effect.fromResult(
