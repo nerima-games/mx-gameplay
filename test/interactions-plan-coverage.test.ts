@@ -516,6 +516,19 @@ const coordinatorWithObserveRevisionBump = (
   return { ...coordinator, observe }
 }
 
+const coordinatorWithOmittedWorldReads = (coordinator: WorldCommitCoordinatorApi): WorldCommitCoordinatorApi => {
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => ({ ...snapshot, blocks: [] }))
+  return { ...coordinator, observe }
+}
+
 const coordinatorWithCommitRevisionBump = (
   coordinator: WorldCommitCoordinatorApi,
   revisionCoordinator: WorldCommitCoordinatorApi,
@@ -5789,6 +5802,34 @@ describe('schema-valid interaction edge paths', () => {
       GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
       PlayerStorageSnapshotSchema,
     ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records and requeues bone meal when the owner snapshot omits its requested block read', async () => {
+    const target = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const wheat = Option.getOrThrow(blockIdOf('wheat_crop'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, wheat]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-missing-read', target))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithOmittedWorldReads(harness.coordinator),
+    )
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
+      _tag: 'EntityWorldDataFault',
+      source: 'ItemUse',
+      target: { _tag: 'Cell', cell: target },
+      failure: { _tag: 'EntityWorldWindowUnavailable', cell: target },
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-missing-read',
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
   })
 

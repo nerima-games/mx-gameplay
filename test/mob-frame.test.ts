@@ -596,6 +596,27 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     }),
   )
 
+  it.effect('migrates a hostile snapshot whose legacy inner behaviour field was omitted', () =>
+    Effect.sync(() => {
+      const legacySnapshot = {
+        _tag: 'HostileMob',
+        ageTicks: 4,
+        persistent: true,
+        named: false,
+        tamed: false,
+      }
+
+      expect(repairMobBehaviour(ZOMBIE_KIND, legacySnapshot)).toStrictEqual({
+        _tag: 'HostileMob',
+        behaviour: undefined,
+        ageTicks: 4,
+        persistent: true,
+        named: false,
+        tamed: false,
+      })
+    }),
+  )
+
   it.effect('an ecosystem mob preserves typed repair faults and migrates valid legacy state', () =>
     Effect.sync(() => {
       expect(repairMobBehaviour(BLAZE_KIND, 'garbage')).toMatchObject({
