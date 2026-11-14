@@ -75,12 +75,12 @@ describe('generated world composition', () => {
 
   it.effect('uses kernel passability for generated block collision', () =>
     Effect.gen(function* () {
-      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: 20260728 })
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: NoiseSeed(424242) })
       yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
-      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
+      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(false) // water
+      expect(isSolid({ x: 0, y: 53, z: 0 })).toBe(true) // sand
     }),
   )
 

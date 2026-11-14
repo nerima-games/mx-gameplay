@@ -136,7 +136,7 @@ import { BOW_FULL_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot.js'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import { FrameServicesLayer } from './support/frame-services.js'
-import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
+import { injectRawBlockId, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
 import { world } from './support/chunk-store-double.js'
 
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('interaction-plan-coverage')
@@ -4665,22 +4665,33 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('maps schema-valid unregistered block IDs to air across farming actions', async () => {
+  it('returns typed failures and records stage faults for unregistered farming block IDs', async () => {
     const tillPosition = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
     const plantPosition = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
     const harvestPosition = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
     const unknownBlock = BlockId(0xffff)
+    const knownBlock = Option.getOrThrow(blockIdOf('stone'))
     const harness = await Effect.runPromise(makeHarness({
       blocks: [
-        [tillPosition, unknownBlock],
-        [blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), unknownBlock],
-        [plantPosition, unknownBlock],
-        [blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), unknownBlock],
-        [harvestPosition, unknownBlock],
+        [tillPosition, knownBlock],
+        [blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), knownBlock],
+        [plantPosition, knownBlock],
+        [blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), knownBlock],
+        [harvestPosition, knownBlock],
       ],
       playerStorage: playerStorageWithItems([['iron_hoe', 1], ['potato', 1]]),
       crops: { crops: [{ dimension: 'overworld', position: harvestPosition, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
     }))
+    const corruptBlockPositions = [
+      tillPosition,
+      blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)),
+      plantPosition,
+      blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)),
+      harvestPosition,
+    ]
+    await Promise.all(corruptBlockPositions.map((rawPosition) =>
+      Effect.runPromise(injectRawBlockId(harness.store.api, rawPosition, unknownBlock)),
+    ))
     await Effect.runPromise(requestSoilTill(harness.state, 'unknown-till-block', tillPosition, 'iron_hoe'))
     await Effect.runPromise(requestPotatoPlanting(harness.state, 'unknown-plant-block', plantPosition))
     await Effect.runPromise(requestPotatoHarvest(harness.state, 'unknown-harvest-block', harvestPosition, 0.5))
@@ -4688,15 +4699,39 @@ describe('schema-valid interaction edge paths', () => {
     await harness.run()
 
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
-      { action: 'TillSoil', requestId: 'unknown-till-block', success: false, durabilityDamage: 0, outcome: { _tag: 'notTillable', found: 'air' } },
-      { action: 'PlantPotato', requestId: 'unknown-plant-block', success: false, consumedCount: 0, outcome: { _tag: 'wrongSoil', found: 'air' } },
+      {
+        action: 'TillSoil',
+        requestId: 'unknown-till-block',
+        success: false,
+        durabilityDamage: 0,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: tillPosition, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
+      {
+        action: 'PlantPotato',
+        requestId: 'unknown-plant-block',
+        success: false,
+        consumedCount: 0,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: plantPosition, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
       {
         action: 'HarvestPotato',
         requestId: 'unknown-harvest-block',
         success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: harvestPosition, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
       },
     ])
+    const stageFaults = await Effect.runPromise(harness.state.stageFaults.drain)
+    expect(stageFaults).toHaveLength(5)
+    expect(stageFaults.every((fault) => fault.reason._tag === 'BlockTypeDecodeFailed')).toBe(true)
     expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
   })

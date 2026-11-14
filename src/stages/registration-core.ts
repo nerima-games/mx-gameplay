@@ -166,6 +166,7 @@ import {
   makeGameplayStageFaults,
   type GameplayStageBlockTypeDecodeFailure,
   type GameplayStageFaultsApi,
+  type GameplayStageItemUseWorldFailure,
 } from './gameplay-stage-faults.js'
 import {
   type EntityKind,
@@ -1610,7 +1611,7 @@ export type FarmingItemUseResult =
       readonly heldItem: HoeItemType
       readonly success: boolean
       readonly durabilityDamage: 0 | 1
-      readonly outcome: TillOutcome
+      readonly outcome: TillOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'ApplyBoneMeal'
@@ -1618,7 +1619,7 @@ export type FarmingItemUseResult =
       readonly heldItem: 'bone_meal'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: BoneMealOutcome
+      readonly outcome: BoneMealOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'PlantPotato'
@@ -1626,14 +1627,14 @@ export type FarmingItemUseResult =
       readonly heldItem: 'potato'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: PlantOutcome
+      readonly outcome: PlantOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'HarvestPotato'
       readonly requestId: ItemUseRequestId
       readonly positionKey: BlockPositionKey
       readonly success: boolean
-      readonly outcome: CropDropOutcome
+      readonly outcome: CropDropOutcome | GameplayStageItemUseWorldFailure
     }
   | {
       readonly action: 'EatPotato'

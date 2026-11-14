@@ -2,7 +2,7 @@
 
 ## 1. ホスト連携で中心となるのは stage 登録である
 
-**ホスト連携の中心となる契約は `StageRegistration` の配列で、状態サービスは公開しない。**
+**ホスト連携の中心となる契約は `StageRegistration` の配列で、ゲーム状態の問い合わせサービスは公開しない。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
@@ -14,6 +14,8 @@
 ```typescript
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
+
+例外として、stage の中で発生した registry decode や block-state codec の異常を後から回収する `GameplayStageFaults` を提供する。これは gameplay の状態を問い合わせる API ではなく、stage が記録した異常を `drain` で一度だけ取得する診断用の outbox である。`gameplayModule.layers` が実体を提供し、記録の形式は `GameplayStageWorldFaultSchema`、item-use の結果に含まれる失敗は `GameplayStageItemUseWorldFailureSchema` で検証できる。
 
 `index.ts` はほかの要素も export する。`makeProjectileRuntime` は、mc-sim の `ProjectileServiceApi` を使う gameplay の呼び出し側に、`launch` と `step` だけを型付きで提供する。projectile の状態、物理計算、commit、event は mc-sim が所有する。この adapter は domain 間の連携向けに見える export で、ホスト連携の契約には含めない。ほかの export の分類は §5 に記す。
 
@@ -50,67 +52,44 @@ kernel の `ClockPort` を再掲すると**同じ文字列 ID を持つ別の `C
 ここには長らく「`GameModule` はまだ実装していない。`RIn` は mc-sim の公開 API が存在するまで
 名前を付けられないから」と書いてあった。**診断は半分間違っていて、間違っていた側が重要だった。**
 
-Layer は障害ではなかった。mx-gameplay は他リポジトリが呼ぶサービスを 1 つも公開しない
+Layer は障害ではなかった。mx-gameplay はゲーム状態を所有するサービスを公開しない
 （ルールはサービスではない。他リポジトリが本リポジトリに尋ねたくなることは実際には状態への問いであり、
-状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。だから `layers` は空であり、最初から空だった。
+状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。この原則は変わらないが、stage の typed fault を
+ホストが回収できるよう `GameplayStageFaults` を提供するため、現在の `layers` は空ではない。
 
 本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
 `Ref` から組み立てられるので、`ReadonlyArray` 型のフィールドに入れる方法が無かった。
 mc-sim が publish されても解決しない。縦切りスパイクが `frameStages` を Effect にしたことで解決した。
 
 ```typescript
-export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>
+export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never,
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults>
 
-export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
-  layers: Layer.empty,
+export const gameplayModule: GameModule<GameplayStageFaults, never, never,
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults> = {
+  layers: GameplayStageFaultsLayer,
   frameStages: makeGameplayStages,
 }
 ```
 
-### 2-2. `RRegister` は `ChunkStore | EntityManager | InventoryService` になった。`RIn` は `never` のままである
+### 2-2. `RRegister` は gameplay が登録時に使う6サービスである。`RIn` は `never` のままである
 
-ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
-— つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
-stage がブロックを読み書きするようになったので、**登録**するのに mc-worldgen の `ChunkStore` が要る。
-stage が Mob を反復するようになったので、mc-sim の `EntityManager` も要る。
-そして stage が**採掘したアイテムを預ける**ようになったので、mc-sim の `InventoryService` も要る ——
-plan.md §2.3-1 の実例そのものであり、この 3 本目が入るまでは `Ref` で止まっていた。
-
-**3 本目は mc-compose が予告していたものでもある。** あちらの `docs/e2e-triage.md` §4.3 は
-「mx-gameplay は**登録時に**`InventoryService` を acquire するしかない。すると `registerModule` の
-`RRegister` に `InventoryService` が乗る」と書いており、そのとおりになった。
-そこに残る問い —— 「mx-gameplay が書き mx-ui が読む 1 つのインスタンスを、
-mc-sim を import できない mc-compose がどう構築するのか」 —— は**こちらでは解けない**。
-このリポジトリが答えられるのは「要求する」ところまでで、誰が discharge するかはホストの問題である。
-
-2 つのパラメータの違いがここで初めて観測できる。
+`makeGameplayStages` は登録時に `ChunkStore`、`EntityManager`、`TimeService`、
+`WorldCommitCoordinator`、`DomainEventBus` を取得する。`GameplayStageFaults` は
+`gameplayModule.layers` が提供し、stage とホストが同じ outbox を使う。
 
 | | 値 | 意味 |
 | --- | --- | --- |
-| `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
-| `RRegister` | `ChunkStore \| EntityManager \| InventoryService` | 本リポジトリが stage を**登録**するのに要るもの |
-
-本リポジトリは他リポジトリが供給しなければならないものを構築するのではなく、
-他リポジトリが供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
+| `RIn` | `never` | `GameplayStageFaultsLayer` の構築に外部サービスは要らない |
+| `RRegister` | `ChunkStore \| EntityManager \| TimeService \| WorldCommitCoordinator \| DomainEventBus \| GameplayStageFaults` | 本リポジトリが stage を**登録**するのに要るもの |
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから 3 つとも登録時に 1 度だけ取得し、4 stage が共有する。
-固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
-`acquires exactly three services to register — the store, the roster and the inventory`
-（`test/stage-registration.test.ts`）。この最後のテストは長く「exactly **two**」だったうえに、
-「3 本目の候補は mc-sim の `InventoryService` であり、丸ごと写せるようになるまでは送信箱で代用する」と
-**コメントで名指ししていた**。その予告も履行された。次の候補は `PlayerService` で、
-そちらは丸ごと写せない —— `cameraPose` が `ClockPort` を要求し、`ClockPort` をローカルに書き直すのは
-`domain/frame-contract.ts` の言う「狭い型より遥かに悪い失敗」だからである。
+（階層モデル、plan.md §2.2 が禁じている）。各依存は登録時に一度取得し、stage が共有する。
 
-`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
-`EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
-どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
-消費者には見える —— `api-lock.md` の "Supporting declarations" に
-`ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
-`InventoryService` / `InventoryServiceApi` などが載っているのはそのためである。
-タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
+`ChunkStore`、`EntityManager`、`WorldCommitCoordinator`、`DomainEventBus` の語彙はそれぞれの所有元から使う。
+`GameplayStageFaults` とその fault schema は本パッケージの API であり、`makeGameplayStages` の環境型や
+`gameplayModule.layers` に現れる。API lock は export と supporting declaration の両方を追跡する。
 
 ### 2-3. `simModule` に型引数を生やすべきか —— **生やすべきでない**
 
@@ -166,7 +145,7 @@ const world = Layer.merge(
 mc-sim の `EntityManager` 契約にも同じ制約がある。
 
 **mx-gameplay 側で `simModule` の型引数が要らなかった証拠**は `RRegister` にある:
-`ChunkStore | EntityManager | InventoryService` に `S` は現れない。ホストがどう具体化しても、
+`ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults` に `S` は現れない。ホストがどう具体化しても、
 本リポジトリが宣言する要求は 1 つのままである（テスト
 `the roster requirement carries no behaviour parameter`）。
 

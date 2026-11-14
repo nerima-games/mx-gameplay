@@ -156,15 +156,19 @@ describe('advanceFootstepRuntime', () => {
     }
   })
 
-  it('advances distance for a "default"-material surface without ever playing a cue', () => {
+  it('plays the default-material cue for each step and resets the consumed distance', () => {
     const { audio, play } = makeAudio()
+    const position = footstepInput().position
     const state = advanceFootstepRuntime(
       initialFootstepRuntimeState(),
       footstepInput({ standingOnBlockId: airId, horizontalDistance: FOOTSTEP_DISTANCE * 3 }),
       audio,
     )
-    expect(play).not.toHaveBeenCalled()
-    expect(state.distanceSinceLastStep).toBeCloseTo(FOOTSTEP_DISTANCE * 3, 9)
+    expect(play).toHaveBeenCalledTimes(3)
+    expect(play).toHaveBeenNthCalledWith(1, 'footstepDefault', { position, gainScale: 1 })
+    expect(play).toHaveBeenNthCalledWith(2, 'footstepDefault', { position, gainScale: 1 })
+    expect(play).toHaveBeenNthCalledWith(3, 'footstepDefault', { position, gainScale: 1 })
+    expect(state.distanceSinceLastStep).toBe(0)
   })
 
   it('keeps accumulated distance when the standing block id is not registered', () => {

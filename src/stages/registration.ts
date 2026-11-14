@@ -176,10 +176,18 @@ import {
 export {
   GameplayStageFaults,
   GameplayStageFaultsLayer,
+  GameplayStageBlockTypeDecodeFailureSchema,
+  GameplayStageMissingBlockReadFailureSchema,
+  GameplayStageWorldFaultReasonSchema,
+  GameplayStageWorldFaultInputSchema,
+  GameplayStageWorldFaultSchema,
+  GameplayStageItemUseWorldFailureSchema,
 } from './gameplay-stage-faults.js'
 export type {
   GameplayStageFaultsApi,
   GameplayStageBlockTypeDecodeFailure,
+  GameplayStageMissingBlockReadFailure,
+  GameplayStageItemUseWorldFailure,
   GameplayStageWorldFault,
   GameplayStageWorldFaultInput,
   GameplayStageWorldFaultReason,

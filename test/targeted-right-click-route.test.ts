@@ -1,10 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 
 import { BlockId, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
 import { targetedRightClickRoute } from '../src/stages/targeted-right-click-route'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
+import { injectRawBlockId } from './support/transactional-stage-doubles.js'
 
 const TARGET = blockPosition(0, 1, 0)
 const BEHIND_TARGET = blockPosition(0, 1, -1)
@@ -135,13 +136,21 @@ describe('targetedRightClickRoute', () => {
     }),
   )
 
-  it.effect('returns undefined for an unknown non-air block id', () =>
+  it.effect('returns a typed failure for an unknown non-air block id', () =>
     Effect.gen(function* () {
-      const world = yield* makeTargetedWorld(UNKNOWN_BLOCK_ID)
+      const world = yield* makeTargetedWorld(DIRT_ID)
+      yield* injectRawBlockId(world.chunkStore, TARGET, BlockId(UNKNOWN_BLOCK_ID))
 
-      expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.pose),
-      ).toBeUndefined()
+      const result = yield* Effect.result(targetedRightClickRoute(world.chunkStore, world.pose))
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: 'BlockTypeDecodeFailed',
+          position: TARGET,
+          block: BlockId(UNKNOWN_BLOCK_ID),
+          failure: { _tag: 'UnregisteredBlockId' },
+        })
+      }
     }),
   )
 })
