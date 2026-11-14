@@ -17,6 +17,7 @@ export type VehicleTransition = Readonly<{
 
 export type VehicleMotionFailure =
   | Readonly<{ _tag: 'InvalidImpactSpeed' }>
+  | Readonly<{ _tag: 'InvalidVehicleDeltaTime' }>
   | Readonly<{ _tag: 'InvalidBoatControl'; field: 'controls' | 'throttle' | 'steering' }>
   | RailShapeFailure
 
@@ -49,8 +50,6 @@ export const COLLISION_EXIT_SPEED = 6
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.min(maximum, Math.max(minimum, value))
-
-const safeDt = (dt: number): number => Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 0
 
 const speed = (vehicle: Vehicle): number =>
   Math.hypot(vehicle.velocity.x, vehicle.velocity.y, vehicle.velocity.z)
@@ -124,13 +123,14 @@ export const stepBoat = (
   dt: number,
 ): Result.Result<VehicleTransition, VehicleMotionFailure> => {
   if (vehicle.type !== 'boat') return Result.succeed({ vehicle })
+  if (!Number.isFinite(dt)) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
   if (!Number.isFinite(control.throttle)) {
     return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
   }
   if (!Number.isFinite(control.steering)) {
     return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
   }
-  const elapsed = safeDt(dt)
+  const elapsed = clamp(dt, 0, 0.1)
   const steering = vehicle.occupant === undefined ? 0 : clamp(control.steering, -1, 1)
   const throttle = vehicle.occupant === undefined ? 0 : clamp(control.throttle, -1, 1)
   const yawRadians = AngleRadians(vehicle.yawRadians + steering * BOAT_TURN_RATE * elapsed)
@@ -153,7 +153,8 @@ export const stepMinecart = (
   dt: number,
 ): Result.Result<VehicleTransition, VehicleMotionFailure> => {
   if (vehicle.type !== 'minecart') return Result.succeed({ vehicle })
-  const elapsed = safeDt(dt)
+  if (!Number.isFinite(dt)) return Result.fail({ _tag: 'InvalidVehicleDeltaTime' })
+  const elapsed = clamp(dt, 0, 0.1)
   const projected = projectMinecartVelocity(
     track.kind === 'none' ? 'isolated' : track.shape,
     vehicle.velocity.x,

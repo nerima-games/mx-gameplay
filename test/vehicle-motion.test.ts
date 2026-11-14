@@ -122,12 +122,28 @@ describe('boat motion', () => {
     expect(Math.abs(land.velocity.x)).toBeLessThan(Math.abs(water.velocity.x))
   })
 
-  it('treats a non-finite delta time as zero elapsed time rather than throwing or freezing', () => {
+  it('rejects missing and explicitly malformed required numeric controls', () => {
+    const boat = vehicle('boat', { occupant: rider })
+    for (const field of ['throttle', 'steering'] as const) {
+      for (const value of [undefined, null, '0']) {
+        const control = { throttle: 0, steering: 0, inWater: true, [field]: value } as unknown as BoatControl
+        expect(stepBoat(boat, control, 0.05)).toStrictEqual(Result.fail({ _tag: 'InvalidBoatControl', field }))
+      }
+      const omitted: Record<string, unknown> = { throttle: 0, steering: 0, inWater: true }
+      delete omitted[field]
+      expect(stepBoat(boat, omitted as unknown as BoatControl, 0.05)).toStrictEqual(Result.fail({
+        _tag: 'InvalidBoatControl', field,
+      }))
+    }
+  })
+
+  it('preserves zero time and clamps finite negative and large delta times', () => {
     const boat = vehicle('boat', { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
-    const result = transitionOrThrow(stepBoat(boat, { throttle: 1, steering: 1, inWater: true }, Number.NaN)).vehicle
-    expect(result.yawRadians).toBe(0)
-    expect(result.velocity.x).toBeCloseTo(1)
-    expect(result.velocity.z).toBeCloseTo(0)
+    const control = { throttle: 0, steering: 0, inWater: true }
+    for (const dt of [-1, 0]) {
+      expect(transitionOrThrow(stepBoat(boat, control, dt)).vehicle).toStrictEqual(boat)
+    }
+    expect(transitionOrThrow(stepBoat(boat, control, 1)).vehicle.velocity.x).toBeCloseTo(0.81)
   })
 
   it('is a no-op for a non-boat vehicle', () => {
@@ -179,9 +195,57 @@ describe('minecart motion', () => {
     const boat = vehicle('boat')
     expect(transitionOrThrow(stepMinecart(boat, { kind: 'none', shape: 'isolated' }, {}, 0.1))).toStrictEqual({ vehicle: boat })
   })
+
+  it('preserves zero time and caps finite powered acceleration at one tenth of a second', () => {
+    const cart = vehicle('minecart')
+    const track = { kind: 'powered', shape: 'isolated', powered: true } as const
+    for (const dt of [-1, 0]) {
+      const result = transitionOrThrow(stepMinecart(cart, track, {}, dt)).vehicle
+      expect(Math.hypot(result.velocity.x, result.velocity.y, result.velocity.z)).toBe(0)
+    }
+    const result = transitionOrThrow(stepMinecart(cart, track, {}, 1)).vehicle
+    expect(Math.hypot(result.velocity.x, result.velocity.z)).toBeCloseTo(0.5)
+  })
 })
 
 describe('vehicle collision lifecycle', () => {
+  it.each(['boat', 'minecart'] as const)('rejects non-finite delta time for %s even when destroyed', (type) => {
+    const moving = vehicle(type, { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
+    for (const dt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      for (const destroyed of [false, true]) {
+        const result = type === 'boat'
+          ? stepBoat(moving, { throttle: 0, steering: 0, inWater: true, destroyed }, dt)
+          : stepMinecart(moving, { kind: 'none', shape: 'isolated' }, { destroyed }, dt)
+        expect(result).toStrictEqual(Result.fail({ _tag: 'InvalidVehicleDeltaTime' }))
+      }
+    }
+  })
+
+  it.each([
+    { type: 'boat', occupied: false },
+    { type: 'boat', occupied: true },
+    { type: 'minecart', occupied: false },
+    { type: 'minecart', occupied: true },
+  ] as const)('stops destroyed $type with occupied=$occupied and validates present impact speed', ({ type, occupied }) => {
+    const moving = vehicle(type, { velocity: { x: 7, y: 2, z: 1 }, ...(occupied ? { occupant: rider } : {}) })
+    const step = (collision: VehicleCollision) => type === 'boat'
+      ? stepBoat(moving, { throttle: 0, steering: 0, inWater: true, ...collision }, 0.05)
+      : stepMinecart(moving, { kind: 'none', shape: 'isolated' }, collision, 0.05)
+    for (const collided of [false, true]) {
+      const destroyed = { destroyed: true, collided }
+      for (const collision of [destroyed, { ...destroyed, impactSpeed: 0 }, { ...destroyed, impactSpeed: 6 }]) {
+        const result = transitionOrThrow(step(collision))
+        expect(result.vehicle.velocity).toStrictEqual({ x: 0, y: 0, z: 0 })
+        expect(Object.hasOwn(result.vehicle, 'occupant')).toBe(false)
+        expect(result.exited).toStrictEqual(occupied ? { occupant: rider, reason: 'destroyed' } : undefined)
+      }
+      for (const impactSpeed of [undefined, null, '6', Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        const collision = { ...destroyed, impactSpeed } as unknown as VehicleCollision
+        expect(step(collision)).toStrictEqual(Result.fail({ _tag: 'InvalidImpactSpeed' }))
+      }
+    }
+  })
+
   it('ejects on a strong collision and stops/ejects when destroyed', () => {
     const occupied = vehicle('minecart', { occupant: rider, velocity: { x: 7, y: 1, z: 0 } })
     const collision = transitionOrThrow(stepMinecart(
