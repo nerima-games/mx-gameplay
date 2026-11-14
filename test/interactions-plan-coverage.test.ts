@@ -542,6 +542,26 @@ const coordinatorWithFirstCommitFailure = (
   }
 }
 
+const coordinatorWithMissingObservedBlocks = (
+  coordinator: WorldCommitCoordinatorApi,
+): WorldCommitCoordinatorApi => {
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) =>
+    ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && reads.length > 0
+      ? { ...snapshot, blocks: [] }
+      : snapshot,
+  )
+
+  return { ...coordinator, observe }
+}
+
 const coordinatorWithSnapshotFailure = (
   coordinator: WorldCommitCoordinatorApi,
   failOwnerId: ReplicatedOwnerId,
@@ -4884,6 +4904,36 @@ describe('schema-valid interaction edge paths', () => {
       outcome: { _tag: 'notCrop', at: boneMealTarget, block: 'stone' },
     }])
     expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a missing block result returned by the host coordinator', async () => {
+    const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithMissingObservedBlocks(harness.coordinator),
+    )
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-missing-read', target))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-missing-read',
+      success: false,
+      consumedCount: 0,
+      outcome: {
+        _tag: 'WorldDataFailed',
+        reason: { _tag: 'MissingBlockReadResult', position: target },
+      },
+    }])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+      _tag: 'WorldDataFailure',
+      operation: 'ReadBlock',
+      position: target,
+      reason: { _tag: 'MissingBlockReadResult', position: target },
+    }])
   })
 
   it('detects crop-owner revision conflicts for bone meal, planting, and harvesting', async () => {
