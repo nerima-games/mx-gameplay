@@ -135,6 +135,10 @@ import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/x
 import { makeVillager, type VillagerTradeState } from '../src/domain/villager-trade.js'
 import { BOW_FULL_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot.js'
+import { placeBlock } from '../src/domain/interactions/place-block.js'
+import { cactusSidesObjection } from '../src/domain/interactions/place-cactus-sides.js'
+import { doorUpperBreakCell } from '../src/domain/interactions/place-door-upper.js'
+import { sugarCaneWaterObjection } from '../src/domain/interactions/place-sugar-cane-water.js'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import { FrameServicesLayer } from './support/frame-services.js'
 import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
@@ -5676,6 +5680,115 @@ describe('schema-valid interaction edge paths', () => {
     expect(await Effect.runPromise(harness.store.blockAt(caneNeighbour))).toBe(unknownBlock)
     expect(await Effect.runPromise(harness.store.blockAt(cactusNeighbour))).toBe(unknownBlock)
     expect(await Effect.runPromise(harness.store.blockAt(doorUpper))).toBe(unknownBlock)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('returns a typed fault when a door placement cannot decode its upper cell', async () => {
+    const target = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
+    const support = blockPosition(BlockAxis(12), BlockAxis(63), BlockAxis(1))
+    const upper = blockPosition(BlockAxis(12), BlockAxis(65), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const unknownBlock = BlockId(65_535)
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(
+      world([[support, stone], [upper, unknownBlock]]),
+      ['0,0'],
+    ))
+
+    const outcome = await Effect.runPromise(placeBlock(store.api, { position: target, heldItem: 'door' }))
+
+    expect(outcome).toStrictEqual({
+      _tag: 'WorldDataFault',
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: upper, blockId: unknownBlock },
+    })
+    expect(await Effect.runPromise(store.blockAt(target))).toBeUndefined()
+    expect(await Effect.runPromise(store.blockAt(upper))).toBe(unknownBlock)
+    expect((await Effect.runPromise(store.calls)).writes).toBe(0)
+  })
+
+  it('keeps an unloaded cactus side blocked without treating it as a block id', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(4))
+    const cactus = Option.getOrThrow(blockIdOf('cactus'))
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([]), ['0,0']))
+
+    const refusal = await Effect.runPromise(cactusSidesObjection(store.api, cactus, target))
+
+    expect(refusal).toStrictEqual({ _tag: 'SidesBlocked' })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(4)
+  })
+
+  it('leaves a door lower-half break alone when the upper cell is unreadable', async () => {
+    const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(4))
+    const door = Option.getOrThrow(blockIdOf('door'))
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([]), []))
+
+    const upper = await Effect.runPromise(doorUpperBreakCell(store.api, door, target))
+
+    expect(upper).toStrictEqual({ _tag: 'NoDoorAbove' })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(1)
+    expect((await Effect.runPromise(store.calls)).writes).toBe(0)
+  })
+
+  it('reports an invalid sugar-cane support before reading water neighbors', async () => {
+    const target = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const support = blockPosition(BlockAxis(6), BlockAxis(63), BlockAxis(1))
+    const cane = Option.getOrThrow(blockIdOf('sugar_cane'))
+    const unknownBlock = BlockId(65_535)
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([]), ['0,0']))
+
+    const refusal = await Effect.runPromise(sugarCaneWaterObjection(store.api, cane, target, {
+      _tag: 'Block', block: unknownBlock,
+    }))
+
+    expect(refusal).toStrictEqual({
+      _tag: 'WorldDataFault',
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: support, blockId: unknownBlock },
+    })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(0)
+  })
+
+  it('does not treat an unloaded sugar-cane neighbor as water', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(4))
+    const support = blockPosition(BlockAxis(0), BlockAxis(63), BlockAxis(4))
+    const sand = Option.getOrThrow(blockIdOf('sand'))
+    const cane = Option.getOrThrow(blockIdOf('sugar_cane'))
+    const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(world([[support, sand]]), ['0,0']))
+
+    const refusal = await Effect.runPromise(sugarCaneWaterObjection(store.api, cane, target, { _tag: 'Block', block: sand }))
+
+    expect(refusal).toStrictEqual({ _tag: 'NoAdjacentWater' })
+    expect((await Effect.runPromise(store.calls)).reads).toBe(4)
+  })
+
+  it('records and requeues bone meal when its observed block id is unregistered', async () => {
+    const target = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const unknownBlock = BlockId(65_535)
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, unknownBlock]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-unregistered-target', target))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
+      _tag: 'EntityWorldDataFault',
+      source: 'ItemUse',
+      target: { _tag: 'Cell', cell: target },
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: target, blockId: unknownBlock },
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-unregistered-target',
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
     expect(harness.commitCalls()).toBe(0)
   })
 

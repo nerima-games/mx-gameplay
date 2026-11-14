@@ -720,6 +720,48 @@ describe('what the search reads', () => {
     }),
   )
 
+  it.effect('reports the missing foot and head cells at their own buffer indices', () =>
+    Effect.gen(function* () {
+      for (const { missingY, expectedY } of [
+        { missingY: CHUNK_HEIGHT - 2, expectedY: CHUNK_HEIGHT - 2 },
+        { missingY: CHUNK_HEIGHT - 1, expectedY: CHUNK_HEIGHT - 1 },
+      ]) {
+        const blocks = new Proxy(new Uint16Array(CHUNK_HEIGHT * 256), {
+          get: (target, property) => {
+            if (typeof property === 'string' && /^\d+$/.test(property)) {
+              const index = Number(property)
+              if (index % CHUNK_HEIGHT === missingY) return undefined
+            }
+            return Reflect.get(target, property, target)
+          },
+        })
+        const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+        const api: ChunkStoreApi = {
+          ...store.api,
+          peek: (coord) => Effect.succeed({
+            coord,
+            blocks,
+            biomes: Array.from({ length: 256 }, () => 'PLAINS' as const),
+          } satisfies ReadonlyChunk),
+        }
+
+        const found = yield* searchSpawnCandidates(api, PLAYER, MIDNIGHT, RandomSeed(7))
+        const fault = found.worldFaults[0]
+
+        expect(found.attempts).toStrictEqual([])
+        expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+        expect(fault).toMatchObject({
+          _tag: 'EntityWorldCorruptBuffer',
+          cell: { y: BlockAxis(expectedY) },
+        })
+        if (fault?._tag === 'EntityWorldCorruptBuffer') {
+          expect(fault.index % CHUNK_HEIGHT).toBe(expectedY)
+          expect(fault.length).toBe(CHUNK_HEIGHT * 256)
+        }
+      }
+    }),
+  )
+
   it.effect('counts malformed chunk dimensions and missing biome data as unreadable', () =>
     Effect.gen(function* () {
       const readableBlocks = new Uint16Array(CHUNK_HEIGHT * 256)

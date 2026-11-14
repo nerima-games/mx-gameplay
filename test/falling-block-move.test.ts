@@ -128,6 +128,29 @@ describe('falling block move input boundaries', () => {
     }),
   )
 
+  it.effect('returns a typed destination fault without moving or overwriting either block', () =>
+    Effect.gen(function* () {
+      const target = at(5)
+      const source = at(6)
+      const sand = block('sand')
+      const unknownBlock = BlockId(60_000)
+      const store = yield* makeChunkStoreDouble(world([[source, sand], [target, unknownBlock]]), ['0,0'])
+
+      expect(yield* applyFallingBlocks(store.api, [blockPositionKeyOf(target)])).toStrictEqual({
+        moved: 0,
+        destinations: [blockPositionKeyOf(target)],
+        faults: [{
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: target,
+          blockId: unknownBlock,
+        }],
+      })
+      expect(yield* store.blockAt(source)).toBe(sand)
+      expect(yield* store.blockAt(target)).toBe(unknownBlock)
+      expect(yield* store.calls).toStrictEqual({ reads: 2, writes: 0, peeks: 0 })
+    }),
+  )
+
   it.effect('does not fall into an unavailable or solid destination', () =>
     Effect.gen(function* () {
       const target = at(5)

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Result, Schema } from 'effect'
-import { BlockAxis, BlockId, type BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, type BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
 
 const registryControl = vi.hoisted(() => ({
-  mode: 'native' as 'native' | 'resolution-failure' | 'known-without-resolved-block',
+  mode: 'native' as 'native' | 'resolution-failure' | 'known-without-resolved-block' | 'type-resolution-failure' | 'known-without-resolved-type',
 }))
 
 vi.mock('@nerima-games/mc-kernel', async (importOriginal) => {
@@ -26,10 +26,15 @@ vi.mock('@nerima-games/mc-kernel', async (importOriginal) => {
       if (registryControl.mode === 'known-without-resolved-block') return EffectResult.succeed(undefined)
       return actual.resolvedBlockOfId(blockId)
     },
+    blockTypeOfId: (blockId: Parameters<typeof actual.blockTypeOfId>[0]) => {
+      if (registryControl.mode === 'type-resolution-failure') return EffectResult.fail(failure)
+      if (registryControl.mode === 'known-without-resolved-type') return EffectResult.succeed(undefined)
+      return actual.blockTypeOfId(blockId)
+    },
   }
 })
 
-import { EntityWorldQueryFailureSchema, entityWorldBlockDataAt } from '../src/domain/entities/entity-world-cell.js'
+import { EntityWorldQueryFailureSchema, entityWorldBlockDataAt, entityWorldBlockTypeAt } from '../src/domain/entities/entity-world-cell.js'
 
 const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
 
@@ -58,6 +63,26 @@ describe('entity world block registry results', () => {
       _tag: 'EntityWorldUnregisteredBlockId',
       cell,
       blockId: BlockId(1),
+    }))
+  })
+
+  it('preserves a block-type registry failure after block data resolves', () => {
+    registryControl.mode = 'type-resolution-failure'
+
+    expect(entityWorldBlockTypeAt(cell, AIR_BLOCK_ID)).toStrictEqual(Result.fail({
+      _tag: 'EntityWorldRegistryFailure',
+      cell,
+      failure: { _tag: 'BlockPropertyFailure', reason: 'type', message: 'registry property resolution failed' },
+    }))
+  })
+
+  it('rejects an absent block type after block data resolves', () => {
+    registryControl.mode = 'known-without-resolved-type'
+
+    expect(entityWorldBlockTypeAt(cell, AIR_BLOCK_ID)).toStrictEqual(Result.fail({
+      _tag: 'EntityWorldUnregisteredBlockId',
+      cell,
+      blockId: AIR_BLOCK_ID,
     }))
   })
 
