@@ -763,6 +763,7 @@ export const droppedItemPickupResultAfterCommit = (
       const committedCount = committedCounts.get(pickup.source)
       // A missing committed source means the full stack was consumed.
       const acceptedCount = pickup.countBefore - (committedCount === undefined ? 0 : committedCount)
+      if (acceptedCount === 0) continue
       const accepted = yield* Schema.decodeUnknownEffect(DroppedItemStackCountSchema)(acceptedCount)
       const event = yield* Schema.decodeUnknownEffect(DomainEventSchema)({
         _tag: 'ItemPickedUp',
