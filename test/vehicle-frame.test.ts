@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Exit, Option } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
+import { BlockId, blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { advanceVehicles } from '../src/domain/vehicle/vehicle-frame'
@@ -60,12 +60,7 @@ describe('vehicle frame', () => {
     expect(updateCount).toBe(0)
   })
 
-  it('swallows a per-vehicle update failure rather than failing the whole frame', async () => {
-    // Every other test's `updateState` succeeds, so the `Effect.catch(() =>
-    // Effect.void)` at the end of the per-vehicle pipe had never actually
-    // caught anything — one bad vehicle write must not stop the rest of the
-    // frame, or a roster of ten carts becomes a roster of one bad write away
-    // from none moving at all.
+  it('returns a per-vehicle update failure and continues the remaining vehicles', async () => {
     const vehicle = {
       id: VehicleId('v:broken'),
       type: 'minecart' as const,
@@ -74,17 +69,50 @@ describe('vehicle frame', () => {
       velocity: { x: 2, y: 0, z: 0 },
       yawRadians: 0,
     }
+    const nextVehicle = { ...vehicle, id: VehicleId('v:next') }
+    const updated: Array<VehicleId> = []
     const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: () => Effect.fail({ _tag: 'VehicleNotFound' as const, id: vehicle.id }),
+      vehicles: Effect.succeed([vehicle, nextVehicle]),
+      updateState: (id: VehicleId) => id === vehicle.id
+        ? Effect.fail({ _tag: 'VehicleOperationError' as const, reason: 'not-found' as const })
+        : Effect.sync(() => { updated.push(id) }),
     } as unknown as VehicleServiceApi
     const store = {
       getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
+    const result = await Effect.runPromise(advanceVehicles(store, service, 1))
 
-    expect(Exit.isSuccess(result)).toBe(true)
+    expect(result).toMatchObject([{ _tag: 'VehicleUpdateFailure', vehicleId: vehicle.id }])
+    expect(updated).toEqual([nextVehicle.id])
+  })
+
+  it('returns a world-data fault and does not step the vehicle across an unknown block id', async () => {
+    const vehicle = {
+      id: VehicleId('v:unknown-terrain'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let updateCount = 0
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: () => Effect.sync(() => { updateCount += 1 }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: BlockId(65_535) }),
+    } as unknown as ChunkStoreApi
+
+    const result = await Effect.runPromise(advanceVehicles(store, service, 1))
+
+    expect(result).toMatchObject([{
+      _tag: 'VehicleWorldDataFault',
+      vehicleId: vehicle.id,
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', blockId: BlockId(65_535) },
+    }])
+    expect(updateCount).toBe(0)
   })
 
   it('passes boat controls into the vehicle motion step', async () => {

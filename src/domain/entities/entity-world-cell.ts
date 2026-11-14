@@ -13,7 +13,7 @@ import {
   type Position,
   type ResolvedBlock,
 } from '@nerima-games/mc-kernel'
-import { Result } from 'effect'
+import { Result, Schema } from 'effect'
 import { readChunkWindowCell, type ChunkWindow, type ChunkWindowCell } from '../chunk-window.js'
 
 export type EntityWorldCellPosition = Readonly<{ x: BlockAxis; y: BlockAxis; z: BlockAxis }>
@@ -30,6 +30,51 @@ export type EntityWorldQueryFailure =
   | Readonly<{ _tag: 'EntityWorldRegistryFailure'; cell: EntityWorldCellPosition; failure: BlockRegistryResolutionFailure }>
   | Readonly<{ _tag: 'EntityWorldUnregisteredBlockId'; cell: EntityWorldCellPosition; blockId: BlockId }>
   | Readonly<{ _tag: 'EntityWorldInvalidCell'; reason: 'not-block-coordinate'; position: Position }>
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null
+
+const isCellPosition = (value: unknown): value is EntityWorldCellPosition =>
+  isRecord(value) &&
+  Number.isSafeInteger(value['x']) &&
+  Number.isSafeInteger(value['y']) &&
+  Number.isSafeInteger(value['z'])
+
+const isBlockRegistryResolutionFailure = (value: unknown): value is BlockRegistryResolutionFailure => {
+  if (!isRecord(value) || typeof value['_tag'] !== 'string') return false
+  if (value['_tag'] === 'BrandError') return isRecord(value['issue']) && typeof value['message'] === 'string'
+  if (value['_tag'] === 'BlockDefinitionFailure') {
+    return (value['reason'] === 'unknown-field' || value['reason'] === 'invalid-shape') && typeof value['message'] === 'string'
+  }
+  if (value['_tag'] === 'BlockCapabilityFailure') {
+    return (
+      value['reason'] === 'not-object' || value['reason'] === 'unknown-key' ||
+      value['reason'] === 'not-boolean' || value['reason'] === 'hostile-input'
+    ) && typeof value['message'] === 'string'
+  }
+  return value['_tag'] === 'BlockPropertyFailure' &&
+    (value['reason'] === 'type' || value['reason'] === 'range' || value['reason'] === 'unknown-key') &&
+    typeof value['message'] === 'string'
+}
+
+const isEntityWorldQueryFailure = (value: unknown): value is EntityWorldQueryFailure => {
+  if (!isRecord(value) || typeof value['_tag'] !== 'string') return false
+  if (value['_tag'] === 'EntityWorldWindowUnavailable') return isCellPosition(value['cell'])
+  if (value['_tag'] === 'EntityWorldCorruptBuffer') {
+    return isCellPosition(value['cell']) && Number.isSafeInteger(value['index']) && Number.isSafeInteger(value['length'])
+  }
+  if (value['_tag'] === 'EntityWorldRegistryFailure') {
+    return isCellPosition(value['cell']) && isBlockRegistryResolutionFailure(value['failure'])
+  }
+  if (value['_tag'] === 'EntityWorldUnregisteredBlockId') {
+    return isCellPosition(value['cell']) && typeof value['blockId'] === 'number' &&
+      Number.isInteger(value['blockId']) && value['blockId'] >= 0 && value['blockId'] <= 65_535
+  }
+  return value['_tag'] === 'EntityWorldInvalidCell' && value['reason'] === 'not-block-coordinate' && isRecord(value['position'])
+}
+
+export const EntityWorldQueryFailureSchema: Schema.Codec<EntityWorldQueryFailure, unknown> =
+  Schema.declare<EntityWorldQueryFailure>(isEntityWorldQueryFailure)
 
 export type EntityWorldCell =
   | Readonly<{ _tag: 'Loaded'; blockId: BlockId; block: ResolvedBlock; properties: BlockProperties; capabilities: BlockCapabilities }>

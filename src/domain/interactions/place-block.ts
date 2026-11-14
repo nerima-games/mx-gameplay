@@ -125,6 +125,7 @@ import {
   type ChunkCoord,
 } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
@@ -255,6 +256,8 @@ export type PlaceRequest = {
  * prints the tag.
  */
 export type PlaceOutcome =
+  /** A loaded cell contains a block id this registry cannot resolve. */
+  | { readonly _tag: 'WorldDataFault'; readonly failure: EntityWorldQueryFailure }
   /** The block went in. `consumed` is the item to take off the stack. */
   | {
       readonly _tag: 'Placed'
@@ -335,6 +338,19 @@ export const placementVerdict = (
   }
   if (target._tag === 'OutOfWorld') {
     return { _tag: 'OutOfWorld' }
+  }
+  const targetData = entityWorldBlockDataAt(request.position, target.block)
+  if (Result.isFailure(targetData)) {
+    return { _tag: 'WorldDataFault', failure: targetData.failure }
+  }
+  if (supportBelow?._tag === 'Block') {
+    const supportData = entityWorldBlockDataAt(
+      Result.getOrThrow(adjacentBlockPosition(request.position, 'down')),
+      supportBelow.block,
+    )
+    if (Result.isFailure(supportData)) {
+      return { _tag: 'WorldDataFault', failure: supportData.failure }
+    }
   }
   if (Result.getOrUndefined(capabilityOfBlockId(target.block, 'replaceable')) !== true) {
     return { _tag: 'Occupied', existing: target.block }
@@ -437,6 +453,7 @@ export const placeBlock = (
     // refusal, so its verdict is held across the write below. See
     // `./place-door-upper` on why the cell is returned rather than written there.
     const upper: DoorUpperCell = yield* doorUpperCell(store, verdict.block, request.position)
+    if (upper._tag === 'WorldDataFault') return upper
     if (upper._tag === 'NoRoomAbove') {
       return { _tag: 'NoRoomAbove' }
     }
@@ -516,6 +533,9 @@ export const planPlaceBlock = (
     if (sidesBlocked !== undefined) return { outcome: sidesBlocked, edits: [] }
 
     const upper = yield* doorUpperCell(store, verdict.block, request.position)
+    if (upper._tag === 'WorldDataFault') {
+      return { outcome: upper, edits: [] }
+    }
     if (upper._tag === 'NoRoomAbove') return { outcome: upper, edits: [] }
 
     const alsoPlaced = upper._tag === 'Clear' ? [upper.cell] : []

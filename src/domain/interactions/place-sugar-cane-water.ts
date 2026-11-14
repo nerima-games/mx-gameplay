@@ -60,18 +60,21 @@ import { Effect, Option, Result } from 'effect'
 import {
   adjacentBlockPosition,
   blockIdOf,
-  blockTypeOfId,
   horizontalBlockNeighbours,
   type BlockId,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 
-/** Is this byte sugar cane? Asked of kernel's registry; see `./place-mushroom-light`. */
-export const isSugarCaneBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'sugar_cane'
+export const SUGAR_CANE_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('sugar_cane'))
+const WATER_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('water'))
 
-/** Is this byte water? Asked of kernel's registry, for the same reason. */
-const isWaterBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'water'
+/** Is this the known sugar-cane id? World reads are validated before this comparison. */
+export const isSugarCaneBlock = (block: BlockId): boolean => block === SUGAR_CANE_BLOCK_ID
+
+/** Is this the known water id? World reads are validated before this comparison. */
+const isWaterBlock = (block: BlockId): boolean => block === WATER_BLOCK_ID
 
 /**
  * The reference's `hasRequiredSugarCaneAdjacentWater`, over bytes and over
@@ -97,7 +100,9 @@ export const hasRequiredSugarCaneAdjacentWater = (
   besideSupport.some((reading) => reading._tag === 'Block' && isWaterBlock(reading.block))
 
 /** Why sugar cane was refused. `undefined` from the gate means no objection. */
-export type SugarCaneWaterRefusal = { readonly _tag: 'NoAdjacentWater' }
+export type SugarCaneWaterRefusal =
+  | { readonly _tag: 'NoAdjacentWater' }
+  | { readonly _tag: 'WorldDataFault'; readonly failure: EntityWorldQueryFailure }
 
 /**
  * Does the ground beside the support refuse the cane? `undefined` if it does not.
@@ -125,6 +130,14 @@ export const sugarCaneWaterObjection = (
       return undefined
     }
 
+    if (supportBelow?._tag === 'Block') {
+      const supportPosition = adjacentBlockPosition(position, 'down')
+      if (Result.isSuccess(supportPosition)) {
+        const supportData = entityWorldBlockDataAt(supportPosition.success, supportBelow.block)
+        if (Result.isFailure(supportData)) return { _tag: 'WorldDataFault', failure: supportData.failure }
+      }
+    }
+
     const belowSupport = Result.getOrUndefined(adjacentBlockPosition(position, 'down'))
     if (belowSupport === undefined) {
       return { _tag: 'NoAdjacentWater' }
@@ -135,13 +148,15 @@ export const sugarCaneWaterObjection = (
     }
     const besideSupport: Array<BlockReading> = []
     for (const neighbour of neighbours) {
-      besideSupport.push(yield* store.getBlock(neighbour))
+      const reading = yield* store.getBlock(neighbour)
+      if (reading._tag === 'Block') {
+        const data = entityWorldBlockDataAt(neighbour, reading.block)
+        if (Result.isFailure(data)) return { _tag: 'WorldDataFault', failure: data.failure }
+      }
+      besideSupport.push(reading)
     }
 
     return hasRequiredSugarCaneAdjacentWater(supportBelow, besideSupport)
       ? undefined
       : { _tag: 'NoAdjacentWater' }
   })
-
-/** The id this rule is about, for a caller that wants to demonstrate it. */
-export const SUGAR_CANE_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('sugar_cane'))

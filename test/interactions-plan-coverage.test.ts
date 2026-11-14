@@ -5595,6 +5595,87 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('records unregistered block ids in mining and placement reads and leaves the world unchanged', async () => {
+    const unknownBlock = BlockId(65_535)
+    const miningCell = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(1))
+    const occupiedTarget = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const torchTarget = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const torchSupport = blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(1))
+    const caneTarget = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
+    const caneSupport = blockPosition(BlockAxis(6), BlockAxis(63), BlockAxis(1))
+    const caneNeighbour = blockPosition(BlockAxis(7), BlockAxis(63), BlockAxis(1))
+    const cactusTarget = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(1))
+    const cactusSupport = blockPosition(BlockAxis(9), BlockAxis(63), BlockAxis(1))
+    const cactusNeighbour = blockPosition(BlockAxis(10), BlockAxis(64), BlockAxis(1))
+    const doorTarget = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
+    const doorSupport = blockPosition(BlockAxis(12), BlockAxis(63), BlockAxis(1))
+    const doorUpper = blockPosition(BlockAxis(12), BlockAxis(65), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const sand = Option.getOrThrow(blockIdOf('sand'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [
+        [miningCell, unknownBlock],
+        [occupiedTarget, unknownBlock],
+        [torchSupport, unknownBlock],
+        [caneSupport, sand],
+        [caneNeighbour, unknownBlock],
+        [cactusSupport, sand],
+        [cactusNeighbour, unknownBlock],
+        [doorSupport, stone],
+        [doorUpper, unknownBlock],
+      ],
+      playerStorage: playerStorageWithItems([
+        ['stone', 1],
+        ['torch', 1],
+        ['sugar_cane', 1],
+        ['cactus', 1],
+        ['door', 1],
+      ]),
+    }))
+
+    await Effect.runPromise(requestBlockBreak(harness.state, miningCell, undefined, {
+      dimension: DIMENSION,
+      toolLocation: undefined,
+    }))
+    for (const [position, heldItem] of [
+      [occupiedTarget, 'stone'],
+      [torchTarget, 'torch'],
+      [caneTarget, 'sugar_cane'],
+      [cactusTarget, 'cactus'],
+      [doorTarget, 'door'],
+    ] as const) {
+      await Effect.runPromise(requestBlockPlacement(harness.state, {
+        positionKey: blockPositionKeyOf(position),
+        heldItem,
+      }))
+    }
+
+    await harness.run()
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    const faultFor = (source: 'Mining' | 'ItemUse', cell: BlockPosition) => ({
+      _tag: 'EntityWorldDataFault',
+      source,
+      target: { _tag: 'Cell', cell },
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+    })
+    expect(faults).toEqual(expect.arrayContaining([
+      faultFor('Mining', miningCell),
+      faultFor('ItemUse', occupiedTarget),
+      faultFor('ItemUse', torchSupport),
+      faultFor('ItemUse', caneNeighbour),
+      faultFor('ItemUse', cactusNeighbour),
+      faultFor('ItemUse', doorUpper),
+    ]))
+    expect(await Effect.runPromise(harness.store.blockAt(miningCell))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(occupiedTarget))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(torchSupport))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(caneNeighbour))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(cactusNeighbour))).toBe(unknownBlock)
+    expect(await Effect.runPromise(harness.store.blockAt(doorUpper))).toBe(unknownBlock)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('places at the lowest writable Y and tracks its lower neighbor', async () => {
     const target = blockPosition(BlockAxis(1), BlockAxis(0), BlockAxis(1))
     const below = blockPosition(BlockAxis(1), BlockAxis(-1), BlockAxis(1))

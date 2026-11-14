@@ -6552,6 +6552,49 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
       expect(yield* vehicleService.vehicles).toStrictEqual([])
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
+
+  it.effect('records unknown terrain read by a vehicle and keeps the stage tick alive', () =>
+    Effect.gen(function* () {
+      const faultyCell = fixtureBlockPosition(1, 64, 2)
+      const vehiclePosition = fixturePosition(2, 64, 2)
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(
+        world([[faultyCell, BlockId(65_535)]]),
+        ['0,0'],
+      )
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
+      const vehicleService = yield* makeVehicleService()
+      const vehicle = yield* vehicleService.spawn('minecart', 'overworld', vehiclePosition)
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        vehicleService,
+      )
+      const vehicles = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.vehicles)!
+
+      yield* vehicles.run(DeltaTimeSecs(0.016))
+      yield* vehicles.run(DeltaTimeSecs(0.016))
+
+      expect(yield* vehicleService.vehicles).toMatchObject([{ id: vehicle.id, position: vehiclePosition }])
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([{
+        _tag: 'EntityWorldDataFault',
+        source: 'VehicleMovement',
+        target: { _tag: 'Cell', cell: faultyCell },
+        failure: {
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: faultyCell,
+          blockId: BlockId(65_535),
+        },
+      }])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
 })
 
 describe('farming and food item uses through the full interactions stage', () => {

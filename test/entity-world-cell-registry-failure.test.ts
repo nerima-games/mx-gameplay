@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { Result } from 'effect'
+import { Result, Schema } from 'effect'
 import { BlockAxis, BlockId, type BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
 
 const registryControl = vi.hoisted(() => ({
@@ -29,7 +29,7 @@ vi.mock('@nerima-games/mc-kernel', async (importOriginal) => {
   }
 })
 
-import { entityWorldBlockDataAt } from '../src/domain/entities/entity-world-cell.js'
+import { EntityWorldQueryFailureSchema, entityWorldBlockDataAt } from '../src/domain/entities/entity-world-cell.js'
 
 const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
 
@@ -59,5 +59,31 @@ describe('entity world block registry results', () => {
       cell,
       blockId: BlockId(1),
     }))
+  })
+
+  it('decodes each tagged world-query fault, including each kernel registry failure', () => {
+    const registryFailures = [
+      { _tag: 'BrandError', issue: {}, message: 'invalid block id' },
+      { _tag: 'BlockDefinitionFailure', reason: 'unknown-field', message: 'invalid definition' },
+      { _tag: 'BlockCapabilityFailure', reason: 'hostile-input', message: 'invalid capability' },
+      { _tag: 'BlockPropertyFailure', reason: 'range', message: 'invalid property' },
+    ]
+    const failures = [
+      { _tag: 'EntityWorldWindowUnavailable', cell },
+      { _tag: 'EntityWorldCorruptBuffer', cell, index: 1, length: 1 },
+      ...registryFailures.map((failure) => ({ _tag: 'EntityWorldRegistryFailure', cell, failure })),
+      { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: BlockId(65_535) },
+      { _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: { x: 0, y: 64, z: 0 } },
+    ]
+
+    for (const failure of failures) {
+      expect(Schema.decodeUnknownSync(EntityWorldQueryFailureSchema)(failure)).toEqual(failure)
+    }
+    expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)(null))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({ _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: -1 }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({
+      _tag: 'EntityWorldRegistryFailure', cell, failure: { _tag: 'OtherFailure' },
+    }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({ _tag: 'OtherFailure' }))).toBe(true)
   })
 })
