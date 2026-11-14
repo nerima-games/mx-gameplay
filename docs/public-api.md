@@ -630,7 +630,8 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 | export | 種別 | 備考 |
 | --- | --- | --- |
 | `MobBehaviour` | **契約** | mc-sim の `S` を gameplay の entity behaviour union で具体化する型。ホストは `EntityManagerLayer` の型引数に使うため名前で import する（§2-3） |
-| `repairMobBehaviour` | **契約** | mc-sim の `BehaviourRepair`。ロード経路が委譲する。kind ごとに shape を検査し、形の合わない behaviour を置き換える（§2-3） |
+| `repairMobBehaviour` | **契約** | mc-sim の `BehaviourRepair`。ロード経路が委譲する。kind ごとの shape を検査し、省略された旧フィールドだけを明示的な移行で補う。不正な保存値は `MobBehaviourRepairFault` で表す（§2-3） |
+| `MobBehaviourRepairFault` / `isMobBehaviourRepairFault` | **契約** | `repairMobBehaviour` が返す型付き fault と、その判定関数 |
 | `EndermanFlinch` / `STEADY_ENDERMAN` / `STRUCK_ENDERMAN` | 内部(可視) | 「直前に殴られたか」だけを持つ 2 タグの union。フィールドが無いので save が壊せる数値も無い。`resolveBlasts` が立て、次の `sweepMobs` が**決定に関わらず消費する**（殴打は 1 フレームのもの） |
 | `CREEPER_KIND` / `ENDERMAN_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする場所。mob spawn search が `MobSpawnAttempt.kind` を通して hostile kind を選び、上限は hostile kind の roster 全体に適用する。host からの `spawn` も利用できる |
 | `CREEPER_MAX_HEALTH` / `MAX_HOSTILE_COUNT` | 内部(可視) | kind ごとの定数はルール層のもの（mc-sim §7-6）。`MAX_HOSTILE_COUNT` は `hostile-spawn.ts` が「mc-sim と一緒に到着する」と書いていた数 |
