@@ -4736,6 +4736,58 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('reads the upper cell before reporting unregistered tilling and planting targets', async () => {
+    const tillPosition = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
+    const tillAbove = blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1))
+    const plantPosition = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const plantAbove = blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1))
+    const unknownBlock = BlockId(0xffff)
+    const knownBlock = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [
+        [tillPosition, knownBlock],
+        [tillAbove, knownBlock],
+        [plantPosition, knownBlock],
+        [plantAbove, knownBlock],
+      ],
+      playerStorage: playerStorageWithItems([['iron_hoe', 1], ['potato', 1]]),
+    }))
+    await Promise.all([
+      Effect.runPromise(injectRawBlockId(harness.store.api, tillAbove, unknownBlock)),
+      Effect.runPromise(injectRawBlockId(harness.store.api, plantAbove, unknownBlock)),
+    ])
+    await Effect.runPromise(requestSoilTill(harness.state, 'unknown-till-above', tillPosition, 'iron_hoe'))
+    await Effect.runPromise(requestPotatoPlanting(harness.state, 'unknown-plant-above', plantPosition))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
+      {
+        action: 'TillSoil',
+        requestId: 'unknown-till-above',
+        success: false,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: tillAbove, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
+      {
+        action: 'PlantPotato',
+        requestId: 'unknown-plant-above',
+        success: false,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: plantAbove, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
+    ])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([
+      { operation: 'DecodeBlockType', position: tillAbove },
+      { operation: 'DecodeBlockType', position: plantAbove },
+    ])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('rejects planting at an unrepresentable crop cell as an invalid target', async () => {
     const soil = blockPosition(BlockAxis(0), BlockAxis(Number.MAX_SAFE_INTEGER), BlockAxis(0))
     const harness = await Effect.runPromise(makeHarness({
