@@ -265,10 +265,11 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | --- | --- | --- |
 | `makeGameplayStages` | **契約** | stage 登録時に `ChunkStore`、`EntityManager`、`TimeService`、`WorldCommitCoordinator`、`DomainEventBus`、`GameplayBlockStateWorld` を要求する（§2-2） |
 | `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` は `Layer.empty` |
+| `GameplayBlockStateWorld` / `GameplayBlockStateWorldApi` | **契約** | `stages/gameplay-block-state-world.ts` から `index.ts` が直接 export する、ホストが提供する 6 本目の登録サービス。`forDimension(dimension, ownerChanges?, expectedWorldRevision?)` はその次元に束ねた `BlockStateWorldPort` を返す。port の read は現在のブロック状態を返し、write は状態付きの `BlockEdit` を C7 の `WorldWritePort` へ送る。`ownerChanges` があれば同じトランザクションで commit し、`expectedWorldRevision` はそのトランザクションが検査する。dimension revision はホストの adapter が自分の world coordinator から取得して C7 batch を組む |
 | `EntityStageFault` / `drainGameplayEntityStageFaults` | **契約** | `GameplayFrameState.entityStageFaults` に記録した fault を回収する。`WorldDataFailure` は source、operation、位置、型付きの理由で重複を除き、drain 後も同じ記録を繰り返さない |
 | `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageUnavailableBlockReadFailure` | **契約** | world fault の理由の pure 型。`BlockStateCodecFailure`、`LightQueueUnderflowError`、`UnregisteredBlockId`、`MissingBlockReadResult`、`ChunkNotLoaded`、`OutOfWorld` の情報を保持する |
 | `GameplayStageItemUseWorldFailure` | **契約** | `WorldDataFailed` のみ。理由は `GameplayStageBlockTypeDecodeFailure` または `GameplayStageMissingBlockReadFailure` |
-| `gameplayStages(state, store, entities, inventory, player, time, …, commit)` | **契約（state handle の保持用途）** | ホストが保持する state と既存サービス、commit から stage を構築する。fault を回収するホストは同じ state を drain に渡す。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
+| `gameplayStages(state, store, entities, inventory, player, time, …, commit, blockStateWorld)` | **契約（state handle の保持用途）** | ホストが保持する state と既存サービス、commit から stage を構築する。末尾の `blockStateWorld` を省くと、状態を要するドア・階段の配置は `StateRuleUnavailable`、ブロック状態規則は `PortUnavailable` になる。fault を回収するホストは同じ state を drain に渡す。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameStateForOwner` | **契約（state handle の生成用途）** | `{ coordinator, vitalsOwnerId }` から state を作る。ホストはこの handle を stage 構築と fault 回収に保持する |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
 | `GameplayFrameState` | **契約（handle 型のみ）** | stage 構築と fault 回収に渡す handle。内部は一時状態でありセーブ対象ではない。文書化された受信箱以外の内部Refへの直接書き込みは契約に含めない |
@@ -282,11 +283,11 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union。相関付き配置結果は `WorldDataFailed` を、farming item-use 結果は `GameplayStageItemUseWorldFailure` を返す。旧 `requestBlockPlacement` は相関結果を作らず、fault を同じ `entityStageFaults` に記録する |
 | `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。cast 時の Lure・Luck of the Sea と open water の判定は `GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID` の owner に cast と同じ commit で記録し、reel や cancel の commit で消す。記録の無い進行中 cast は、要求の `toolLocation` にあるロッドと浮きの周囲 5x4x5 のブロックから復元する。復元できない要求は stage fault を記録して処理しない。Advance 要求は `toolLocation` を持たないので、記録の無い cast では毎回 `FishingRodNotHeld` の fault になる。host はその cast を `toolLocation` 付きの Reel か Cancel で終える。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
 | `requestEnchantmentTableOffers` / `requestEnchantmentTableApply` / `drainEnchantmentTableResults` と各 request/result `Schema` | **契約** | 相関 ID 付きで offers を要求し、選択した offer の適用結果を受け取る。要求には台の位置を含み、本棚数は含まない。mx-gameplay は stage request と offer session を管理し、mc-sim の `EnchantmentTableService` が台の周囲のブロックから本棚数を数えて offers を生成し、選択した offer を inventory・vitals へ原子的に適用する。結果の `OffersGenerated` は数えた本棚数（0〜15）を `bookshelfCount` に持つ。offers 要求時または適用時に要求位置のブロックがエンチャントテーブルでなければ、結果は `table-missing` の `Rejected` になる。本棚数の計数に使う周囲の位置が chunk 未ロードかワールド外で読めなければ、offers を生成せず `table-area-unloaded` の `Rejected` を返し、読めなかった位置を `EnchantmentTable` source の `WorldDataFailure` として記録する |
-| `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | The context names the WCC, player owner and entity owner. Helpers resolve aim from player and entity snapshots at a shared revision; after three failed attempts they return `WorldRevisionConflict` and enqueue nothing. Block use prioritizes levers, routes doors to block-state rules, then falls back to placement for other blocks. |
+| `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、ドアはブロック状態規則の受信箱へ回し、それ以外は通常の配置へフォールバックする |
 | `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
-| `BlockStateRuleRequest` / `BlockStateRuleResult` / `requestBlockStateRule` / `drainBlockStateRuleResults` | **契約** | Queue and drain correlated door, stair, crop, sapling and bone-meal state rules. Stair placement takes the clicked face and side hit height. Wheat and potato use the speed-level growth formula; Nether wart uses a fixed 10% random-tick chance. The current chunk-store adapter reports typed `Unsupported` when a rule needs state-aware reads or writes. |
-| `requestBoneMeal` | **契約** | Enqueues correlated bone-meal use. The current chunk-store adapter returns a typed `stateUnsupported` result before gameplay consumes the item. |
+| `BlockStateRuleRequest` / `BlockStateRuleResult` / `requestBlockStateRule` / `drainBlockStateRuleResults` | **契約** | ドア・階段・作物・苗木・骨粉のブロック状態規則を相関 ID 付きで enqueue/drain する。`gameplay:block-state-rules` stage が `GameplayBlockStateWorld` の port で状態を読み書きし、port が無い構成では結果が `PortUnavailable` になる。階段の配置はクリックした面と側面上の命中高さを使う。小麦とジャガイモは速度レベルから成長確率を求め、ネザーウォートは random tick ごとに固定 10% で成長する。木の生成と植生の拡散は型付きの `Unsupported` を返す |
+| `requestBoneMeal` | **契約** | 相関 ID 付きの骨粉 use を enqueue する。この item use 経路は `GameplayBlockStateWorld` ではなく `blockStateWorldPortForChunkStore` で状態を読むので、作物に対しては item を消費する前に型付きの `stateUnsupported`（chunk 未ロード等なら `stateUnavailable`）を返す |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
 ### stages/gameplay-owner-registrations.ts
@@ -309,7 +310,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `fishingSession` | 進行中の釣り cast | 要らない。ロッドと釣果の inventory 反映は host が所有し、ここには次フレームまでの純粋な相互作用状態だけを置く |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 | `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
-| `pendingBlockStateRules` / `blockStateRuleResults` | Correlated block-state rule requests and results | No. These are frame queues; block state belongs to the persisted world. |
+| `pendingBlockStateRules` / `blockStateRuleResults` | 相関 ID 付きのブロック状態規則の受信箱 / 結果送信箱 | 要らない。フレーム間の受け渡しであり、ブロック状態はホストが保存するワールドにある |
 | `portalCandidates` / `portalTravels` | 宛先次元別の既知ポータル snapshot / 成立した移動の送信箱 | 要らない。ポータル台帳と生成済み世界はホストが保存し、ここにはフレーム間の受け渡しだけを置く |
 
 受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんは消えた** ——
@@ -366,7 +367,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `GAMEPLAY_STAGE_IDS` | **契約** | Nine gameplay stage ids, including `blockStateRules`, which runs after `interactions`. The optional brewing stage id is listed next. |
+| `GAMEPLAY_STAGE_IDS` | **契約** | 所有する基本 stage 9 本の id。`blockStateRules` は `interactions` の後に走る。追加の brewing stage id は次行 |
 | `BREWING_ADVANCE_STAGE_ID` | **契約** | `makeGameplayStages` が `interactions` の後に登録する coordinator-backed stage id |
 | `UPSTREAM_STAGE_IDS` | 内部(可視) | 自分が名指しする他人の stage。レビュー対象として 1 箇所に集めてある |
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` | 内部(可視) | 兄弟宛エッジ検査用。テストの資産 |
@@ -563,7 +564,7 @@ legacy overload の `BreakOutcome` は `BlockWriteOutcome` と同じく全域で
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `resolveBlockUse` / `isSuccessfulBlockUse` / `BlockUseOutcome` | **契約** | Purely resolves a block read to `ToggleLever`, `ToggleDoor`, `NotLever`, `ChunkNotLoaded` or `OutOfWorld`. Door state changes are handled by the registered block-state rules stage. |
+| `resolveBlockUse` / `isSuccessfulBlockUse` / `BlockUseOutcome` | **契約** | 読み取り結果を `ToggleLever` / `ToggleDoor` / `NotLever` / `ChunkNotLoaded` / `OutOfWorld` にする純粋規則。ブロックもレバー状態も変更しない。ドアの開閉は登録済みの `gameplay:block-state-rules` stage が行う |
 
 ホストは `drainBlockUseResults` の成功結果を受けて、自身が所有するレバーの `active` を反転する。
 その後、その状態を含む `RedstoneWorldSnapshot` を `mx-redstone` の
@@ -574,9 +575,9 @@ legacy overload の `BreakOutcome` は `BlockWriteOutcome` と同じく全域で
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `BlockStateWorldPort` / `BlockStateRuleRequest` / `BlockStateRuleResult` | 内部(可視) | Minimal state-aware read/write port and correlated requests/results. `BlockId`, `BlockPosition` and `BlockStateValues` come from mc-kernel. |
-| `blockStateWorldPortForChunkStore` | 内部(可視) | Adapts the current mc-worldgen store. Resident-cell state reads and all state writes return typed `Unsupported`; residency and world-bound errors remain typed. |
-| `applyBlockStateRule` / `cropGrowthProbability` / `cropAgeAfterRandomTick` / `cropAgeAfterBoneMeal` / `doorOpenAfterToggle` / `doorPlacementState` / `stairPlacementState` / `saplingStageAfterGrowthAttempt` / `saplingStageAfterBoneMeal` | 内部(可視) | Pure state transitions and port-driven rules for doors, stairs, crops, saplings and bone meal. Tree placement and vegetation spread return typed `Unsupported` outcomes. |
+| `BlockStateWorldPort` / `BlockStateRuleRequest` / `BlockStateRuleResult` | 内部(可視) | ブロック状態を読み書きする最小の port と、相関付きの要求・結果。`BlockId`、`BlockPosition`、`BlockStateValues` は mc-kernel の語彙を使う |
+| `blockStateWorldPortForChunkStore` | 内部(可視) | mc-worldgen の `ChunkStoreApi` を port に見せる adapter。常駐セルの状態読み取りとすべての状態書き込みは型付きの `Unsupported` を返し、未ロードとワールド外は型付きのまま返す。本番の stage 構成は `GameplayBlockStateWorld` を使い、この adapter を使うのは骨粉の item use 経路だけである |
+| `applyBlockStateRule` / `cropGrowthProbability` / `cropAgeAfterRandomTick` / `cropAgeAfterBoneMeal` / `doorOpenAfterToggle` / `doorPlacementState` / `stairPlacementState` / `saplingStageAfterGrowthAttempt` / `saplingStageAfterBoneMeal` | 内部(可視) | ドア・階段・作物・苗木・骨粉の純粋な状態遷移と、port を通して適用する規則。木の生成と植生の拡散は型付きの `Unsupported` を返す |
 
 ### domain/block-vocabulary.ts
 
