@@ -8,7 +8,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import { Result, Schema } from 'effect'
-import { WorldRevisionSchema, enchantmentsComponent, itemComponents } from '@nerima-games/mc-kernel'
+import { StackCount, WorldRevisionSchema, enchantmentsComponent, itemComponents } from '@nerima-games/mc-kernel'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   emptyEquipment,
@@ -329,5 +329,28 @@ describe('deathDropsFromPlayerStorage', () => {
       }),
       { numRuns: 100, seed: 70403 },
     )
+  })
+})
+
+describe('appendPlayerDeathDropSpawns', () => {
+  it('fails the whole batch when a later drop has a negative pickup-eligibility frame', () => {
+    const valid = { item: 'stick', count: StackCount(1), at } as const
+    const negativeFrame = { item: 'stick', count: StackCount(1), at, eligibleFromFrame: -1 } as const
+    // Pickup eligibility is a frame number, so the rule is a non-negative integer.
+    const expected = Schema.decodeUnknownResult(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))(-1)
+    if (Result.isSuccess(expected)) throw new Error('-1 must violate the non-negative frame rule.')
+
+    const appended = appendPlayerDeathDropSpawns(
+      { items: [] },
+      [valid, negativeFrame],
+      Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+    )
+
+    expect(Result.isFailure(appended)).toBe(true)
+    if (Result.isSuccess(appended)) return
+    const failure = appended.failure
+    expect(Schema.isSchemaError(failure)).toBe(true)
+    if (!Schema.isSchemaError(failure)) return
+    expect(failure.message).toBe(expected.failure.message)
   })
 })
