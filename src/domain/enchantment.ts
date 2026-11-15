@@ -279,9 +279,9 @@ export type EnchantmentOffer = {
 }
 
 const normalizeSeed = (seed: number): number =>
-  Number.isFinite(seed) ? Math.trunc(seed) >>> 0 : 0
+  Math.trunc(seed) >>> 0
 const normalizeBookshelves = (bookshelves: number): number =>
-  Number.isFinite(bookshelves) ? Math.min(15, Math.max(0, Math.floor(bookshelves))) : 0
+  Math.min(15, Math.max(0, Math.floor(bookshelves)))
 
 const mixSeed = (value: number): number => {
   let mixed = value >>> 0
@@ -290,10 +290,35 @@ const mixSeed = (value: number): number => {
   return (mixed ^ (mixed >>> 15)) >>> 0
 }
 
-export const rerollEnchantmentSeed = (seed: number): number =>
-  mixSeed(normalizeSeed(seed) + 0x9e3779b9)
+export type EnchantmentOfferFailure = Readonly<{
+  _tag: 'InvalidEnchantmentOfferInput'
+  field: 'seed' | 'bookshelfCount' | 'slot'
+}>
+
+export const rerollEnchantmentSeed = (
+  seed: unknown,
+): Result.Result<number, EnchantmentOfferFailure> => typeof seed === 'number' && Number.isFinite(seed)
+  ? Result.succeed(mixSeed(normalizeSeed(seed) + 0x9e3779b9))
+  : Result.fail({ _tag: 'InvalidEnchantmentOfferInput', field: 'seed' })
 
 export const enchantmentOffer = (
+  seed: unknown,
+  bookshelfCount: unknown,
+  slot: EnchantmentTableSlot,
+): Result.Result<EnchantmentOffer, EnchantmentOfferFailure> => {
+  if (typeof seed !== 'number' || !Number.isFinite(seed)) {
+    return Result.fail({ _tag: 'InvalidEnchantmentOfferInput', field: 'seed' })
+  }
+  if (typeof bookshelfCount !== 'number' || !Number.isFinite(bookshelfCount)) {
+    return Result.fail({ _tag: 'InvalidEnchantmentOfferInput', field: 'bookshelfCount' })
+  }
+  if (slot !== 0 && slot !== 1 && slot !== 2) {
+    return Result.fail({ _tag: 'InvalidEnchantmentOfferInput', field: 'slot' })
+  }
+  return Result.succeed(offerForValidInput(seed, bookshelfCount, slot))
+}
+
+const offerForValidInput = (
   seed: number,
   bookshelfCount: number,
   slot: EnchantmentTableSlot,
@@ -324,13 +349,15 @@ export const enchantmentOffer = (
 }
 
 export const enchantmentOffers = (
-  seed: number,
-  bookshelfCount: number,
-): readonly [EnchantmentOffer, EnchantmentOffer, EnchantmentOffer] => [
-  enchantmentOffer(seed, bookshelfCount, 0),
-  enchantmentOffer(seed, bookshelfCount, 1),
-  enchantmentOffer(seed, bookshelfCount, 2),
-]
+  seed: unknown,
+  bookshelfCount: unknown,
+): Result.Result<readonly [EnchantmentOffer, EnchantmentOffer, EnchantmentOffer], EnchantmentOfferFailure> => {
+  return Result.all([
+    enchantmentOffer(seed, bookshelfCount, 0),
+    enchantmentOffer(seed, bookshelfCount, 1),
+    enchantmentOffer(seed, bookshelfCount, 2),
+  ] as const)
+}
 
 const enchantmentTableRandomForSeed = (seed: number): EnchantmentTableRandom => {
   let state = normalizeSeed(seed)
@@ -356,12 +383,15 @@ export const generateEnchantmentTableOffersForItem = (
   item: EnchantmentTableItem,
   seed: RandomSeedValue,
   bookshelfCount: EnchantmentBookshelfCount,
-): Result.Result<EnchantmentTableOffers, EnchantmentTableError> =>
-  generateEnchantmentTableOffersWithSim({
+): Result.Result<EnchantmentTableOffers, EnchantmentTableError | Brand.BrandError> => {
+  const validSeed = RandomSeed.result(seed)
+  if (Result.isFailure(validSeed)) return Result.fail(validSeed.failure)
+  return generateEnchantmentTableOffersWithSim({
     item,
     bookshelfCount,
-    random: enchantmentTableRandomForSeed(seed),
+    random: enchantmentTableRandomForSeed(validSeed.success),
   })
+}
 
 export const enchantmentTableResultItemOf = (item: EnchantmentTableItem): ItemType =>
   simEnchantmentTableOutputItemOf(item)
@@ -447,6 +477,8 @@ export const applyEnchantmentOffer = (
   const offer = decodedOffer.success
   if (state.item === null) return rejectTransaction(state, 'no_item')
   if (
+    !Number.isFinite(state.seed) ||
+    !Number.isFinite(state.bookshelfCount) ||
     !Number.isSafeInteger(state.playerLevel) ||
     state.playerLevel < 0 ||
     !Number.isSafeInteger(state.lapis) ||
@@ -454,6 +486,7 @@ export const applyEnchantmentOffer = (
   ) {
     return rejectTransaction(state, 'invalid_state')
   }
+  const rerolledSeed = mixSeed(normalizeSeed(state.seed) + 0x9e3779b9)
   const itemSnapshot = snapshotEnchantedItem(state.item)
   if (!itemSnapshot.ok) return rejectTransaction(state, 'invalid_item')
   let offeredEnchantments: ReadonlyArray<Enchantment>
@@ -477,7 +510,7 @@ export const applyEnchantmentOffer = (
     offeredEnchantments = offer.enchantments
     requiredPlayerLevel = Math.max(offer.levelCost, offer.lapisCost)
   } else {
-    const expected = enchantmentOffer(state.seed, state.bookshelfCount, offer.slot)
+    const expected = offerForValidInput(state.seed, state.bookshelfCount, offer.slot)
     if (!legacyOffersMatch(offer, expected)) return rejectTransaction(state, 'invalid_offer')
     offeredEnchantments = [offer.enchantment]
     requiredPlayerLevel = offer.requiredPlayerLevel
@@ -510,7 +543,7 @@ export const applyEnchantmentOffer = (
   return {
     ok: true,
     state: {
-      seed: rerollEnchantmentSeed(state.seed),
+      seed: rerolledSeed,
       bookshelfCount: normalizeBookshelves(state.bookshelfCount),
       playerLevel: state.playerLevel - offer.lapisCost,
       lapis: state.lapis - offer.lapisCost,

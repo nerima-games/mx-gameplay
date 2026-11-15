@@ -2,18 +2,24 @@
 
 ## 1. ホスト連携で中心となるのは stage 登録である
 
-**ホスト連携の中心となる契約は `StageRegistration` の配列で、状態サービスは公開しない。**
+**ホスト連携の中心は stage 登録であり、ゲーム状態を問い合わせるサービスは公開しない。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
 「今インベントリに何が入っているか」「あの Mob はどこにいるか」「今何時か」— 全部**状態への問い合わせ**であり、
 状態は `mc-sim` か `mc-worldgen` にある。`mx-gameplay` に聞くべきことは残らない。
 
-`mc-compose` が消費するのは `makeGameplayStages` ただ 1 つである。
+`mc-compose` は `makeGameplayStages` を登録する。
 
 ```typescript
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
+
+stage が記録した異常は `GameplayFrameState.entityStageFaults` に保持し、`drainGameplayEntityStageFaults(state)` で `EntityStageFault` の配列として取り出す。
+回収するホストは `makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId })` で作った state を保持し、同じ state と既存のサービス、commit を `gameplayStages(state, …, commit)` に渡す。
+標準の `makeGameplayStages` と `gameplayModule` は state を内部で生成し、その handle を公開しない。
+`WorldDataFailure` は source、operation、座標、型付きの理由ごとに一度だけ記録し、drain 後も重複除去の履歴を保持する。
+item-use の失敗は、対応する結果の型付き union からも参照できる。
 
 `index.ts` はほかの要素も export する。`makeProjectileRuntime` は、mc-sim の `ProjectileServiceApi` を使う gameplay の呼び出し側に、`launch` と `step` だけを型付きで提供する。projectile の状態、物理計算、commit、event は mc-sim が所有する。この adapter は domain 間の連携向けに見える export で、ホスト連携の契約には含めない。ほかの export の分類は §5 に記す。
 
@@ -47,70 +53,44 @@ kernel の `ClockPort` を再掲すると**同じ文字列 ID を持つ別の `C
 
 ### 2-1. `GameModule` を実装した（`gameplayModule`）
 
-ここには長らく「`GameModule` はまだ実装していない。`RIn` は mc-sim の公開 API が存在するまで
-名前を付けられないから」と書いてあった。**診断は半分間違っていて、間違っていた側が重要だった。**
-
-Layer は障害ではなかった。mx-gameplay は他リポジトリが呼ぶサービスを 1 つも公開しない
+Layer は障害ではなかった。mx-gameplay はゲーム状態を所有するサービスを公開しない
 （ルールはサービスではない。他リポジトリが本リポジトリに尋ねたくなることは実際には状態への問いであり、
-状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。だから `layers` は空であり、最初から空だった。
+状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。stage の fault は登録時に作る
+`GameplayFrameState` に保持するため、`gameplayModule.layers` は `Layer.empty` である。
 
 本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
 `Ref` から組み立てられるので、`ReadonlyArray` 型のフィールドに入れる方法が無かった。
 mc-sim が publish されても解決しない。縦切りスパイクが `frameStages` を Effect にしたことで解決した。
 
 ```typescript
-export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>
+export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never,
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus>
 
-export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
+export const gameplayModule: GameModule<never, never, never,
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus> = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
 }
 ```
 
-### 2-2. `RRegister` は `ChunkStore | EntityManager | InventoryService` になった。`RIn` は `never` のままである
+### 2-2. `RRegister` は登録時の依存を表す。`RIn` は `never` である
 
-ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
-— つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
-stage がブロックを読み書きするようになったので、**登録**するのに mc-worldgen の `ChunkStore` が要る。
-stage が Mob を反復するようになったので、mc-sim の `EntityManager` も要る。
-そして stage が**採掘したアイテムを預ける**ようになったので、mc-sim の `InventoryService` も要る ——
-plan.md §2.3-1 の実例そのものであり、この 3 本目が入るまでは `Ref` で止まっていた。
-
-**3 本目は mc-compose が予告していたものでもある。** あちらの `docs/e2e-triage.md` §4.3 は
-「mx-gameplay は**登録時に**`InventoryService` を acquire するしかない。すると `registerModule` の
-`RRegister` に `InventoryService` が乗る」と書いており、そのとおりになった。
-そこに残る問い —— 「mx-gameplay が書き mx-ui が読む 1 つのインスタンスを、
-mc-sim を import できない mc-compose がどう構築するのか」 —— は**こちらでは解けない**。
-このリポジトリが答えられるのは「要求する」ところまでで、誰が discharge するかはホストの問題である。
-
-2 つのパラメータの違いがここで初めて観測できる。
+`makeGameplayStages` は登録時に `ChunkStore`、`EntityManager`、`TimeService`、
+`WorldCommitCoordinator`、`DomainEventBus` を取得する。
+fault の記録と回収は同じ `GameplayFrameState` を使い、登録時の環境型に fault 用サービスを追加しない。
 
 | | 値 | 意味 |
 | --- | --- | --- |
-| `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
-| `RRegister` | `ChunkStore \| EntityManager \| InventoryService` | 本リポジトリが stage を**登録**するのに要るもの |
-
-本リポジトリは他リポジトリが供給しなければならないものを構築するのではなく、
-他リポジトリが供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
+| `RIn` | `never` | `Layer.empty` の構築に外部サービスは要らない |
+| `RRegister` | `ChunkStore \| EntityManager \| TimeService \| WorldCommitCoordinator \| DomainEventBus` | 本リポジトリが stage を**登録**するのに要るもの |
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから 3 つとも登録時に 1 度だけ取得し、4 stage が共有する。
-固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
-`acquires exactly three services to register — the store, the roster and the inventory`
-（`test/stage-registration.test.ts`）。この最後のテストは長く「exactly **two**」だったうえに、
-「3 本目の候補は mc-sim の `InventoryService` であり、丸ごと写せるようになるまでは送信箱で代用する」と
-**コメントで名指ししていた**。その予告も履行された。次の候補は `PlayerService` で、
-そちらは丸ごと写せない —— `cameraPose` が `ClockPort` を要求し、`ClockPort` をローカルに書き直すのは
-`domain/frame-contract.ts` の言う「狭い型より遥かに悪い失敗」だからである。
+（階層モデル、plan.md §2.2 が禁じている）。各依存は登録時に一度取得し、stage が共有する。
 
-`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
-`EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
-どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
-消費者には見える —— `api-lock.md` の "Supporting declarations" に
-`ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
-`InventoryService` / `InventoryServiceApi` などが載っているのはそのためである。
-タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
+`ChunkStore`、`EntityManager`、`WorldCommitCoordinator`、`DomainEventBus` の語彙はそれぞれの所有元から使う。
+`EntityStageFault` と `drainGameplayEntityStageFaults` は本パッケージの API である。
+API lock は export と supporting declaration の両方を追跡する。
 
 ### 2-3. `simModule` に型引数を生やすべきか —— **生やすべきでない**
 
@@ -155,7 +135,7 @@ const world = Layer.merge(
 )
 ```
 
-`MobBehaviour` は `HostileMobSnapshot | CreeperFuse | PrimedTnt | EndermanFlinch | EcosystemMobState | DroppedItemBehaviour | undefined` の union である（`domain/entities/mob-frame.ts`）。mc-sim 側の変更なしに gameplay 固有の behaviour を加えられるのは、`EntityManager` の behaviour が型パラメータ `S` だからである。
+`MobBehaviour` は `HostileMobSnapshot | MobBehaviourRepairFault | CreeperFuse | PrimedTnt | EndermanFlinch | EcosystemMobState | DroppedItemBehaviour | undefined` の union である（`domain/entities/mob-frame.ts`）。mc-sim 側の変更なしに gameplay 固有の behaviour を加えられるのは、`EntityManager` の behaviour が型パラメータ `S` だからである。
 `repairMobBehaviour` は mc-sim のロード経路が委譲してくる
 `BehaviourRepair` で、mc-sim が「知らないと決めた型」を検査できる唯一の場所である。
 **この 2 つを `index.ts` から export しているのは、他のすべての export とは違う理由による**
@@ -166,7 +146,7 @@ const world = Layer.merge(
 mc-sim の `EntityManager` 契約にも同じ制約がある。
 
 **mx-gameplay 側で `simModule` の型引数が要らなかった証拠**は `RRegister` にある:
-`ChunkStore | EntityManager | InventoryService` に `S` は現れない。ホストがどう具体化しても、
+`ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus` に `S` は現れない。ホストがどう具体化しても、
 本リポジトリが宣言する要求は 1 つのままである（テスト
 `the roster requirement carries no behaviour parameter`）。
 
@@ -255,8 +235,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 **契約** = ホストが import してよいもの。**内部(可視)** = root export から参照できるが、ホスト連携の契約ではないもの。テスト、プレビュー、domain 間連携向けの export もここに含む。
 
-`index.ts` は `export *` を **84 本**並べているので、内部(可視) も外から見える。
-（この数は長く「6 本」と書かれたまま古くなっていた。数え直したものである。）
+`index.ts` から見える export の分類を下表に示す。内部(可視) も外から参照できる。
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
 > **`domain/frame-contract.ts` と `domain/position-key.ts` は re-export していない。**
@@ -284,10 +263,15 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
-| `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
+| `makeGameplayStages` | **契約** | stage 登録時に `ChunkStore`、`EntityManager`、`TimeService`、`WorldCommitCoordinator`、`DomainEventBus` を要求する（§2-2） |
+| `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` は `Layer.empty` |
+| `EntityStageFault` / `drainGameplayEntityStageFaults` | **契約** | `GameplayFrameState.entityStageFaults` に記録した fault を回収する。`WorldDataFailure` は source、operation、位置、型付きの理由で重複を除き、drain 後も同じ記録を繰り返さない |
+| `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` | **契約** | world fault の理由の pure 型。`BlockStateCodecFailure`、`LightQueueUnderflowError`、`UnregisteredBlockId`、`MissingBlockReadResult` の情報を保持する |
+| `GameplayStageItemUseWorldFailure` | **契約** | `WorldDataFailed` のみ。理由は `GameplayStageBlockTypeDecodeFailure` または `GameplayStageMissingBlockReadFailure` |
+| `gameplayStages(state, store, entities, inventory, player, time, …, commit)` | **契約（state handle の保持用途）** | ホストが保持する state と既存サービス、commit から stage を構築する。fault を回収するホストは同じ state を drain に渡す。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
+| `makeGameplayFrameStateForOwner` | **契約（state handle の生成用途）** | `{ coordinator, vitalsOwnerId }` から state を作る。ホストはこの handle を stage 構築と fault 回収に保持する |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キューと、採掘進捗、盾の構え、前回被弾した tick、被ダメージ量を持つ。一時状態でありセーブ対象ではない |
+| `GameplayFrameState` | **契約（handle 型のみ）** | stage 構築と fault 回収に渡す handle。内部は一時状態でありセーブ対象ではない。文書化された受信箱以外の内部Refへの直接書き込みは契約に含めない |
 | `requestShieldBlocking` | 内部(可視) | `SetShieldBlocking` を次の entities tick に積む。盾の装備状態と構え時間は stage が検証する |
 | `setPortalCandidates` | **契約** | ホストが宛先次元ごとの既知ポータル snapshot を渡す。未設定の次元は空候補として扱い、新規ポータル設計になる |
 | `drainPortalTravels` | **契約** | 成立した移動を FIFO で 1 回だけ取り出す。2 回目の drain は空になる |
@@ -295,13 +279,19 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `requestBlockMining` / `BlockMiningAttempt` / `getMiningProgressFraction` | **契約** | block を掘り続ける間、ホストは各 simulation frame で位置・次元・選択スロットを送る。呼び出しが無い frame で進捗は解除される。stage はスロットのツールと Efficiency、状態効果の採掘倍率を読み、バニラの 1/20 秒 tick 境界で破壊する。progress fraction は HUD に使える |
-| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union |
+| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union。相関付き配置結果は `WorldDataFailed` を、farming item-use 結果は `GameplayStageItemUseWorldFailure` を返す。旧 `requestBlockPlacement` は相関結果を作らず、fault を同じ `entityStageFaults` に記録する |
 | `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。cast 時の Lure・Luck of the Sea と open water の判定は `GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID` の owner に cast と同じ commit で記録し、reel や cancel の commit で消す。記録の無い進行中 cast は、要求の `toolLocation` にあるロッドと浮きの周囲 5x4x5 のブロックから復元する。復元できない要求は stage fault を記録して処理しない。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
 | `requestEnchantmentTableOffers` / `requestEnchantmentTableApply` / `drainEnchantmentTableResults` と各 request/result `Schema` | **契約** | 相関 ID 付きで offers を要求し、選択した offer の適用結果を受け取る。要求には台の位置を含み、本棚数は含まない。mx-gameplay は stage request と offer session を管理し、mc-sim の `EnchantmentTableService` が選択した offer を inventory・vitals へ原子的に適用する。現行 pin にはワールドから本棚を数える API と offer 生成 service がないため、暫定的に 0 棚で offers を生成し、結果を `OffersGeneratedWithoutBookshelfCount` として返す。mc-sim #69 の公開後は service がワールドから本棚数を取得して offers を生成する。offers 要求時または適用時に要求位置のブロックがエンチャントテーブルでなければ、結果は `table-missing` の `Rejected` になる |
 | `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、非レバーなら通常の配置へフォールバックする |
 | `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
+
+### stages/gameplay-owner-registrations.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `GAMEPLAY_*_OWNER_ID` / owner snapshot schemas / `gameplayOwnerRegistrations` / `GAMEPLAY_OWNER_REGISTRATIONS` | 内部(可視) | gameplay の entity owner IDs、snapshot schemas、registration builder と一覧を定義する |
 
 下表は**全部ではなく、判定の型が違う Ref**を挙げている —— 残りは同じ型
 （受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
@@ -349,17 +339,16 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `isNight` | 内部(可視) | `timeOfDay < 0.25` または `timeOfDay > 0.75`。**mc-sim の `isNight` と 1 文字違わず同一** |
-| `dayPhase` | 内部(可視) | `'night'` / `'dawn'` / `'day'` / `'dusk'` のいずれかを返す。`isNight` と構成的に矛盾しない |
-| `hostileSpawnsAllowed` | 内部(可視) | `isNight` の名前付き別名。敵対 Mob スポーンの粗いゲート |
-| `DAWN_FRACTION` / `NOON_FRACTION` / `DUSK_FRACTION` | 内部(可視) | 0.25 / 0.5 / 0.75 |
+| `isNight` | 内部(可視) | `Result.Result<boolean, DayNightInputFailure>`。正規化した時刻が 0.55 以上 0.95 以下なら成功値は true。mc-sim の夜判定とは独立したスポーン用の窓 |
+| `dayPhase` | 内部(可視) | `Result.Result<DayPhase, DayNightInputFailure>`。成功値は `'night'` / `'dawn'` / `'day'` / `'dusk'` で、`isNight` と矛盾しない |
+| `hostileSpawnsAllowed` | 内部(可視) | `isNight` の名前付き別名で、同じ `Result` 型を返す。敵対 Mob スポーンの粗いゲート |
+| `DAWN_FRACTION` / `NOON_FRACTION` / `DUSK_FRACTION` | 内部(可視) | 0.95 / 0.25 / 0.55 |
 | `TWILIGHT_BAND` | 内部(可視) | 0.05。**演出上の区別であり、スポーン判定には使わない** |
 | `DayPhase` | 内部(可視) | 型 |
 
-すべて **1 日の位置（`[0, 1)` の分数）だけを引数に取る全域関数**である。
+これらの関数は時刻の数値を受け取り、有限値を 1 日の位相へ正規化する。非有限値は `DayNightInputFailure` を返す。
 `Ref` も、既定の日長も、順序制約も持たない。だから `mc-sim` と同期する必要がない。
-`timeOfDay` の規約（**0 が真夜中**、0.25 が夜明け、0.5 が正午、0.75 が日没）は
-mc-sim が所有する値の規約であり、[mc-sim の public-api.md](https://github.com/nerima-games/mc-sim/blob/main/docs/public-api.md) §2 に書いてある。
+`timeOfDay` は mc-sim が所有する 1 日の分数であり、[mc-sim の public-api.md](https://github.com/nerima-games/mc-sim/blob/main/docs/public-api.md) §2 に書いてある。
 
 これが名詞/動詞ルール（plan.md §2.3-1）の具体例である。
 「今何時か」は名詞で mc-sim にあり、「その時刻に世界が何をするか」は動詞でここにある。
@@ -406,9 +395,9 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `resolveEnvironmentalContactDamage` | 内部(可視) | 解決済み kernel `contactDamage` を受ける純粋ルール。接触開始時は即時、その後は絶対 simulation elapsed time の 0.5 秒 cadence で最大 1 件を返す |
+| `resolveEnvironmentalContactDamage` | 内部(可視) | `Result.Result<EnvironmentalContactDamageStep, EnvironmentalContactDamageFailure>`。接触開始時は即時、その後は絶対 simulation elapsed time の 0.5 秒 cadence で成功値に最大 1 件のダメージを返す |
 | `EnvironmentalContact` / `EnvironmentalContactBlock` | 内部(可視) | `lava` / `cactus` の接触セルと解決済みダメージ値。複数セルは最大値 1 件に集約し、同値は `lava` を選ぶ |
-| `EnvironmentalContactDamageState` / `EnvironmentalContactDamageStep` | 内部(可視) | 状態は最後に発火した絶対時刻だけ。非接触・不正時刻で reset し、巻き戻しは新しい接触 cycle として即時発火する |
+| `EnvironmentalContactDamageState` / `EnvironmentalContactDamageStep` | 内部(可視) | 状態は最後に発火した絶対時刻だけ。非接触で reset し、不正時刻は `EnvironmentalContactDamageFailure` を返す。有限な時刻の巻き戻しは新しい接触 cycle として即時発火する |
 | `ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS` / `INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE` | 内部(可視) | 0.5 / 初期状態 |
 
 ### domain/mob/creeper-fuse.ts（**Mob AI。状態は持たない**）
@@ -435,8 +424,8 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `explosionDamageAt` | 内部(可視) | **`Damage` を返す。素の数値を返すオーバーロードは無い**（DN-GP-3） |
-| `explosionDamageAmount` / `explosionRadius` | 内部(可視) | 参照実装 `explosion-resolution.ts:4,17-23` の逐語移植。半径 = `power * 2` |
+| `explosionDamageAt` | 内部(可視) | `Result.Result<Damage, ExplosionInputFailure>` を返す。成功値はダメージ量と cause を持つ（DN-GP-3） |
+| `explosionDamageAmount` / `explosionRadius` | 内部(可視) | `Result.Result<number, ExplosionInputFailure>`。成功値はダメージ量または半径で、半径は `power * 2` |
 | `Explosion` / `ExplosionSource` / `CREEPER_EXPLOSION_POWER` | 内部(可視) | 3。`Explosion` は**座標を持たない**（座標は mc-sim の事実で、ホストが既に持っている） |
 
 **爆発は 2 つの半径を持つ。** ダメージは `power * 2` = 6 ブロック、クレーターは `floor(power)` = 3 ブロック。
@@ -447,8 +436,8 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `canHostileSpawnAt` | 内部(可視) | 候補セル 1 つに答える全域関数。`Spawn` か `Refused{reason}` |
-| `SpawnCandidate` / `SpawnVerdict` / `SpawnRefusal` | 内部(可視) | 理由は**語**で返る。「全部拒否する」と「全部**同じ理由で**拒否する」は別のバグで、後者だけが見つけられる |
+| `canHostileSpawnAt` | 内部(可視) | 候補セルに `SpawnVerdict \| HostileSpawnInputFailure` を返す。通常の判定は `Spawn` または `Refused{reason}`、不正入力は型付きの失敗 |
+| `SpawnCandidate` / `SpawnVerdict` / `SpawnRefusal` / `HostileSpawnInputFailure` | 内部(可視) | 候補、通常の判定と拒否理由、不正入力の失敗型を分けて扱う |
 | `HOSTILE_SPAWN_MAX_BLOCK_LIGHT` | 内部(可視) | 7。判定は**厳密に大なり**（光度 7 はスポーンする） |
 | `MIN_SPAWN_DISTANCE_BLOCKS` / `MAX_SPAWN_DISTANCE_BLOCKS` | 内部(可視) | 16 / 40。**両端とも含む**（参照実装の比較子が非対称で、オラクルだけがそれを言う） |
 
@@ -525,17 +514,13 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `despawnVerdict` | 内部(可視) | `Keep` か `Despawn{reason}`。**判定順は参照実装のもの**で、有限性検査が persistent 免除より**先**に走る |
-| `DespawnCandidate` / `DespawnVerdict` / `DespawnReason` | 内部(可視) | `persistent` は**旗**であって Mob 名ではない（参照実装は `type === 'Villager'` と書いている） |
+| `despawnVerdict` | 内部(可視) | `Result.Result<DespawnVerdict, DespawnVerdictFailure>`。成功値は `Keep` または `Despawn{reason}`。不正入力の検査は persistent 免除より先に走る |
+| `DespawnCandidate` / `DespawnVerdict` / `DespawnReason` / `DespawnVerdictFailure` | 内部(可視) | `persistent` は Mob 名ではなく免除の旗。成功時の理由は `too-far`、`peaceful`、`natural` |
 | `DESPAWN_DISTANCE_BLOCKS` | 内部(可視) | 128。**3D**で測る（スポーン帯は XZ のみ）。比較は厳密に大なりで、128 ちょうどは残る |
 
-**スポーン規則と掃除規則は逆向きに倒れ、それが 1 つの設計である。** 測れない候補を `hostile-spawn` は
-`Refused` と答え、測れない Mob をこちらは `Despawn` と答える。**どちらも Mob を減らす**ので、
-壊れた測定値が個体数を増やす理由になることは無い。
+不正な距離や年齢、乱数値は `DespawnVerdictFailure` になる。距離の値が明示的に undefined なら `Keep` であり、`unmeasurable` という despawn 理由は返さない。
 
-**時間による despawn は無い。** vanilla は距離と時間の両方で消すが、参照実装は距離だけで、
-エンティティに年齢が無い。docs/porting.md §4 に従って**足していない** —— 年齢は mc-sim の名簿の欄であり、
-ランダム despawn のロールは引数で渡してもらうものだからである（アリーナの missing 一覧に行き先つきで載っている）。
+年齢と乱数値は呼び出し元が渡す。persistent、named、tamed の免除がなく、距離が 32 ブロックより大きく 128 以下、年齢が 600 tick より大きく、ロールが `1 / 800` 未満なら `natural` で despawn する。128 ブロックを超える場合は `too-far` になり、年齢とロールを省略した場合はランダム判定をしない。Peaceful は免除より先に判定する。
 
 ### domain/falling-block.ts
 
@@ -561,13 +546,13 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 outbox を空にする破壊的な読み出しで、同一プロセス内では **at-most-once** である。
 永続化や配送確認を含む end-to-end の exactly-once 境界ではない。
 
-### domain/interactions/break-block.ts（**バレルから re-export しない**）
+### domain/interactions/break-block.ts
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `breakBlock` / `BreakOutcome` | 非公開 | 1 ルール 1 ファイル（DN-GP-9）の 1 本目。`setBlock` を 1 回呼ぶだけで、**read-then-write をしない** — 掘れたブロックは書き込みの戻り値 `previous` から来る |
+| `breakBlock` / `BreakOutcome` / `planBreakBlock` / `BreakTransactionResult` | 内部(可視) | 旧 overload は `setBlock` の戻り値から結果を作る。transaction overload は WCC で cascade と owner state を同じ revision から計画する |
 
-`BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
+legacy overload の `BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
 アイテムを生まず、チャンクを汚さず、落下ブロックの仕事も作らない。
 固定しているテスト: `` REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work ``。
 
@@ -628,17 +613,18 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 | --- | --- | --- |
 | `PositionKey` | 非公開 | **プレースホルダ。** 座標語彙は kernel の所有物なので、意図的に brand していない。`frame-contract.ts` と同じ理由でバレルには載せない |
 
-### domain/entities/mob-frame.ts（**接合部。`domain/mob/` は 1 行も変わっていない**）
+### domain/entities/mob-frame.ts（**接合部**）
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
 | `MobBehaviour` | **契約** | mc-sim の `S` を gameplay の entity behaviour union で具体化する型。ホストは `EntityManagerLayer` の型引数に使うため名前で import する（§2-3） |
-| `repairMobBehaviour` | **契約** | mc-sim の `BehaviourRepair`。ロード経路が委譲する。kind ごとに shape を検査し、形の合わない behaviour を置き換える（§2-3） |
+| `repairMobBehaviour` | **契約** | mc-sim の `BehaviourRepair`。ロード経路が委譲する。kind ごとの shape を検査し、省略された旧フィールドだけを明示的な移行で補う。不正な保存値は `MobBehaviourRepairFault` で表す（§2-3） |
+| `MobBehaviourRepairFault` / `isMobBehaviourRepairFault` | **契約** | `repairMobBehaviour` が返す型付き fault と、その判定関数 |
 | `EndermanFlinch` / `STEADY_ENDERMAN` / `STRUCK_ENDERMAN` | 内部(可視) | 「直前に殴られたか」だけを持つ 2 タグの union。フィールドが無いので save が壊せる数値も無い。`resolveBlasts` が立て、次の `sweepMobs` が**決定に関わらず消費する**（殴打は 1 フレームのもの） |
 | `CREEPER_KIND` / `ENDERMAN_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする場所。mob spawn search が `MobSpawnAttempt.kind` を通して hostile kind を選び、上限は hostile kind の roster 全体に適用する。host からの `spawn` も利用できる |
 | `CREEPER_MAX_HEALTH` / `MAX_HOSTILE_COUNT` | 内部(可視) | kind ごとの定数はルール層のもの（mc-sim §7-6）。`MAX_HOSTILE_COUNT` は `hostile-spawn.ts` が「mc-sim と一緒に到着する」と書いていた数 |
 | `ENDERMAN_TELEPORT_ROLLS` | 内部(可視) | テレポート 1 回が引くロール数（16 試行 × 2）。**当たった試行数ではなく固定の予算を引く**ので、種の進み方は「テレポートしたか」だけに依存する |
-| `MobSweep` | 内部(可視) | `sweepMobs` の戻り値。`{ blasts, seed }` ——エンダーマンがロールを引くので、種は sweep を**通り抜ける** |
+| `MobSweep` | 内部(可視) | `sweepMobs` の戻り値。`{ blasts, attacks, teleports, faults, seed }` を持ち、個体ごとのルール失敗を `faults` で返す |
 | `sweepMobs` / `resolveBlasts` / `applySpawnAttempts` | 内部(可視) | 1 フレーム＝ 2 sweep（ルールと爆風）＋ 候補ごとの spawn。ルールの選択は **behaviour のタグ**、その保証は **kind** ——両方要る。ルールの無い Mob は**共有された 1 個の `EntityStep`** を受け取る |
 | `rollCasualtyDrops` / `rollSelfDestructDrops` / `rollDropsOfKind` / `dropRulesOfKind` / `dropRollsNeeded` | 内部(可視) | ドロップ表は kind → ルールの表。自爆が何も落とさないのは**ルールに訊いた結果**であって stage の仮定ではない |
 | `distanceBetween` / `cellOf` | 内部(可視) | 測定。`Position`（連続）から `BlockPosition`（セル）へは `Math.floor` であって `Math.round` ではない |
@@ -653,7 +639,7 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 | --- | --- | --- |
 | `DroppedItemSpawn` | **契約** | `{ item, count, at, durability?, eligibleFromFrame?, customName?, enchantments? }`。原因を限定しない地面アイテム生成要求。採掘 overflow は次フレームを指定し、未指定の Mob death は従来どおり即時取得できる |
 | `spawnDroppedItem` / `spawnDroppedItems` | **契約** | `DROPPED_ITEM_KIND` の entity を指定座標へ生成する汎用入口。複数版は入力順を保つ |
-| `spawnMobDrop` / `spawnMobDrops` | **互換契約** | 既存の Mob drop 用 API。汎用入口へ委譲し、従来の署名と挙動を保つ |
+| `spawnMobDrop` / `spawnMobDrops` | **互換契約** | Mob drop の要求を汎用入口へ委譲する。戻り値は単数が `Effect<Entity<MobBehaviour>, DroppedItemSpawnError>`、複数が `Effect<ReadonlyArray<Entity<MobBehaviour>>, DroppedItemSpawnError>`。参照する `MobBehaviour` と失敗 union は本 PR で拡張されている |
 | `pickupDroppedItems` / `DROPPED_ITEM_PICKUP_RADIUS` | **契約** | 範囲内かつ取得可能フレームに達した entity を inventory へ 1 回だけ渡す。`currentFrame` 未指定は従来どおり即時取得し、全量受理なら despawn、部分受理なら拒否された count だけを同じ entity に残す |
 | `DroppedItemOwnerSnapshot` / `DroppedItemPickupRequest` / `DroppedItemPickupCommitIncomplete` / `DroppedItemPickup` / `DroppedItemPickupResult` と各 `Schema` | 内部(可視) | owner snapshot、pickup request、commit 結果を検査する |
 | `droppedItemOwnerRegistration` / `droppedItemPickupOwnerRegistrations` / `pickupDroppedItemsCommitted` | 内部(可視) | dropped-item と player storage の候補を `WorldCommitCoordinator` の 1 回の commit で確定する。受理数は commit 後の dropped-item state から求める |

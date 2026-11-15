@@ -36,8 +36,15 @@ const WATER = Option.getOrThrow(blockIdOf('water'))
 
 const worldWith = (entries: ReadonlyArray<readonly [BlockPosition, BlockId]>): WorldContents => {
   const blocks = new Map(entries.map(([cell, block]) => [cellKey(cell), block] as const))
-  const loaded = [...new Set(entries.map(([cell]) => chunkKey(chunkOf(cell))))]
-  return { blocks, loaded }
+  const loaded = new Set<string>()
+  for (const [cell] of entries) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dz = -1; dz <= 1; dz += 1) {
+        loaded.add(chunkKey(chunkOf(blockPosition(cell.x + dx, cell.y, cell.z + dz))))
+      }
+    }
+  }
+  return { blocks, loaded: [...loaded] }
 }
 
 const vehicleVelocity = (x: number, y: number, z: number): Vehicle['velocity'] => ({

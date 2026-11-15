@@ -14,6 +14,7 @@ export {
   type BlockPlacementRequestId,
   type BlockPlacementMode,
   type BlockPlacementCommand,
+  type BlockPlacementCommandFailure,
   type BlockPlacementCommandOutcome,
   type BlockPlacementResult,
   type BlockUseRequestId,
@@ -49,6 +50,8 @@ export {
   EnderPearlOutcomeSchema,
   makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
+  type EntityStageFault,
+  drainGameplayEntityStageFaults,
   requestCollectBrewingBottle,
   type CollectBrewingBottleRequest,
   CollectBrewingBottleRequestSchema,
@@ -67,6 +70,7 @@ export {
   requestTargetedBlockBreak,
   requestBlockPlacement,
   requestBlockPlacementCommand,
+  validateBlockPlacementCommand,
   drainBlockPlacementResults,
   requestBlockUse,
   drainBlockUseResults,
@@ -142,7 +146,6 @@ export {
   requestTargetedPotatoPlanting,
   type GameplayStageOptions,
 } from './registration-core.js'
-
 import {
   makeGameplayFrameStateForOwner,
 } from './registration-core.js'
@@ -151,6 +154,12 @@ import { WorldCommitCoordinator } from '@nerima-games/mc-sim'
 import type { DomainEventBus } from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
+export type {
+  GameplayStageBlockTypeDecodeFailure,
+  GameplayStageMissingBlockReadFailure,
+  GameplayStageItemUseWorldFailure,
+  GameplayStageWorldFaultReason,
+} from './gameplay-stage-faults.js'
 import { makeGameplayStagesWithState } from './gameplay-stage-composition.js'
 export { gameplayStages } from './gameplay-stages.js'
 export {

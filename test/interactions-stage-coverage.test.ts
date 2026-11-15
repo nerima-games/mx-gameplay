@@ -495,7 +495,7 @@ describe('production interactions-stage coverage', () => {
           entry._tag === 'Failed' && entry.operation === 'OwnerSnapshot' && entry.subject === 'Mining',
         )
         expect(failure?._tag).toBe('Failed')
-        expect(failure?.error._tag).toBe('ReplicatedOwnerUnknown')
+        expect(failure?.error).toMatchObject({ _tag: 'ReplicatedOwnerUnknown' })
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),
   )
@@ -641,7 +641,7 @@ describe('production interactions-stage coverage', () => {
           entry._tag === 'Failed' && entry.operation === 'CandidateBuild' && entry.subject === 'Vitals',
         )
         expect(failure?._tag).toBe('Failed')
-        expect(failure?.error._tag).toBe('BrandError')
+        expect(failure?.error).toMatchObject({ _tag: 'BrandError' })
         expect(yield* Ref.get(state.pendingStatusEffects)).toStrictEqual([application])
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),

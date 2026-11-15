@@ -16,10 +16,10 @@ import {
   HostileAttackPreparationSchema,
   prepareHostileAttack,
   prepareShieldBlocking,
-  pursueHorizontally,
+  pursueHorizontally as pursueHorizontallyResult,
   resolveDamageWithInvulnerability,
   resolveHostileContacts,
-  resolvePlayerBlastDamage,
+  resolvePlayerBlastDamage as resolvePlayerBlastDamageResult,
   scaleHostileDamageForDifficulty,
   SHIELD_BLOCKING_DELAY_TICKS,
   SHIELD_DURABILITY_DAMAGE_THRESHOLD,
@@ -29,6 +29,22 @@ import {
   ZOMBIE_LOCOMOTION,
   type HostileLocomotion,
 } from '../src/domain/mob/hostile-combat'
+
+const pursueHorizontally = (
+  from: Parameters<typeof pursueHorizontallyResult>[0],
+  target: Parameters<typeof pursueHorizontallyResult>[1],
+  dt: Parameters<typeof pursueHorizontallyResult>[2],
+  locomotion: Parameters<typeof pursueHorizontallyResult>[3],
+) => Result.getOrThrow(pursueHorizontallyResult(from, target, dt, locomotion))
+const resolvePlayerBlastDamage = (
+  blasts: Parameters<typeof resolvePlayerBlastDamageResult>[0],
+  target: Parameters<typeof resolvePlayerBlastDamageResult>[1],
+  ...difficultyInput: [] | [NonNullable<Parameters<typeof resolvePlayerBlastDamageResult>[2]>]
+) => Result.getOrThrow(
+  difficultyInput.length === 0
+    ? resolvePlayerBlastDamageResult(blasts, target)
+    : resolvePlayerBlastDamageResult(blasts, target, difficultyInput[0]),
+)
 
 const SHIELD_FIXTURE = {
   source: 'https://minecraft.wiki/w/Shield',
@@ -66,13 +82,27 @@ describe('hostile locomotion', () => {
     })
   })
 
-  it('does not move without a target, with a non-finite dt, or with a non-positive dt', () => {
+  it('does not move without a target or at zero dt, and rejects invalid elapsed time', () => {
     const from = atPosition(5, 10, 5 )
     const target = atPosition(20, 10, 5 )
     expect(pursueHorizontally(from, undefined, 1, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
-    expect(pursueHorizontally(from, target, Number.NaN, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
     expect(pursueHorizontally(from, target, 0, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
-    expect(pursueHorizontally(from, target, -1, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
+    expect(Result.isFailure(pursueHorizontallyResult(from, target, Number.NaN, ZOMBIE_LOCOMOTION))).toBe(true)
+    expect(Result.isFailure(pursueHorizontallyResult(from, target, -1, ZOMBIE_LOCOMOTION))).toBe(true)
+    expect(Result.isFailure(pursueHorizontallyResult(from, target, Number.POSITIVE_INFINITY, ZOMBIE_LOCOMOTION))).toBe(true)
+  })
+
+  it('property: only finite non-negative dt produces a movement result', () => {
+    const dtInput = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+    FastCheck.assert(FastCheck.property(dtInput, (dt) => {
+      const result = pursueHorizontallyResult(
+        atPosition(0, 64, 0),
+        atPosition(10, 64, 0),
+        dt,
+        ZOMBIE_LOCOMOTION,
+      )
+      expect(Result.isFailure(result)).toBe(!Number.isFinite(dt) || dt < 0)
+    }))
   })
 
   it('does not move when the locomotion has no speed to spend', () => {
@@ -218,6 +248,18 @@ describe('player damage resolution', () => {
     expect(invalidPrevious).toStrictEqual(Result.fail('invalid-input'))
   })
 
+  it('uses the default difficulty only when the argument is omitted', () => {
+    const result = resolveHostileContacts(
+      [zombie(1)],
+      atPosition(0, 64, 0),
+      simulationTick(10),
+      new Map(),
+      undefined as never,
+    )
+
+    expect(result).toStrictEqual(Result.fail('invalid-input'))
+  })
+
   it('ignores non-zombies and zombies outside the contact range', () => {
     const target = atPosition(0, 64, 0)
     const skeleton = { ...zombie(1), id: EntityId('skeleton:1'), kind: EntityKind('skeleton') }
@@ -344,6 +386,19 @@ describe('player damage resolution', () => {
         undefined,
       ),
     ).toStrictEqual([])
+  })
+
+  it('rejects non-finite target coordinates instead of treating them as zero damage', () => {
+    const blast = {
+      source: EntityId('creeper:4'),
+      kind: EntityKind('creeper'),
+      at: atPosition(0, 64, 0),
+      explosion: { source: 'creeper' as const, power: 3 },
+    }
+    const target = { x: Number.NaN, y: 64, z: 0 } as unknown as ReturnType<typeof atPosition>
+    expect(Result.isFailure(resolvePlayerBlastDamageResult([blast], target))).toBe(true)
+    expect(Result.isFailure(resolvePlayerBlastDamageResult([blast], atPosition(0, 64, 0), 'invalid' as never))).toBe(true)
+    expect(Result.isFailure(resolvePlayerBlastDamageResult([blast], atPosition(0, 64, 0), undefined as never))).toBe(true)
   })
 })
 

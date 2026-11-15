@@ -24,13 +24,10 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   appendPlayerDeathDropSpawns,
-  deathDropsFromPlayerStorage as planDeathDrops,
+  deathDropsFromPlayerStorage,
   DroppedItemOwnerSnapshotSchema,
   type PlayerSlotMetadata,
 } from '../src/domain/entities/dropped-item'
-
-const deathDropsFromPlayerStorage = (...args: Parameters<typeof planDeathDrops>) =>
-  Result.getOrThrow(planDeathDrops(...args))
 
 const makeItemStack = (item: Parameters<typeof itemStack>[0], count: number): ItemStack =>
   Result.getOrThrow(itemStack(item, count))
@@ -51,12 +48,12 @@ const storageWith = (
 
 describe('deathDropsFromPlayerStorage', () => {
   it('is empty for empty inventory and equipment', () => {
-    expect(deathDropsFromPlayerStorage(emptyPlayerStorage(), at)).toStrictEqual([])
+    expect(deathDropsFromPlayerStorage(emptyPlayerStorage(), at)).toStrictEqual(Result.succeed([]))
   })
 
   it('drops one entry per occupied inventory slot, skipping empty ones', () => {
     const slots: Inventory['slots'] = [makeItemStack('gunpowder', 3), undefined, makeItemStack('stick', 1)]
-    const drops = deathDropsFromPlayerStorage(storageWith(slots), at)
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(storageWith(slots), at))
 
     expect(drops).toStrictEqual([
       { item: 'gunpowder', count: 3, at, durability: null },
@@ -68,17 +65,17 @@ describe('deathDropsFromPlayerStorage', () => {
     const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
     const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments }))
     const pickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
-    const result = planDeathDrops(storageWith([pickaxe]), at)
+    const result = deathDropsFromPlayerStorage(storageWith([pickaxe]), at)
 
     expect(Result.isSuccess(result)).toBe(true)
     if (Result.isFailure(result)) return
     expect(result.success[0]?.enchantments).toStrictEqual([{ id: 'mending', level: 1 }])
 
-    const appended = appendPlayerDeathDropSpawns(
+    const appended = Result.getOrThrow(appendPlayerDeathDropSpawns(
       { items: [] },
       result.success,
       Schema.decodeUnknownSync(WorldRevisionSchema)(0),
-    )
+    ))
     expect(Schema.is(DroppedItemOwnerSnapshotSchema)(appended)).toBe(true)
     expect(appended.items[0]?.behaviour.enchantments).toStrictEqual([{ id: 'mending', level: 1 }])
   })
@@ -87,12 +84,12 @@ describe('deathDropsFromPlayerStorage', () => {
     const unsupported = Result.getOrThrow(enchantmentsComponent({ 'minecraft:unknown_enchantment': 1 }))
     const unsupportedComponents = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments: unsupported }))
     const unsupportedPickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components: unsupportedComponents }))
-    expect(Result.isFailure(planDeathDrops(storageWith([unsupportedPickaxe]), at))).toBe(true)
+    expect(Result.isFailure(deathDropsFromPlayerStorage(storageWith([unsupportedPickaxe]), at))).toBe(true)
 
     const overLevel = Result.getOrThrow(enchantmentsComponent({ 'minecraft:sharpness': 6 }))
     const overLevelComponents = Result.getOrThrow(itemComponents('diamond_sword', { enchantments: overLevel }))
     const overLevelSword = Result.getOrThrow(itemStack('diamond_sword', 1, { components: overLevelComponents }))
-    expect(Result.isFailure(planDeathDrops(storageWith([overLevelSword]), at))).toBe(true)
+    expect(Result.isFailure(deathDropsFromPlayerStorage(storageWith([overLevelSword]), at))).toBe(true)
 
     const overLevelHelmetComponents = Result.getOrThrow(itemComponents('iron_helmet', { enchantments: overLevel }))
     const overLevelHelmet = Result.getOrThrow(itemStack('iron_helmet', 1, { components: overLevelHelmetComponents }))
@@ -101,33 +98,34 @@ describe('deathDropsFromPlayerStorage', () => {
       ...emptyPlayerStorage(),
       equipment: equipState(emptyEquipment(), 'head', equippedHelmet),
     }
-    expect(Result.isFailure(planDeathDrops(equipmentStorage, at))).toBe(true)
+    expect(Result.isFailure(deathDropsFromPlayerStorage(equipmentStorage, at))).toBe(true)
   })
 
   it('appends every valid death-drop count without losing or duplicating items', () => {
     FastCheck.assert(FastCheck.property(
       FastCheck.integer({ min: 1, max: 64 }),
       (count) => {
-        const result = planDeathDrops(storageWith([makeItemStack('stick', count)]), at)
+        const result = deathDropsFromPlayerStorage(storageWith([makeItemStack('stick', count)]), at)
         if (Result.isFailure(result)) return false
         const appended = appendPlayerDeathDropSpawns(
           { items: [] },
           result.success,
           Schema.decodeUnknownSync(WorldRevisionSchema)(0),
         )
-        return Schema.is(DroppedItemOwnerSnapshotSchema)(appended) &&
-          appended.items.reduce((sum, item) => sum + item.behaviour.count, 0) === count
+        if (Result.isFailure(appended)) return false
+        return Schema.is(DroppedItemOwnerSnapshotSchema)(appended.success) &&
+          appended.success.items.reduce((sum, item) => sum + item.behaviour.count, 0) === count
       },
     ))
     for (const count of [1, 64]) {
-      const result = planDeathDrops(storageWith([makeItemStack('stick', count)]), at)
+      const result = deathDropsFromPlayerStorage(storageWith([makeItemStack('stick', count)]), at)
       expect(Result.isSuccess(result)).toBe(true)
       if (Result.isFailure(result)) continue
-      expect(appendPlayerDeathDropSpawns(
+      expect(Result.getOrThrow(appendPlayerDeathDropSpawns(
         { items: [] },
         result.success,
         Schema.decodeUnknownSync(WorldRevisionSchema)(0),
-      ).items.reduce((sum, item) => sum + item.behaviour.count, 0)).toBe(count)
+      )).items.reduce((sum, item) => sum + item.behaviour.count, 0)).toBe(count)
     }
   })
 
@@ -149,11 +147,11 @@ describe('deathDropsFromPlayerStorage', () => {
       },
     }
 
-    const drops = deathDropsFromPlayerStorage(
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(
       storageWith(slots, { slot: 'head', item: makeItemStack('iron_helmet', 1) }),
       at,
       metadata,
-    )
+    ))
 
     expect(drops).toStrictEqual([
       { item: 'stick', count: 2, at, durability: null, customName: 'Keepsake' },
@@ -172,16 +170,16 @@ describe('deathDropsFromPlayerStorage', () => {
       },
     }
 
-    const drops = deathDropsFromPlayerStorage(storageWith([makeItemStack('stick', 1)]), at, metadata)
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(storageWith([makeItemStack('stick', 1)]), at, metadata))
 
     expect(drops).toStrictEqual([{ item: 'stick', count: 1, at, durability: null }])
   })
 
   it('drops equipped items, and leaves an empty equipment slot uncounted', () => {
-    const drops = deathDropsFromPlayerStorage(
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(
       storageWith([], { slot: 'head', item: makeItemStack('iron_helmet', 1) }),
       at,
-    )
+    ))
 
     expect(drops).toHaveLength(1)
     expect(drops[0]).toMatchObject({ item: 'iron_helmet', count: 1, at })
@@ -201,7 +199,7 @@ describe('deathDropsFromPlayerStorage', () => {
     equipment = equipState(equipment, 'offhand', equipmentItemOrThrow(makeItemStack('shears', 1)))
     const storage: PlayerStorage = { ...emptyPlayerStorage(), equipment }
 
-    const drops = deathDropsFromPlayerStorage(storage, at)
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(storage, at))
 
     expect(drops.map((drop) => drop.item).sort()).toStrictEqual(
       ['iron_boots', 'iron_chestplate', 'iron_helmet', 'iron_leggings', 'shears'].sort(),
@@ -213,11 +211,15 @@ describe('deathDropsFromPlayerStorage', () => {
     const metadata: PlayerSlotMetadata = {
       customNames: { '0': 'Old Faithful' },
       enchantedItems: {
-        '0': { item: 'wooden_pickaxe', durability: null, enchantments: [{ id: 'unbreaking', level: 1 }] },
+        '0': {
+          item: 'wooden_pickaxe',
+          durability: durabilityForItem('wooden_pickaxe'),
+          enchantments: [{ id: 'unbreaking', level: 1 }],
+        },
       },
     }
 
-    const drops = deathDropsFromPlayerStorage(storageWith(slots), at, metadata)
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(storageWith(slots), at, metadata))
 
     expect(drops[0]).toMatchObject({
       customName: 'Old Faithful',
@@ -230,11 +232,15 @@ describe('deathDropsFromPlayerStorage', () => {
     const metadata: PlayerSlotMetadata = {
       customNames: {},
       enchantedItems: {
-        '0': { item: 'wooden_pickaxe', durability: null, enchantments: [{ id: 'unbreaking', level: 1 }] },
+        '0': {
+          item: 'wooden_pickaxe',
+          durability: durabilityForItem('wooden_pickaxe'),
+          enchantments: [{ id: 'unbreaking', level: 1 }],
+        },
       },
     }
 
-    const drops = deathDropsFromPlayerStorage(storageWith(slots), at, metadata)
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(storageWith(slots), at, metadata))
 
     expect(drops[0]?.enchantments).toBeUndefined()
   })
@@ -246,13 +252,38 @@ describe('deathDropsFromPlayerStorage', () => {
     const metadata: PlayerSlotMetadata = {
       customNames: {},
       enchantedItems: {
-        '0': { item: 'wooden_pickaxe', durability: null, enchantments: [{ id: 'unbreaking', level: 1 }] },
+        '0': {
+          item: 'wooden_pickaxe',
+          durability: durabilityForItem('wooden_pickaxe'),
+          enchantments: [{ id: 'unbreaking', level: 1 }],
+        },
       },
     }
 
-    const drops = deathDropsFromPlayerStorage(storageWith([pickaxe]), at, metadata)
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(storageWith([pickaxe]), at, metadata))
 
     expect(drops[0]?.enchantments).toStrictEqual([{ id: 'mending', level: 1 }])
+  })
+
+  it('returns typed failures for explicit undefined player metadata entries', () => {
+    const slots: Inventory['slots'] = [makeItemStack('stick', 1)]
+    const metadata = {
+      customNames: { '0': undefined },
+      enchantedItems: {},
+    } as unknown as PlayerSlotMetadata
+
+    expect(deathDropsFromPlayerStorage(storageWith(slots), at, metadata)).toStrictEqual(Result.fail({
+      _tag: 'InvalidPlayerSlotMetadata',
+      field: 'customName',
+    }))
+  })
+
+  it('distinguishes an omitted optional metadata argument from explicit undefined', () => {
+    expect(deathDropsFromPlayerStorage(emptyPlayerStorage(), at)).toStrictEqual(Result.succeed([]))
+    expect(deathDropsFromPlayerStorage(emptyPlayerStorage(), at, undefined)).toStrictEqual(Result.fail({
+      _tag: 'InvalidPlayerSlotMetadata',
+      field: 'metadata',
+    }))
   })
 
   it('keys equipment metadata as `equipment:<slot>`, distinct from inventory index keys', () => {
@@ -261,12 +292,42 @@ describe('deathDropsFromPlayerStorage', () => {
       enchantedItems: {},
     }
 
-    const drops = deathDropsFromPlayerStorage(
+    const drops = Result.getOrThrow(deathDropsFromPlayerStorage(
       storageWith([], { slot: 'head', item: makeItemStack('iron_helmet', 1) }),
       at,
       metadata,
-    )
+    ))
 
     expect(drops[0]?.customName).toBe('Old Faithful')
+  })
+
+  it('returns a typed failure when an occupied slot has no durability entry', () => {
+    const stack = makeItemStack('iron_sword', 1)
+    const storage: PlayerStorage = {
+      ...storageWith([stack]),
+      inventoryDurability: [],
+    }
+
+    expect(deathDropsFromPlayerStorage(storage, at)).toStrictEqual(Result.fail({
+      _tag: 'InvalidInventoryDurability',
+      slotIndex: 0,
+      item: stack.item,
+    }))
+  })
+
+  it('returns typed outcomes for arbitrary inventory durability prefixes', () => {
+    const stack = makeItemStack('iron_sword', 1)
+    const base = storageWith([stack])
+
+    FastCheck.assert(
+      FastCheck.property(FastCheck.array(FastCheck.constant(null)), (inventoryDurability) => {
+        const storage: PlayerStorage = { ...base, inventoryDurability }
+        const result = deathDropsFromPlayerStorage(storage, at)
+        return inventoryDurability.length === 0
+          ? Result.isFailure(result) && result.failure._tag === 'InvalidInventoryDurability'
+          : Result.isSuccess(result) && result.success.length === 1
+      }),
+      { numRuns: 100, seed: 70403 },
+    )
   })
 })

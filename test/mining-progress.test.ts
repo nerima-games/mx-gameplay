@@ -13,7 +13,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
-import { blockLoot } from '../src/domain/interactions/block-loot'
+import { blockLoot as resolveBlockLoot } from '../src/domain/interactions/block-loot'
 import { MiningSpeedMultiplierSchema, type MiningSpeedMultiplier } from '../src/domain/status-effect.js'
 import { type requestBlockBreak } from '../src/stages/registration'
 import {
@@ -50,6 +50,7 @@ const miningSpeedMultiplier = (value: number): MiningSpeedMultiplier =>
   Result.getOrThrow(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(value))
 const enchantmentLevel = (value: number) => Result.getOrThrow(EnchantmentLevel.result(value))
 const deltaTimeSecs = (value: number): DeltaTimeSecsValue => Result.getOrThrow(DeltaTimeSecs.result(value))
+const blockLoot = (...args: Parameters<typeof resolveBlockLoot>) => Result.getOrThrow(resolveBlockLoot(...args))
 
 const completedPositionAcceptedByRequestBlockBreak: Parameters<typeof requestBlockBreak>[1] =
   STONE.position

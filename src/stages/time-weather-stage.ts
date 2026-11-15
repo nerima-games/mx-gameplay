@@ -8,6 +8,7 @@ import {
   advanceWeatherGameplay,
   drawRolls,
   rollAt,
+  recordGameplayStageFailure,
   weatherExpires,
 } from './registration-core.js'
 import type {
@@ -47,6 +48,7 @@ export const makeTimeWeatherStage = (context: GameplayStageContext): StageRegist
     run: (dt) =>
       Effect.gen(function* () {
         const current = yield* Ref.get(state.weather)
+        const expired = yield* Effect.fromResult(weatherExpires(current, dt))
         const weatherGameplayInput = yield* Ref.get(state.weatherGameplayInput)
         const weatherGameplayState = yield* Ref.get(state.weatherGameplay)
         const tick = yield* Ref.get(state.tickCount)
@@ -75,24 +77,30 @@ export const makeTimeWeatherStage = (context: GameplayStageContext): StageRegist
         // `weatherExpires` is asked here rather than inside `advanceWeather`
         // because only the caller can decide not to draw; the rule is total
         // either way and ignores the rolls it does not need.
-        const next = weatherExpires(current, dt)
-          ? yield* Ref.modify(state.rollSeed, (seed) => {
-              const batch = drawRolls(seed, WEATHER_TRANSITION_ROLLS)
-              return [
-                advanceWeather(current, dt, {
-                  transition: rollAt(batch, 0),
-                  duration: rollAt(batch, 1),
-                }),
-                batch.seed,
-              ] as const
-            })
-          : advanceWeather(current, dt, LOWEST_WEATHER_ROLLS)
+        if (expired) {
+          const seed = yield* Ref.get(state.rollSeed)
+          const batch = yield* Effect.fromResult(drawRolls(seed, WEATHER_TRANSITION_ROLLS))
+          const transition = yield* Effect.fromResult(rollAt(batch, 0))
+          const duration = yield* Effect.fromResult(rollAt(batch, 1))
+          const nextWeather = yield* Effect.fromResult(advanceWeather(current, dt, { transition, duration }))
+          yield* Ref.set(state.rollSeed, batch.seed)
+          // `set` and not `update`: the outbox is a countdown and its last value
+          // subsumes every earlier one, so a host that drains every other frame
+          // loses nothing. Unlike append-only event outboxes, only the newest
+          // countdown value matters.
+          yield* Ref.set(state.weatherAdvanced, nextWeather)
+          return
+        }
 
-        // `set` and not `update`: the outbox is a countdown and its last value
-        // subsumes every earlier one, so a host that drains every other frame
-        // loses nothing. Unlike append-only event outboxes, only the newest
-        // countdown value matters.
-        yield* Ref.set(state.weatherAdvanced, next)
-      }),
+        // A stretch that has not expired consumes no rolls and does not advance
+        // the frame seed.
+        const nextWeather = yield* Effect.fromResult(advanceWeather(current, dt, LOWEST_WEATHER_ROLLS))
+        yield* Ref.set(state.weatherAdvanced, nextWeather)
+      }).pipe(Effect.catch((error) => recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'WeatherTransition',
+        subject: 'Weather',
+        error,
+      }))),
   }
 }

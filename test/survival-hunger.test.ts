@@ -36,6 +36,7 @@ import {
   makeReplicatedSurvivalHungerRuntime,
   starvationHealthFloor,
   type SurvivalDifficulty,
+  type SurvivalHungerState,
 } from '../src/domain/survival-hunger'
 import {
   ExperienceOrbVitalsOwnerSnapshotSchema,
@@ -104,6 +105,98 @@ const makeReplicatedRuntime = (
   })
 
 describe('survival hunger', () => {
+  it.effect('rejects malformed standalone initial state and difficulty before creating a runtime', () =>
+    Effect.gen(function* () {
+      for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
+        const state = { ...initial('normal'), difficulty } as unknown as SurvivalHungerState
+        expect(yield* Effect.flip(makeSurvivalHungerRuntime(state))).toMatchObject({ _tag: 'SchemaError' })
+      }
+      for (const state of [null, undefined]) {
+        expect(yield* Effect.flip(makeSurvivalHungerRuntime(state as unknown as SurvivalHungerState))).toMatchObject({ _tag: 'SchemaError' })
+      }
+      const defaultRuntime = yield* makeSurvivalHungerRuntime()
+      expect((yield* defaultRuntime.snapshot).difficulty).toBe('normal')
+    }),
+  )
+
+  it.effect('rejects malformed replicated initial difficulty and preserves an omitted default', () =>
+    Effect.gen(function* () {
+      const { coordinator } = yield* makeReplicatedRuntime()
+      for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
+        expect(yield* Effect.flip(makeReplicatedSurvivalHungerRuntime(
+          coordinator,
+          REPLICATED_VITALS_OWNER,
+          difficulty as SurvivalDifficulty,
+        ))).toMatchObject({ _tag: 'SchemaError' })
+      }
+      const runtime = yield* makeReplicatedSurvivalHungerRuntime(coordinator, REPLICATED_VITALS_OWNER)
+      expect((yield* runtime.snapshot).difficulty).toBe('normal')
+    }),
+  )
+
+  for (const kind of ['standalone', 'replicated'] as const) {
+    it.effect(`${kind} queues validated exhaustion amounts before deferred submissions run`, () =>
+      Effect.gen(function* () {
+        const runtime = kind === 'standalone'
+          ? yield* makeSurvivalHungerRuntime(initial('normal'))
+          : (yield* makeReplicatedRuntime()).runtime
+        const sprint = { _tag: 'sprint' as const, distance: 10 }
+        const submission = runtime.submit(sprint)
+        sprint.distance = Number.NaN
+        yield* submission
+        yield* runtime.submit({ _tag: 'attack', count: 5 })
+        expect(yield* Effect.flip(runtime.submit({ _tag: 'sprint', distance: Number.NaN }))).toStrictEqual({
+          _tag: 'SurvivalActivityInputFailure', field: 'distance',
+        })
+
+        expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(1.5)
+        expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
+      }),
+    )
+
+    it.effect(`${kind} rejects invalid difficulty updates and restores without changing state or pending activity`, () =>
+      Effect.gen(function* () {
+        for (const difficulty of [null, undefined, 'unknown', 'constructor']) {
+          const runtime = kind === 'standalone'
+            ? yield* makeSurvivalHungerRuntime(initial('normal'))
+            : (yield* makeReplicatedRuntime()).runtime
+          const before = yield* runtime.snapshot
+          yield* runtime.submit({ _tag: 'sprint', distance: 10 })
+
+          expect(yield* Effect.flip(runtime.setDifficulty(difficulty as SurvivalDifficulty))).toMatchObject({ _tag: 'SchemaError' })
+          expect(yield* runtime.snapshot).toStrictEqual(before)
+          const invalidState = {
+            ...initial('easy', { hungerPoints: HungerPoints(1) }),
+            difficulty,
+          } as unknown as SurvivalHungerState
+          expect(yield* Effect.flip(runtime.restore(invalidState))).toMatchObject({ _tag: 'SchemaError' })
+          expect(yield* runtime.snapshot).toStrictEqual(before)
+
+          const outcome = yield* runtime.tick(DeltaTimeSecs(0))
+          expect(outcome.difficulty).toBe('normal')
+          expect(outcome.exhaustionAdded).toBe(1)
+        }
+      }),
+    )
+
+    it.effect(`${kind} accepts difficulty updates and clears pending activity on a valid restore`, () =>
+      Effect.gen(function* () {
+        const runtime = kind === 'standalone'
+          ? yield* makeSurvivalHungerRuntime(initial('normal'))
+          : (yield* makeReplicatedRuntime()).runtime
+        yield* runtime.setDifficulty('hard')
+        expect((yield* runtime.snapshot).difficulty).toBe('hard')
+        yield* runtime.submit({ _tag: 'sprint', distance: 10 })
+        const restored = initial('easy', { hungerPoints: HungerPoints(10) })
+        yield* runtime.restore(restored)
+        expect(yield* runtime.snapshot).toStrictEqual(restored)
+        const outcome = yield* runtime.tick(DeltaTimeSecs(0))
+        expect(outcome.difficulty).toBe('easy')
+        expect(outcome.exhaustionAdded).toBe(0)
+      }),
+    )
+  }
+
   it('allows sprinting only above six hunger points', () => {
     expect(canSprintAtHungerPoints(6)).toStrictEqual(Result.succeed(false))
     expect(canSprintAtHungerPoints(7)).toStrictEqual(Result.succeed(true))
@@ -137,15 +230,57 @@ describe('survival hunger', () => {
   })
 
   it('maps player activity to deterministic exhaustion and rejects invalid magnitudes', () => {
-    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toBe(0)
-    expect(exhaustionForSurvivalActivity({ _tag: 'sprint', distance: 10 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toBe(0.1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toBe(0.4)
-    expect(exhaustionForSurvivalActivity({ _tag: 'swim', distance: 100 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'mine', blocks: 200 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: 10 })).toBe(1)
-    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: -1 })).toBe(0)
-    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: Number.NaN })).toBe(0)
+    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toEqual(Result.succeed(0))
+    expect(exhaustionForSurvivalActivity({ _tag: 'sprint', distance: 10 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toEqual(Result.succeed(0.1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toEqual(Result.succeed(0.4))
+    expect(exhaustionForSurvivalActivity({ _tag: 'swim', distance: 100 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'mine', blocks: 200 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: 10 })).toEqual(Result.succeed(1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: -1 })).toEqual(Result.fail({
+      _tag: 'SurvivalActivityInputFailure', field: 'distance',
+    }))
+    expect(exhaustionForSurvivalActivity({ _tag: 'attack', count: Number.NaN })).toEqual(Result.fail({
+      _tag: 'SurvivalActivityInputFailure', field: 'count',
+    }))
+  })
+
+  it('property: activity decoding never throws and returns only a valid exhaustion or a typed failure', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), (input: unknown) => {
+        const result = exhaustionForSurvivalActivity(input)
+        return Result.isFailure(result)
+          ? result.failure._tag === 'SurvivalActivityInputFailure'
+          : Number.isFinite(result.success) && result.success >= 0
+      }),
+    )
+  })
+
+  it('distinguishes an omitted sprint flag from malformed present flags', () => {
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toStrictEqual(Result.succeed(0.1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: false })).toStrictEqual(Result.succeed(0.1))
+    expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toStrictEqual(Result.succeed(0.4))
+    for (const sprinting of [undefined, null, 'false', 0]) {
+      expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting })).toStrictEqual(Result.fail({
+        _tag: 'SurvivalActivityInputFailure', field: 'activity',
+      }))
+    }
+  })
+
+  it.effect('rejects invalid activity before it enters the pending tick queue', () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeSurvivalHungerRuntime()
+      expect(yield* Effect.flip(runtime.submit({ _tag: 'walk', distance: Number.NaN }))).toEqual({
+        _tag: 'SurvivalActivityInputFailure', field: 'distance',
+      })
+      expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
+    }),
+  )
+
+  it('rejects arbitrary activity values at the helper boundary', () => {
+    for (const input of [null, 'walk', {}, { _tag: 'unknown', distance: 1 }]) {
+      expect(Result.isFailure(exhaustionForSurvivalActivity(input))).toBe(true)
+    }
   })
 
   it.effect('consumes saturation before hunger and applies food recovery', () =>
@@ -560,7 +695,10 @@ describe('survival hunger', () => {
       expect(afterConflict.revision).toBe(1)
       expect(afterConflict.state.vitals).toStrictEqual(SPAWN_PLAYER_VITALS)
 
-      beforeNextCommit = runtime.submit({ _tag: 'walk', distance: 1 })
+      beforeNextCommit = Effect.gen(function* () {
+        const submission = yield* Effect.result(runtime.submit({ _tag: 'walk', distance: 1 }))
+        expect(Result.isSuccess(submission)).toBe(true)
+      })
       const retry = yield* runtime.tick(DeltaTimeSecs(4))
       expect(retry.exhaustionAdded).toBe(1)
       expect((yield* coordinator.snapshot(

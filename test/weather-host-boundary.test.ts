@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Result } from 'effect'
 import {
   applyWeatherState,
   isWeather,
   isWeatherState,
-  type WeatherState,
 } from '../src/domain/weather'
 
 describe('weather host boundary', () => {
@@ -38,20 +38,18 @@ describe('weather host boundary', () => {
   })
 
   it('applies a valid host state as an isolated value', () => {
-    const current: WeatherState = { weather: 'clear', remainingSecs: 20 }
     const hostState = { weather: 'rain' as const, remainingSecs: 600 }
 
-    const applied = applyWeatherState(current, hostState)
+    const applied = applyWeatherState(hostState)
     hostState.remainingSecs = 1
 
-    expect(applied).toStrictEqual({ weather: 'rain', remainingSecs: 600 })
-    expect(applied).not.toBe(hostState)
+    expect(applied).toStrictEqual(Result.succeed({ weather: 'rain', remainingSecs: 600 }))
+    if (Result.isFailure(applied)) return
+    expect(applied.success).not.toBe(hostState)
   })
 
-  it('keeps the current state when the host value is invalid', () => {
-    const current: WeatherState = { weather: 'thunder', remainingSecs: 180 }
-
-    expect(applyWeatherState(current, { weather: 'clear', remainingSecs: 0 })).toBe(current)
-    expect(applyWeatherState(current, { weather: 'snow', remainingSecs: 100 })).toBe(current)
+  it('returns a typed failure for an invalid host value', () => {
+    expect(applyWeatherState({ weather: 'clear', remainingSecs: 0 })).toEqual(Result.fail('invalid-weather-state'))
+    expect(applyWeatherState({ weather: 'snow', remainingSecs: 100 })).toEqual(Result.fail('invalid-weather-state'))
   })
 })

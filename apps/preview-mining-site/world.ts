@@ -73,15 +73,18 @@ import type {
   ChunkBlockChange,
   ChunkBlockEdit,
   ChunkDirtyBatch,
+  ChunkDirtyChunk,
   ChunkDirtySubscription,
   ChunkStoreApi,
   ChunkNeighbours,
   ChunkWritePrepareError,
   ChunkWritePublishError,
   PreparedChunkWrite,
-  Chunk,
+  ChunkWithBlockStates,
   ChunkBiomeType,
+  BlockStateCodecFailure,
 } from '@nerima-games/mc-worldgen'
+import { materializeDefaultBlockStates } from '../../src/domain/block-state-defaults.js'
 
 /**
  * Block ids, transcribed from kernel's `BLOCK_REGISTRY` for this preview's own
@@ -209,8 +212,8 @@ type Inner = {
   readonly blocks: Map<string, BlockId>
   readonly loadedChunks: Set<string>
   readonly chunkRevisions: Map<string, number>
-  readonly chunkViews: Map<string, Chunk>
-  readonly subscribers: Map<number, Set<string>>
+  readonly chunkViews: Map<string, ChunkWithBlockStates>
+  readonly subscribers: Map<number, Map<string, ChunkDirtyChunk>>
   readonly preparedWrites: Map<PreparedChunkWrite, PreparedPreviewWrite>
   readonly publishedWrites: WeakSet<PreparedChunkWrite>
   writeLog: Array<WriteRecord>
@@ -297,22 +300,43 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
       const storeIdentity = {}
 
       const markDirty = (doubles: Inner, position: BlockPosition): void => {
+        const local = localCoordOfBlock(position)
+        const coord = chunkCoordOf(position)
+        const key = chunkKeyOf(position)
+        const next: ChunkDirtyChunk = {
+          ...coord,
+          min: [BlockAxis(local.lx), BlockAxis(local.ly), BlockAxis(local.lz)],
+          max: [BlockAxis(local.lx + 1), BlockAxis(local.ly + 1), BlockAxis(local.lz + 1)],
+        }
         for (const pending of doubles.subscribers.values()) {
-          pending.add(chunkKeyOf(position))
+          const previous = pending.get(key)
+          pending.set(key, previous === undefined ? next : {
+            ...coord,
+            min: [
+              BlockAxis(Math.min(previous.min[0], next.min[0])),
+              BlockAxis(Math.min(previous.min[1], next.min[1])),
+              BlockAxis(Math.min(previous.min[2], next.min[2])),
+            ],
+            max: [
+              BlockAxis(Math.max(previous.max[0], next.max[0])),
+              BlockAxis(Math.max(previous.max[1], next.max[1])),
+              BlockAxis(Math.max(previous.max[2], next.max[2])),
+            ],
+          })
         }
       }
 
-      const updateChunkView = (doubles: Inner, position: BlockPosition, block: BlockId): void => {
-        const chunk = doubles.chunkViews.get(chunkKeyOf(position))
-        if (chunk === undefined) return
-        const local = localCoordOfBlock(position)
-        chunk.blocks[blockIndex(local.lx, BlockAxis(position.y), local.lz)] = Number(block)
+      const invalidateChunkView = (doubles: Inner, position: BlockPosition): void => {
+        doubles.chunkViews.delete(chunkKeyOf(position))
       }
 
-      const chunkView = (doubles: Inner, coord: ChunkCoord): Chunk => {
+      const chunkView = (
+        doubles: Inner,
+        coord: ChunkCoord,
+      ): Result.Result<ChunkWithBlockStates, BlockStateCodecFailure> => {
         const key = `${String(coord.cx)},${String(coord.cz)}`
         const cached = doubles.chunkViews.get(key)
-        if (cached !== undefined) return cached
+        if (cached !== undefined) return Result.succeed(cached)
 
         const blocks = new Uint16Array(CHUNK_HEIGHT * CHUNK_SIDE * CHUNK_SIDE)
         for (const [entry, block] of doubles.blocks) {
@@ -324,31 +348,32 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
           blocks[blockIndex(local.lx, BlockAxis(rawY), local.lz)] = Number(block)
         }
 
-        const chunk: Chunk = {
+        const blockStates = materializeDefaultBlockStates(blocks)
+        if (Result.isFailure(blockStates)) return Result.fail(blockStates.failure)
+
+        const chunk: ChunkWithBlockStates = {
           coord,
           blocks,
+          blockStates: blockStates.success,
           biomes: Array.from({ length: CHUNK_SIDE * CHUNK_SIDE }, () => 'PLAINS' as ChunkBiomeType),
         }
         doubles.chunkViews.set(key, chunk)
-        return chunk
+        return Result.succeed(chunk)
       }
 
       const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (doubles) => {
         const id = doubles.nextSubscriber
-        doubles.subscribers.set(id, new Set())
+        doubles.subscribers.set(id, new Map())
 
         const subscription: ChunkDirtySubscription = {
           id,
           drain: Ref.modify(state, (current) => {
-            const pending = current.subscribers.get(id) ?? new Set<string>()
+            const pending = current.subscribers.get(id) ?? new Map<string, ChunkDirtyChunk>()
             const batch: ChunkDirtyBatch = {
-              changed: [...pending].map((entry) => {
-                const [cx, cz] = entry.split(',')
-                return chunkCoord(ChunkAxis(Number(cx)), ChunkAxis(Number(cz)))
-              }),
+              changed: [...pending.values()],
               removed: [],
             }
-            current.subscribers.set(id, new Set())
+            current.subscribers.set(id, new Map())
             return [batch, current] as const
           }),
           unsubscribe: Ref.update(state, (current) => {
@@ -470,7 +495,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
 
             for (const change of record.changes) {
               doubles.blocks.set(blockKey(change.position), change.next)
-              updateChunkView(doubles, change.position, change.next)
+              invalidateChunkView(doubles, change.position)
               doubles.writes += 1
               doubles.writeLog.push({
                 position: change.position,
@@ -496,11 +521,16 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         publish,
         load: () => notImplemented('load'),
         peek: (coord) =>
-          Ref.modify(state, (doubles): readonly [Chunk | undefined, Inner] => {
-            const key = `${String(coord.cx)},${String(coord.cz)}`
-            if (!doubles.loadedChunks.has(key)) return [undefined, doubles] as const
-            return [chunkView(doubles, coord), doubles] as const
-          }),
+          Effect.flatMap(
+            Ref.modify(state, (doubles): readonly [Result.Result<ChunkWithBlockStates | undefined, BlockStateCodecFailure>, Inner] => {
+              const key = `${String(coord.cx)},${String(coord.cz)}`
+              if (!doubles.loadedChunks.has(key)) return [Result.succeed(undefined), doubles] as const
+              return [Result.map(chunkView(doubles, coord), (chunk) => chunk), doubles] as const
+            }),
+            (result) => Result.isFailure(result)
+              ? Effect.die(result.failure)
+              : Effect.succeed(result.success),
+          ),
         snapshot: () => notImplemented('snapshot'),
         isLoaded: (coord) =>
           Effect.sync(() => inner().loadedChunks.has(`${String(coord.cx)},${String(coord.cz)}`)),
@@ -527,6 +557,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
               doubles,
             ] as const
           }),
+        getBlockWithState: () => notImplemented('getBlockWithState'),
 
         /**
          * SKY EXPOSURE ONLY, and it is a stand-in rather than a light engine.
@@ -596,7 +627,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
             }
 
             doubles.blocks.set(blockKey(position), block)
-            updateChunkView(doubles, position, block)
+            invalidateChunkView(doubles, position)
             const chunkKey = chunkKeyOf(position)
             doubles.chunkRevisions.set(chunkKey, (doubles.chunkRevisions.get(chunkKey) ?? 0) + 1)
             markDirty(doubles, position)
@@ -608,7 +639,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         subscribeDirtyScoped: Effect.acquireRelease(subscribe, (s) => s.unsubscribe),
         reset: Ref.update(state, (doubles) => {
           doubles.blocks.clear()
-          for (const chunk of doubles.chunkViews.values()) chunk.blocks.fill(Number(AIR_BLOCK_ID))
+          doubles.chunkViews.clear()
           for (const [key, revision] of doubles.chunkRevisions) {
             doubles.chunkRevisions.set(key, revision + 1)
           }
@@ -652,7 +683,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
           } else {
             doubles.blocks.set(blockKey(position), block)
           }
-          updateChunkView(doubles, position, block)
+          invalidateChunkView(doubles, position)
         },
       }
     },

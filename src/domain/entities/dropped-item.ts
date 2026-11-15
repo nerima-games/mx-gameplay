@@ -31,6 +31,7 @@ import {
   type Durability,
   type InventoryServiceApi,
   type PlayerStorage,
+  type PlayerStorageFailure,
   type ReplicatedOwnerId,
   type ReplicatedOwnerRegistration,
   type WorldCommitCoordinatorApi,
@@ -49,6 +50,7 @@ import {
 import {
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
+  type DroppedItemBehaviour,
   type MobBehaviour,
   type MobDropEvent,
 } from './mob-frame.js'
@@ -70,7 +72,10 @@ export type PlayerDeathDropSpawn = Omit<DroppedItemSpawn, 'count'> & Readonly<{ 
 export type DroppedItemSpawnError = Extract<
   AddStoredStackResult,
   { readonly _tag: 'InvalidStack' | 'ItemStackFailure' }
-> | EntitySerialExhausted
+> | EntitySerialExhausted | Schema.SchemaError | Readonly<{
+  _tag: 'InvalidDroppedItemSpawnField'
+  field: 'durability' | 'eligibleFromFrame' | 'customName' | 'enchantments'
+}>
 
 const copyDurability = (durability: Durability | null): Durability | null =>
   durability === null ? null : { ...durability }
@@ -79,31 +84,49 @@ export const spawnDroppedItem = (
   roster: EntityManagerApi<MobBehaviour>,
   drop: DroppedItemSpawn,
 ): Effect.Effect<Entity<MobBehaviour>, DroppedItemSpawnError> => {
-  const durability =
-    drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability
+  const details = resolveDroppedItemSpawn(drop)
+  if (Result.isFailure(details)) return Effect.fail(details.failure)
   const count = Result.getOrUndefined(StackCount.result(drop.count))
   if (count === undefined) return Effect.fail({ _tag: 'InvalidStack' })
   const stackItem = Result.getOrUndefined(itemStack(drop.item, count))
   if (stackItem === undefined) return Effect.fail({ _tag: 'InvalidStack' })
-  const stack = { ...stackItem, durability: copyDurability(durability) }
+  const stack = { ...stackItem, durability: copyDurability(details.success.durability) }
   const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
   if (validation._tag !== 'Added') return Effect.fail(validation)
+
+  const behaviour = Schema.decodeUnknownResult(DroppedItemBehaviourSnapshotSchema)({
+    _tag: 'DroppedItem',
+    item: stack.item,
+    count: stack.count,
+    durability: stack.durability,
+    ...(details.success.eligibleFromFrame === undefined
+      ? {}
+      : { eligibleFromFrame: details.success.eligibleFromFrame }),
+    ...(details.success.customName === undefined ? {} : { customName: details.success.customName }),
+    ...(details.success.enchantments === undefined
+      ? {}
+      : { enchantments: details.success.enchantments }),
+  })
+  if (Result.isFailure(behaviour)) return Effect.fail(behaviour.failure)
+  const resolvedBehaviour: DroppedItemBehaviour = {
+    _tag: 'DroppedItem',
+    item: behaviour.success.item,
+    count: behaviour.success.count,
+    durability: behaviour.success.durability,
+    ...(behaviour.success.eligibleFromFrame === undefined
+      ? {}
+      : { eligibleFromFrame: behaviour.success.eligibleFromFrame }),
+    ...(behaviour.success.customName === undefined ? {} : { customName: behaviour.success.customName }),
+    ...(behaviour.success.enchantments === undefined
+      ? {}
+      : { enchantments: behaviour.success.enchantments }),
+  }
 
   return roster.spawn({
     kind: DROPPED_ITEM_KIND,
     feetPosition: drop.at,
     healthPoints: EntityHealthPoints(1),
-    behaviour: {
-      _tag: 'DroppedItem',
-      item: stack.item,
-      count: stack.count,
-      durability: stack.durability,
-      ...(drop.eligibleFromFrame === undefined
-        ? {}
-        : { eligibleFromFrame: drop.eligibleFromFrame }),
-      ...(drop.customName === undefined ? {} : { customName: drop.customName }),
-      ...(drop.enchantments === undefined ? {} : { enchantments: drop.enchantments.map((e) => ({ ...e })) }),
-    },
+    behaviour: resolvedBehaviour,
   })
 }
 
@@ -152,22 +175,40 @@ export const isDroppedItemPickupEligible = (
   eligibleFromFrame: number | undefined,
 ): boolean => eligibleFromFrame === undefined || currentFrame >= eligibleFromFrame
 
-export const pickupDroppedItems = (
+export type DroppedItemPickupRadiusFailure = Readonly<{ _tag: 'InvalidDroppedItemPickupRadius' }>
+
+export function pickupDroppedItems(
   roster: EntityManagerApi<MobBehaviour>,
   inventory: InventoryServiceApi,
   playerPosition: Position | undefined,
-  radius: number = DROPPED_ITEM_PICKUP_RADIUS,
+): Effect.Effect<void, DroppedItemPickupRadiusFailure>
+export function pickupDroppedItems(
+  roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
+  playerPosition: Position | undefined,
+  radius: number,
   currentFrame?: number,
-): Effect.Effect<void> =>
-  pickupLockFor(roster).withPermits(1)(
+): Effect.Effect<void, DroppedItemPickupRadiusFailure>
+export function pickupDroppedItems(
+  roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
+  playerPosition: Position | undefined,
+  radius?: number,
+  currentFrame?: number,
+): Effect.Effect<void, DroppedItemPickupRadiusFailure> {
+  const pickupRadius = arguments.length < 4 ? DROPPED_ITEM_PICKUP_RADIUS : radius
+  return pickupLockFor(roster).withPermits(1)(
     Effect.gen(function* () {
-      if (playerPosition === undefined || !Number.isFinite(radius) || radius < 0) return
+      if (pickupRadius === undefined || !Number.isFinite(pickupRadius) || pickupRadius < 0) {
+        return yield* Effect.fail({ _tag: 'InvalidDroppedItemPickupRadius' } satisfies DroppedItemPickupRadiusFailure)
+      }
+      if (playerPosition === undefined) return yield* Effect.void
 
       const leftovers = new Map<
         string,
         { readonly count: number; readonly durability: Durability | null } | null
       >()
-      const radiusSquared = radius * radius
+      const radiusSquared = pickupRadius * pickupRadius
       for (const entity of yield* roster.entities) {
         if (
           entity.kind !== DROPPED_ITEM_KIND ||
@@ -216,6 +257,7 @@ export const pickupDroppedItems = (
       })
     })
   )
+}
 
 const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
   Schema.declareConstructor<A, I>()([schema], ([inner]) =>
@@ -270,6 +312,13 @@ type DroppedItemSnapshotBehaviour = Readonly<{
   customName?: string | undefined
   enchantments?: ReadonlyArray<Enchantment> | undefined
 }>
+const droppedItemOptionalFieldsAreOmittedOrDefined = (
+  behaviour: DroppedItemSnapshotBehaviour,
+): boolean =>
+  (!Object.hasOwn(behaviour, 'eligibleFromFrame') || behaviour.eligibleFromFrame !== undefined) &&
+  (!Object.hasOwn(behaviour, 'customName') || behaviour.customName !== undefined) &&
+  (!Object.hasOwn(behaviour, 'enchantments') || behaviour.enchantments !== undefined)
+
 const DroppedItemBehaviourSnapshotSchema: Schema.Codec<DroppedItemSnapshotBehaviour, unknown> = strictCodec(
   Schema.Struct({
     _tag: Schema.Literal('DroppedItem'),
@@ -282,8 +331,65 @@ const DroppedItemBehaviourSnapshotSchema: Schema.Codec<DroppedItemSnapshotBehavi
   }),
 ).check(Schema.makeFilter((value) =>
   isDroppedItemBehaviour(value) &&
+  droppedItemOptionalFieldsAreOmittedOrDefined(value) &&
   value.count <= maxStackCountForItem(value.item),
 ))
+
+type ResolvedDroppedItemSpawn = Readonly<{
+  durability: Durability | null
+  eligibleFromFrame?: number
+  customName?: string
+  enchantments?: ReadonlyArray<Enchantment>
+}>
+
+const resolveDroppedItemSpawn = (
+  drop: DroppedItemSpawn,
+): Result.Result<ResolvedDroppedItemSpawn, DroppedItemSpawnError> => {
+  if (Object.hasOwn(drop, 'eligibleFromFrame') && drop.eligibleFromFrame === undefined) {
+    return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'eligibleFromFrame' })
+  }
+  if (Object.hasOwn(drop, 'customName') && drop.customName === undefined) {
+    return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'customName' })
+  }
+  if (Object.hasOwn(drop, 'enchantments') && drop.enchantments === undefined) {
+    return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'enchantments' })
+  }
+
+  const durability = Object.hasOwn(drop, 'durability')
+    ? drop.durability
+    : durabilityForItem(drop.item)
+  if (durability === undefined) {
+    return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'durability' })
+  }
+  const decodedDurability = Schema.decodeUnknownResult(Schema.NullOr(DurabilitySchema))(durability)
+  if (Result.isFailure(decodedDurability)) return Result.fail(decodedDurability.failure)
+
+  if (Object.hasOwn(drop, 'eligibleFromFrame')) {
+    const decoded = Schema.decodeUnknownResult(NonNegativeIntegerSchema)(drop.eligibleFromFrame)
+    if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
+  }
+  if (Object.hasOwn(drop, 'customName')) {
+    const decoded = Schema.decodeUnknownResult(Schema.String)(drop.customName)
+    if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
+  }
+  if (Object.hasOwn(drop, 'enchantments')) {
+    const decoded = Schema.decodeUnknownResult(Schema.Array(DroppedItemEnchantmentSchema))(drop.enchantments)
+    if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
+  }
+
+  return Result.succeed({
+    durability: decodedDurability.success,
+    ...(Object.hasOwn(drop, 'eligibleFromFrame') && drop.eligibleFromFrame !== undefined
+      ? { eligibleFromFrame: drop.eligibleFromFrame }
+      : {}),
+    ...(Object.hasOwn(drop, 'customName') && drop.customName !== undefined
+      ? { customName: drop.customName }
+      : {}),
+    ...(Object.hasOwn(drop, 'enchantments') && drop.enchantments !== undefined
+      ? { enchantments: drop.enchantments.map((enchantment) => ({ ...enchantment })) }
+      : {}),
+  })
+}
 
 type DroppedItemRecord = Readonly<{
   id: Schema.Schema.Type<typeof EntityIdSchema>
@@ -321,40 +427,81 @@ export type DroppedItemPickupOwners = Readonly<{
   droppedItems: ReplicatedOwnerId
 }>
 
-export const droppedItemOwnerRegistration = (
+export type DroppedItemOwnerRegistrationFailure =
+  | Readonly<{ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' }>
+  | Readonly<{ _tag: 'InvalidDroppedItemOwnerInitialState'; error: Schema.SchemaError }>
+
+const makeDroppedItemOwnerRegistration = (
   ownerId: ReplicatedOwnerId,
-  initialState: DroppedItemOwnerSnapshot = { items: [] },
+  initialState: DroppedItemOwnerSnapshot,
 ): ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema> => ({
   ownerId,
   schema: DroppedItemOwnerSnapshotSchema,
   initialState,
 })
 
+export function droppedItemOwnerRegistration(
+  ownerId: ReplicatedOwnerId,
+): ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema>
+export function droppedItemOwnerRegistration(
+  ownerId: ReplicatedOwnerId,
+  initialState: DroppedItemOwnerSnapshot,
+): Result.Result<
+  ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema>,
+  DroppedItemOwnerRegistrationFailure
+>
+export function droppedItemOwnerRegistration(
+  ownerId: ReplicatedOwnerId,
+  initialState?: DroppedItemOwnerSnapshot,
+): ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema> | Result.Result<
+  ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema>,
+  DroppedItemOwnerRegistrationFailure
+> {
+  if (arguments.length < 2) return makeDroppedItemOwnerRegistration(ownerId, { items: [] })
+  if (initialState === undefined) {
+    return Result.fail({ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' })
+  }
+  const decoded = Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)(initialState)
+  if (Result.isFailure(decoded)) {
+    return Result.fail({ _tag: 'InvalidDroppedItemOwnerInitialState', error: decoded.failure })
+  }
+  return Result.succeed(makeDroppedItemOwnerRegistration(ownerId, decoded.success))
+}
+
+type ResolvedDroppedItemRecordSpawn = Readonly<{
+  item: ItemType
+  count: StackCount
+  at: Position
+  details: ResolvedDroppedItemSpawn
+}>
+
 export const appendDroppedItemSpawns = (
   snapshot: DroppedItemOwnerSnapshot,
   drops: ReadonlyArray<DroppedItemSpawn>,
   expectedRevision: WorldRevision,
 ): Result.Result<DroppedItemOwnerSnapshot, Schema.SchemaError | DroppedItemSpawnError> => {
-  const validatedDrops: Array<PlayerDeathDropSpawn> = []
+  const resolvedDrops: Array<ResolvedDroppedItemRecordSpawn> = []
   for (const drop of drops) {
+    const details = resolveDroppedItemSpawn(drop)
+    if (Result.isFailure(details)) return Result.fail(details.failure)
     const requested = StackCount.result(drop.count)
     if (Result.isFailure(requested)) return Result.fail({ _tag: 'InvalidStack' })
-    validatedDrops.push({ ...drop, count: requested.success })
+    resolvedDrops.push({ item: drop.item, count: requested.success, at: drop.at, details: details.success })
   }
-  const items = appendDroppedItemRecords(snapshot, validatedDrops, expectedRevision)
+  const items = appendDroppedItemRecords(snapshot, resolvedDrops, expectedRevision)
   return Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({ items })
 }
 
 const appendDroppedItemRecords = (
   snapshot: DroppedItemOwnerSnapshot,
-  drops: ReadonlyArray<PlayerDeathDropSpawn>,
+  drops: ReadonlyArray<ResolvedDroppedItemRecordSpawn>,
   expectedRevision: WorldRevision,
 ): ReadonlyArray<DroppedItemRecord> => {
   const items = [...snapshot.items]
   const ids = new Set(items.map(({ id }) => id))
   let serial = 0
 
-  for (const drop of drops) {
+  for (const { details, ...drop } of drops) {
     let remaining: number = drop.count
     while (remaining > 0) {
       const count = Math.min(maxStackCountForItem(drop.item), remaining)
@@ -371,16 +518,14 @@ const appendDroppedItemRecords = (
           _tag: 'DroppedItem',
           item: drop.item,
           count: stackCount,
-          durability: copyDurability(
-            drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability,
-          ),
-          ...(drop.eligibleFromFrame === undefined
+          durability: copyDurability(details.durability),
+          ...(details.eligibleFromFrame === undefined
             ? {}
-            : { eligibleFromFrame: drop.eligibleFromFrame }),
-          ...(drop.customName === undefined ? {} : { customName: drop.customName }),
-          ...(drop.enchantments === undefined
+            : { eligibleFromFrame: details.eligibleFromFrame }),
+          ...(details.customName === undefined ? {} : { customName: details.customName }),
+          ...(details.enchantments === undefined
             ? {}
-            : { enchantments: drop.enchantments.map((enchantment) => ({ ...enchantment })) }),
+            : { enchantments: details.enchantments }),
         },
       })
       remaining -= count
@@ -394,21 +539,49 @@ export const appendPlayerDeathDropSpawns = (
   snapshot: DroppedItemOwnerSnapshot,
   drops: ReadonlyArray<PlayerDeathDropSpawn>,
   expectedRevision: WorldRevision,
-): DroppedItemOwnerSnapshot => ({
-  items: appendDroppedItemRecords(snapshot, drops, expectedRevision),
-})
+): Result.Result<DroppedItemOwnerSnapshot, DroppedItemSpawnError> => {
+  const resolvedDrops: Array<ResolvedDroppedItemRecordSpawn> = []
+  for (const drop of drops) {
+    const details = resolveDroppedItemSpawn(drop)
+    if (Result.isFailure(details)) return Result.fail(details.failure)
+    resolvedDrops.push({ item: drop.item, count: drop.count, at: drop.at, details: details.success })
+  }
+  return Result.succeed({ items: appendDroppedItemRecords(snapshot, resolvedDrops, expectedRevision) })
+}
 
-export const droppedItemPickupOwnerRegistrations = (
-  owners: DroppedItemPickupOwners,
-  playerStorage: PlayerStorage,
-  droppedItems: DroppedItemOwnerSnapshot = { items: [] },
-): readonly [
+type DroppedItemPickupOwnerRegistrations = readonly [
   ReplicatedOwnerRegistration<typeof PlayerStorageSnapshotSchema>,
   ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema>,
-] => [
-  playerStorageOwnerRegistration(owners.playerStorage, playerStorage),
-  droppedItemOwnerRegistration(owners.droppedItems, droppedItems),
 ]
+
+export function droppedItemPickupOwnerRegistrations(
+  owners: DroppedItemPickupOwners,
+  playerStorage: PlayerStorage,
+): DroppedItemPickupOwnerRegistrations
+export function droppedItemPickupOwnerRegistrations(
+  owners: DroppedItemPickupOwners,
+  playerStorage: PlayerStorage,
+  droppedItems: DroppedItemOwnerSnapshot,
+): Result.Result<DroppedItemPickupOwnerRegistrations, DroppedItemOwnerRegistrationFailure>
+export function droppedItemPickupOwnerRegistrations(
+  owners: DroppedItemPickupOwners,
+  playerStorage: PlayerStorage,
+  droppedItems?: DroppedItemOwnerSnapshot,
+): DroppedItemPickupOwnerRegistrations | Result.Result<
+  DroppedItemPickupOwnerRegistrations,
+  DroppedItemOwnerRegistrationFailure
+> {
+  const storage = playerStorageOwnerRegistration(owners.playerStorage, playerStorage)
+  if (arguments.length < 3) {
+    return [storage, makeDroppedItemOwnerRegistration(owners.droppedItems, { items: [] })]
+  }
+  if (droppedItems === undefined) {
+    return Result.fail({ _tag: 'ExplicitUndefinedDroppedItemOwnerInitialState' })
+  }
+  const droppedItemsOwner = droppedItemOwnerRegistration(owners.droppedItems, droppedItems)
+  if (Result.isFailure(droppedItemsOwner)) return Result.fail(droppedItemsOwner.failure)
+  return Result.succeed([storage, droppedItemsOwner.success])
+}
 
 const DroppedItemPickupRequestFields: {
   readonly actor: typeof EntityIdSchema
@@ -492,7 +665,27 @@ export type DroppedItemPickupFailure =
   | ItemStackFailure
   | Schema.SchemaError
   | WorldCommitCoordinatorError
+  | DroppedItemPickupRadiusFailure
+  | Readonly<{
+      _tag: 'InvalidDroppedItemPickupField'
+      field: 'position' | 'currentFrame'
+    }>
   | Schema.Schema.Type<typeof DroppedItemPickupCommitIncompleteSchema>
+
+const invalidDroppedItemPickupRequest = (
+  input: DroppedItemPickupRequest,
+): DroppedItemPickupFailure | undefined => {
+  if (Object.hasOwn(input, 'position') && input.position === undefined) {
+    return { _tag: 'InvalidDroppedItemPickupField', field: 'position' }
+  }
+  if (Object.hasOwn(input, 'currentFrame') && input.currentFrame === undefined) {
+    return { _tag: 'InvalidDroppedItemPickupField', field: 'currentFrame' }
+  }
+  if (Object.hasOwn(input, 'radius') && input.radius === undefined) {
+    return { _tag: 'InvalidDroppedItemPickupRadius' }
+  }
+  return undefined
+}
 
 export type PlannedDroppedItemPickup = Readonly<{
   source: Schema.Schema.Type<typeof EntityIdSchema>
@@ -518,6 +711,8 @@ export const planDroppedItemPickup = (
   droppedItems: DroppedItemOwnerSnapshot,
 ): Effect.Effect<DroppedItemPickupPlan, DroppedItemPickupFailure> =>
   Effect.gen(function* () {
+    const invalidInput = invalidDroppedItemPickupRequest(input)
+    if (invalidInput !== undefined) return yield* Effect.fail(invalidInput)
     const request = yield* Schema.decodeUnknownEffect(DroppedItemPickupRequestSchema)(input)
     if (request.position === undefined) {
       const plan = {
@@ -529,7 +724,9 @@ export const planDroppedItemPickup = (
       return { ...plan, result: yield* droppedItemPickupResultAfterCommit(plan, droppedItems) }
     }
 
-    const radius = request.radius ?? DROPPED_ITEM_PICKUP_RADIUS
+    const radius = Object.hasOwn(input, 'radius')
+      ? request.radius!
+      : DROPPED_ITEM_PICKUP_RADIUS
     const radiusSquared = radius * radius
     let storage = playerStorage
     const nextItems: Array<DroppedItemOwnerSnapshot['items'][number]> = []
@@ -602,11 +799,11 @@ export const droppedItemPickupResultAfterCommit = (
     )
     const pickups: Array<DroppedItemPickup> = []
     for (const pickup of plan.planned) {
-      const acceptedCount = pickup.countBefore - (committedCounts.get(pickup.source) ?? 0)
-      const accepted = Result.getOrUndefined(
-        Schema.decodeUnknownResult(DroppedItemStackCountSchema)(acceptedCount),
-      )
-      if (accepted === undefined) continue
+      const committedCount = committedCounts.get(pickup.source)
+      // A missing committed source means the full stack was consumed.
+      const acceptedCount = pickup.countBefore - (committedCount === undefined ? 0 : committedCount)
+      if (acceptedCount === 0) continue
+      const accepted = yield* Schema.decodeUnknownEffect(DroppedItemStackCountSchema)(acceptedCount)
       const event = yield* Schema.decodeUnknownEffect(DomainEventSchema)({
         _tag: 'ItemPickedUp',
         tick: plan.request.tick,
@@ -633,6 +830,8 @@ export const pickupDroppedItemsCommitted = (
   input: DroppedItemPickupRequest,
 ): Effect.Effect<DroppedItemPickupResult, DroppedItemPickupFailure> =>
   Effect.gen(function* () {
+    const invalidInput = invalidDroppedItemPickupRequest(input)
+    if (invalidInput !== undefined) return yield* Effect.fail(invalidInput)
     const request = yield* Schema.decodeUnknownEffect(DroppedItemPickupRequestSchema)(input)
     const playerSnapshot = yield* coordinator.snapshot(
       owners.playerStorage,
@@ -720,13 +919,21 @@ export type DroppedItemLifetimeTracker = {
   readonly restore: (
     dimension: string,
     entries: ReadonlyArray<{ readonly entityId: string; readonly elapsedSecs: number }>,
-  ) => void
+  ) => Result.Result<void, DroppedItemLifetimeFailure>
   readonly advance: (
     dimension: string,
     deltaSecs: number,
     entityIds: ReadonlyArray<string>,
-  ) => ReadonlyArray<string>
+  ) => Result.Result<ReadonlyArray<string>, DroppedItemLifetimeFailure>
 }
+
+export type DroppedItemLifetimeFailure = Readonly<{
+  _tag: 'InvalidDroppedItemLifetimeInput'
+  field: 'lifetimeSecs' | 'elapsedSecs' | 'deltaSecs' | 'entityIds'
+}>
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 /**
  * Per-dimension elapsed-lifetime bookkeeping for dropped items, keyed by entity
@@ -736,40 +943,82 @@ export type DroppedItemLifetimeTracker = {
  * picked up by another path) in the same pass — a fact no per-entity field can
  * express on its own.
  */
-export const createDroppedItemLifetimeTracker = (
-  lifetimeSecs: number = DROPPED_ITEM_LIFETIME_SECS,
-): DroppedItemLifetimeTracker => {
+export function createDroppedItemLifetimeTracker(): DroppedItemLifetimeTracker
+export function createDroppedItemLifetimeTracker(lifetimeSecs: number): Result.Result<
+  DroppedItemLifetimeTracker,
+  DroppedItemLifetimeFailure
+>
+export function createDroppedItemLifetimeTracker(
+  lifetimeSecs?: number,
+): DroppedItemLifetimeTracker | Result.Result<DroppedItemLifetimeTracker, DroppedItemLifetimeFailure> {
+  const suppliedLifetime = arguments.length > 0
+  const resolvedLifetime = suppliedLifetime ? lifetimeSecs : DROPPED_ITEM_LIFETIME_SECS
+  if (
+    resolvedLifetime === undefined ||
+    !Number.isFinite(resolvedLifetime) ||
+    resolvedLifetime < 0
+  ) return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'lifetimeSecs' })
+  const lifetime = resolvedLifetime
+
   const elapsedByDimension = new Map<string, Map<string, number>>()
 
-  return {
-    elapsed: (dimension, entityId) => elapsedByDimension.get(dimension)?.get(entityId) ?? 0,
+  const tracker: DroppedItemLifetimeTracker = {
+    elapsed: (dimension, entityId) => {
+      const elapsedByEntity = elapsedByDimension.get(dimension)
+      if (elapsedByEntity === undefined) return 0
+      const elapsedSecs = elapsedByEntity.get(entityId)
+      return elapsedSecs === undefined ? 0 : elapsedSecs
+    },
     restore: (dimension, entries) => {
-      elapsedByDimension.set(
-        dimension,
-        new Map(entries.map(({ entityId, elapsedSecs }) => [entityId, Math.max(0, elapsedSecs)])),
-      )
+      if (!Array.isArray(entries)) {
+        return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'elapsedSecs' })
+      }
+      const restored = new Map<string, number>()
+      for (const entry of entries) {
+        if (!isRecord(entry)) {
+          return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'elapsedSecs' })
+        }
+        const entityId = entry['entityId']
+        const elapsedSecs = entry['elapsedSecs']
+        if (
+          typeof entityId !== 'string' ||
+          typeof elapsedSecs !== 'number' ||
+          !Number.isFinite(elapsedSecs) ||
+          elapsedSecs < 0
+        ) return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'elapsedSecs' })
+        restored.set(entityId, elapsedSecs)
+      }
+      elapsedByDimension.set(dimension, restored)
+      return Result.succeed(undefined)
     },
     advance: (dimension, deltaSecs, entityIds) => {
-      const elapsedByEntity = elapsedByDimension.get(dimension) ?? new Map<string, number>()
-      elapsedByDimension.set(dimension, elapsedByEntity)
-      const present = new Set(entityIds)
-      for (const entityId of elapsedByEntity.keys()) {
-        if (!present.has(entityId)) elapsedByEntity.delete(entityId)
+      if (!Number.isFinite(deltaSecs) || deltaSecs < 0) {
+        return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'deltaSecs' })
       }
-
+      if (!Array.isArray(entityIds) || entityIds.some((entityId) => typeof entityId !== 'string')) {
+        return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'entityIds' })
+      }
+      const elapsedByEntity = elapsedByDimension.get(dimension)
+      const present = new Set(entityIds)
+      const next = new Map<string, number>()
       const expired: string[] = []
       for (const entityId of present) {
-        const elapsedSecs = (elapsedByEntity.get(entityId) ?? 0) + deltaSecs
-        if (elapsedSecs >= lifetimeSecs) {
-          elapsedByEntity.delete(entityId)
+        const previous = elapsedByEntity?.get(entityId)
+        const elapsedSecs = (previous === undefined ? 0 : previous) + deltaSecs
+        if (!Number.isFinite(elapsedSecs)) {
+          return Result.fail({ _tag: 'InvalidDroppedItemLifetimeInput', field: 'deltaSecs' })
+        }
+        if (elapsedSecs >= lifetime) {
           expired.push(entityId)
         } else {
-          elapsedByEntity.set(entityId, elapsedSecs)
+          next.set(entityId, elapsedSecs)
         }
       }
-      return expired
+      elapsedByDimension.set(dimension, next)
+      return Result.succeed(expired)
     },
   }
+  return suppliedLifetime ? Result.succeed(tracker) : tracker
 }
 
 /**
@@ -789,7 +1038,10 @@ const deathDropMetadataForSlot = (
   stack: ItemStack,
   durability: Durability | null,
   metadata: PlayerSlotMetadata | undefined,
-): Result.Result<Pick<DroppedItemSpawn, 'customName' | 'enchantments'>, Schema.SchemaError> => {
+): Result.Result<
+  Pick<DroppedItemSpawn, 'customName' | 'enchantments'>,
+  DeathDropsFromPlayerStorageFailure | Schema.SchemaError
+> => {
   const componentEnchantments = stack.components.enchantments
   const enchantmentsFromComponents = componentEnchantments === undefined
     ? Result.succeed(undefined)
@@ -817,13 +1069,31 @@ const deathDropMetadataForSlot = (
       ? {}
       : { enchantments: enchantmentsFromComponents.success.map((enchantment) => ({ ...enchantment })) }),
   })
+  if (
+    !isRecord(metadata) ||
+    !isRecord(metadata.customNames) ||
+    !isRecord(metadata.enchantedItems)
+  ) return Result.fail({ _tag: 'InvalidPlayerSlotMetadata', field: 'metadata' })
+
+  const hasCustomName = Object.hasOwn(metadata.customNames, key)
   const customName = metadata.customNames[key]
+  if (hasCustomName && typeof customName !== 'string') {
+    return Result.fail({ _tag: 'InvalidPlayerSlotMetadata', field: 'customName' })
+  }
+  const hasEnchantedItem = Object.hasOwn(metadata.enchantedItems, key)
   const enchantedItem = metadata.enchantedItems[key]
+  if (hasEnchantedItem && enchantedItem === undefined) {
+    return Result.fail({ _tag: 'InvalidPlayerSlotMetadata', field: 'enchantedItem' })
+  }
   // A metadata entry whose `item` no longer matches is stale (the slot was
   // refilled with something else since the entry was recorded) and is
   // dropped rather than attached to the wrong stack.
-  const enchantments = enchantedItem?.item === stack.item
-    ? enchantedItem.enchantments.map((enchantment) => ({ ...enchantment }))
+  const decodedEnchantedItem = hasEnchantedItem ? decodeEnchantedItem(enchantedItem) : undefined
+  if (decodedEnchantedItem !== undefined && !decodedEnchantedItem.ok) {
+    return Result.fail({ _tag: 'InvalidPlayerSlotMetadata', field: 'enchantedItem' })
+  }
+  const enchantments = decodedEnchantedItem?.ok === true && decodedEnchantedItem.value.item === stack.item
+    ? decodedEnchantedItem.value.enchantments.map((enchantment) => ({ ...enchantment }))
     : enchantmentsFromComponents.success?.map((enchantment) => ({ ...enchantment }))
   return Result.succeed({
     ...(customName === undefined ? {} : { customName }),
@@ -848,21 +1118,36 @@ const deathDropHasVanishingCurse = (
  * empty slots contributing nothing. `keepInventory` (whether to call this at
  * all) is the caller's game-rule decision, not this rule's.
  */
-export const deathDropsFromPlayerStorage = (
+export type DeathDropsFromPlayerStorageFailure = Extract<
+  PlayerStorageFailure,
+  { readonly _tag: 'InvalidInventoryDurability' }
+> | Readonly<{
+  _tag: 'InvalidPlayerSlotMetadata'
+  field: 'metadata' | 'customName' | 'enchantedItem'
+}>
+
+export function deathDropsFromPlayerStorage(
   storage: PlayerStorage,
   at: Position,
   metadata?: PlayerSlotMetadata,
-): Result.Result<ReadonlyArray<PlayerDeathDropSpawn>, Schema.SchemaError> => {
+): Result.Result<
+  ReadonlyArray<PlayerDeathDropSpawn>,
+  DeathDropsFromPlayerStorageFailure | Schema.SchemaError
+> {
+  if (arguments.length >= 3 && metadata === undefined) {
+    return Result.fail({ _tag: 'InvalidPlayerSlotMetadata', field: 'metadata' })
+  }
   const drops: Array<PlayerDeathDropSpawn> = []
 
   const appendDrop = (
     key: string,
     stack: ItemStack,
     durability: Durability | null,
-  ): Result.Result<void, Schema.SchemaError> => {
-    if (deathDropHasVanishingCurse(key, stack, metadata)) return Result.succeed(undefined)
+  ): Result.Result<void, DeathDropsFromPlayerStorageFailure | Schema.SchemaError> => {
+    // Validate the slot metadata first so the curse check only reads a decoded entry.
     const itemMetadata = deathDropMetadataForSlot(key, stack, durability, metadata)
     if (Result.isFailure(itemMetadata)) return Result.fail(itemMetadata.failure)
+    if (deathDropHasVanishingCurse(key, stack, metadata)) return Result.succeed(undefined)
     drops.push({
       item: stack.item,
       count: stack.count,
@@ -875,7 +1160,10 @@ export const deathDropsFromPlayerStorage = (
 
   for (const [index, stack] of storage.inventory.slots.entries()) {
     if (stack === undefined) continue
-    const durability = storage.inventoryDurability[index] ?? null
+    const durability = storage.inventoryDurability[index]
+    if (durability === undefined) {
+      return Result.fail({ _tag: 'InvalidInventoryDurability', slotIndex: index, item: stack.item })
+    }
     const result = appendDrop(String(index), stack, durability)
     if (Result.isFailure(result)) return Result.fail(result.failure)
   }

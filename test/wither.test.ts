@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { WITHER_MAX_HEALTH, WITHER_SPAWN_CHARGE_SECS, type BlockCell } from '@nerima-games/mc-sim'
-import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
 import { Result } from 'effect'
 import {
   advanceWitherRuntime as advanceWitherRuntimeResult,
@@ -196,13 +196,15 @@ describe('advanceWitherRuntime', () => {
     expect(isValidWitherRuntimeSnapshot(snapshotWitherRuntime(state))).toBe(true)
   })
 
-  it('treats a non-finite deltaSecs as no time passing', () => {
+  it('rejects invalid deltaSecs instead of treating them as no time passing', () => {
     const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
-    for (const deltaSecs of [Number.NaN, Number.POSITIVE_INFINITY]) {
-      const result = advanceWitherRuntime(summoned, 'overworld', origin, deltaSecs, neverHitsWorld)
-      expect(result.state.withers[0]?.state.chargeRemainingSecs).toBe(WITHER_SPAWN_CHARGE_SECS)
-      expect(result.meleeDamage).toBe(0)
-      expect(result.explosions).toStrictEqual([])
+    for (const deltaSecs of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      const invalidDelta = DeltaTimeSecs.result(deltaSecs)
+      expect(Result.isFailure(invalidDelta)).toBe(true)
+      if (Result.isFailure(invalidDelta)) {
+        expect(advanceWitherRuntimeResult(summoned, 'overworld', origin, deltaSecs, neverHitsWorld))
+          .toEqual(Result.fail(invalidDelta.failure))
+      }
     }
   })
 

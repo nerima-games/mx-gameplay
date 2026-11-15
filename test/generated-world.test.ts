@@ -26,7 +26,12 @@ describe('generated world composition', () => {
       expect((yield* world.player.pose).feetPosition).toStrictEqual({ x: 0.5, y: surfaceY + 1, z: 0.5 })
 
       yield* world.chunkStore.load(chunkCoord(0, 0))
-      expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
+      expect((yield* dirty.drain).changed).toStrictEqual([{
+        cx: 0,
+        cz: 0,
+        min: [0, 0, 0],
+        max: [16, 256, 16],
+      }])
       expect(yield* world.chunkStore.getBlock(blockPosition(0, surfaceY, 0))).toMatchObject({ _tag: 'Block' })
 
       const write = yield* world.chunkStore.setBlock(blockPosition(0, surfaceY, 0), BlockId(0))
@@ -35,7 +40,12 @@ describe('generated world composition', () => {
         _tag: 'Block',
         block: 0,
       })
-      expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
+      expect((yield* dirty.drain).changed).toStrictEqual([{
+        cx: 0,
+        cz: 0,
+        min: [0, Number(surfaceY), 0],
+        max: [1, Number(surfaceY) + 1, 1],
+      }])
     }),
   )
 
@@ -65,12 +75,12 @@ describe('generated world composition', () => {
 
   it.effect('uses kernel passability for generated block collision', () =>
     Effect.gen(function* () {
-      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: 20260728 })
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: NoiseSeed(424242) })
       yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
-      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
+      expect(Result.getOrThrow(isSolid({ x: 0, y: 59, z: 0 }))).toBe(false) // water
+      expect(Result.getOrThrow(isSolid({ x: 0, y: 53, z: 0 }))).toBe(true) // sand
     }),
   )
 
@@ -93,7 +103,7 @@ describe('generated world composition', () => {
       const isSolid = solidityFromStore(world.chunkStore)
 
       // Chunk (0,0) is never loaded in this test, so the read is ChunkNotLoaded.
-      expect(isSolid({ x: 0, y: 64, z: 0 })).toBe(true)
+      expect(Result.getOrThrow(isSolid({ x: 0, y: 64, z: 0 }))).toBe(true)
     }),
   )
 
@@ -103,18 +113,17 @@ describe('generated world composition', () => {
       yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: 0, y: -1, z: 0 })).toBe(true) // below bedrock
-      expect(isSolid({ x: 0, y: CHUNK_HEIGHT, z: 0 })).toBe(true) // above the build limit
+      expect(Result.getOrThrow(isSolid({ x: 0, y: -1, z: 0 }))).toBe(true) // below bedrock
+      expect(Result.getOrThrow(isSolid({ x: 0, y: CHUNK_HEIGHT, z: 0 }))).toBe(true) // above the build limit
     }),
   )
 
   it.effect('adapts peek, snapshot, isLoaded, neighbours, unload and getLight, coordinate-branded', () =>
     Effect.gen(function* () {
       // The other tests in this file only exercise `load`, `getBlock` and
-      // `setBlock` on the adapted store — this is the one that reaches every
-      // other member of the real `ChunkStoreApi`, passed through unchanged by
-      // `adaptGeneratedChunkStore` (only `load`/`unload` are wrapped, for
-      // `Effect.orDie`).
+      // `setBlock` on the generated store — this is the one that reaches every
+      // other member of the real `ChunkStoreApi`. The adapter keeps the typed
+      // load/unload failures unchanged.
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
       const coord = chunkCoord(0, 0)
       const eastCoord = chunkCoord(1, 0)

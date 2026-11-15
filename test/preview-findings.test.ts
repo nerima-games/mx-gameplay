@@ -26,26 +26,51 @@
  * driving this repository's own rules.
  */
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
 import { Effect, Result } from 'effect'
-import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night'
-import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
+import {
+  dayPhase as dayPhaseResult,
+  hostileSpawnsAllowed as hostileSpawnsAllowedResult,
+  isNight as isNightResult,
+} from '../src/domain/day-night'
+import {
+  applyDamage as applyDamageResult,
+  deathMessage as deathMessageResult,
+  fullHealth,
+  isDead,
+} from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
 import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
 
-describe('F5 — non-finite damage is ignored', () => {
-  it.effect('preserves vitals for every non-finite damage amount', () =>
+const splitWithBudget = (
+  frontier: ReadonlyArray<FluidWorkItem>,
+  options: { readonly budget: number; readonly lavaTickActive: boolean },
+) => Result.getOrThrow(splitBudget(frontier, {
+  budget: options.budget,
+  lavaTickActive: options.lavaTickActive,
+}))
+
+const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
+const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
+const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
+const applyDamage = (...args: Parameters<typeof applyDamageResult>) => Result.getOrThrow(applyDamageResult(...args))
+const deathMessage = (...args: Parameters<typeof deathMessageResult>) => Result.getOrThrow(deathMessageResult(...args))
+
+describe('F5 — invalid damage is a typed failure', () => {
+  it.effect('rejects every non-finite damage amount', () =>
     Effect.sync(() => {
       for (const amount of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-        expect(applyDamage(fullHealth, { amount, cause: 'lava' })).toEqual(fullHealth)
+        expect(Result.isFailure(applyDamageResult(fullHealth, { amount, cause: 'lava' }))).toBe(true)
       }
     }),
   )
 
-  it.effect('allows later finite damage to kill after non-finite damage is ignored', () =>
+  it.effect('allows later finite damage after rejecting the invalid application', () =>
     Effect.sync(() => {
-      const unaffected = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
-      const killed = applyDamage(unaffected, { amount: 20, cause: 'explosion' })
+      const rejected = applyDamageResult(fullHealth, { amount: Number.NaN, cause: 'lava' })
+      const killed = applyDamage(fullHealth, { amount: 20, cause: 'explosion' })
 
+      expect(Result.isFailure(rejected)).toBe(true)
       expect(isDead(killed)).toBe(true)
       expect(deathMessage(killed)).toBe('You blew up.')
     }),
@@ -53,13 +78,29 @@ describe('F5 — non-finite damage is ignored', () => {
 
   it.effect('preserves the existing finite negative, zero, and positive boundaries', () =>
     Effect.sync(() => {
-      expect(applyDamage(fullHealth, { amount: -5, cause: 'mob' }).healthPoints).toBe(20)
+      expect(Result.isFailure(applyDamageResult(fullHealth, { amount: -5, cause: 'mob' }))).toBe(true)
       expect(applyDamage(fullHealth, { amount: 0, cause: 'mob' }).healthPoints).toBe(20)
       expect(applyDamage(fullHealth, { amount: 5, cause: 'mob' }).healthPoints).toBe(15)
       expect(applyDamage(fullHealth, { amount: 20, cause: 'mob' })).toEqual({
         healthPoints: 0,
         lastDeathCause: 'mob',
       })
+    }),
+  )
+
+  it.effect('property: arbitrary damage amounts fail when invalid and otherwise return finite vitals', () =>
+    Effect.sync(() => {
+      const amount = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+      FastCheck.assert(FastCheck.property(amount, (candidate) => {
+        const result = applyDamageResult(fullHealth, { amount: candidate, cause: 'lava' })
+        const invalid = !Number.isFinite(candidate) || candidate < 0
+        expect(Result.isFailure(result)).toBe(invalid)
+        if (Result.isSuccess(result)) {
+          expect(Number.isFinite(result.success.healthPoints)).toBe(true)
+          expect(result.success.healthPoints).toBeGreaterThanOrEqual(0)
+          expect(result.success.healthPoints).toBeLessThanOrEqual(20)
+        }
+      }))
     }),
   )
 })
@@ -114,7 +155,7 @@ describe('fluid frontier identity and carry-over contract', () => {
 
   it.effect('identifies work by position and kind so inactive lava survives a water evaluation', () =>
     Effect.sync(() => {
-      const split = splitBudget(interfaceCell, { lavaTickActive: false, budget: 64 })
+      const split = splitWithBudget(interfaceCell, { lavaTickActive: false, budget: 64 })
 
       expect(split.work).toStrictEqual([{ key: '10,64,10', kind: 'water' }])
       expect(carryOver(interfaceCell, split)).toStrictEqual([
@@ -129,7 +170,7 @@ describe('fluid frontier identity and carry-over contract', () => {
         { key: Result.getOrThrow(positionKey('10,64,10')), kind: 'water' },
         { key: Result.getOrThrow(positionKey('11,64,10')), kind: 'lava' },
       ]
-      const split = splitBudget(distinct, { lavaTickActive: false, budget: 64 })
+      const split = splitWithBudget(distinct, { lavaTickActive: false, budget: 64 })
       expect(carryOver(distinct, split)).toStrictEqual([{ key: '11,64,10', kind: 'lava' }])
     }),
   )
@@ -139,7 +180,7 @@ describe('fluid frontier identity and carry-over contract', () => {
       const sizes: Array<number> = [frontier.length]
 
       for (let tick = 0; tick < 4; tick += 1) {
-        const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+        const split = splitWithBudget(frontier, { lavaTickActive: false, budget: 64 })
         expect(split).toHaveProperty('work')
         expect(Object.keys(split)).toStrictEqual(['work'])
         frontier = carryOver(frontier, split)

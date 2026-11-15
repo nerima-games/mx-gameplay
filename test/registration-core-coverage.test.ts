@@ -32,6 +32,7 @@ import {
   drainExperienceOrbAbsorptionExecutions,
   drainGameplayStageFailures,
   drainItemUseResults,
+  drainGameplayEntityStageFaults,
   drainPlayerDamages,
   drainPlayerHeals,
   getPlayerStatusEffectModifiers,
@@ -45,6 +46,8 @@ import {
   requestPotatoPlanting,
   requestSoilTill,
   requestStatusEffect,
+  restoreFireLifecycle,
+  snapshotFireLifecycle,
   setPlayerDead,
 } from '../src/stages/registration'
 import {
@@ -65,7 +68,7 @@ import { INITIAL_DIMENSION } from '../src/domain/in-memory-player'
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
-  makeFireLifecycleState,
+  makeFireLifecycleState as makeFireLifecycleStateResult,
 } from '../src/domain/fire-lifecycle'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb'
 import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item'
@@ -83,10 +86,21 @@ import {
   GAMEPLAY_VITALS_OWNER_ID,
 } from '../src/stages/gameplay-owner-registrations'
 
+type GameplayOwnerEntities = NonNullable<GameplayOwnerInitialState['entities']>
+type GameplayOwnerEntity = GameplayOwnerEntities['entities'][number]
+type PersistedGameplayOwnerInitialState = Omit<GameplayOwnerInitialState, 'entities'> & {
+  readonly entities?: Omit<GameplayOwnerEntities, 'entities'> & {
+    readonly entities: ReadonlyArray<Omit<GameplayOwnerEntity, 'behaviour'> | GameplayOwnerEntity>
+  }
+}
+
+const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStateResult>) =>
+  Result.getOrThrow(makeFireLifecycleStateResult(...args))
+
 const makeHarness = (
   initial: ReturnType<typeof world>,
   withCommit: boolean,
-  ownerInitial: GameplayOwnerInitialState = {},
+  ownerInitial: PersistedGameplayOwnerInitialState = {},
 ) => Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeTransactionalChunkStoreDouble(initial, ['0,0'])
@@ -94,8 +108,15 @@ const makeHarness = (
   const inventory = yield* makeInventoryDouble(emptySlots())
   const player = yield* makePlayerServiceDouble()
   const time = yield* makeTimeService()
+  const { entities: persistedEntities, ...ownerFields } = ownerInitial
   const commit = withCommit
-    ? yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose: SPAWN_POSE, ...ownerInitial })
+    ? yield* makeGameplayCommitServices(store.api, inventory.api, {
+        playerPose: SPAWN_POSE,
+        ...ownerFields,
+        ...(persistedEntities === undefined ? {} : {
+          entities: persistedEntities as unknown as GameplayOwnerEntities,
+        }),
+      })
     : undefined
   const interactions = gameplayStages(
     state,
@@ -239,7 +260,6 @@ const makeFireCasualtyHarness = (kind = ZOMBIE_KIND) => Effect.gen(function* () 
       PositionAxis(firePosition.z),
     ),
     healthPoints: EntityHealthPoints(1),
-    behaviour: undefined,
   }
   const harness = yield* makeHarness(world([
     [fixtureBlockPosition(firePosition.x, firePosition.y - 1, firePosition.z), supportBlock],
@@ -310,6 +330,105 @@ const runInteractions = (interactions: StageRegistration, dt: number) =>
   interactions.run(DeltaTimeSecs(dt)).pipe(Effect.provide(FrameServicesLayer))
 
 describe('registration-core public paths omitted from focused coverage', () => {
+  it.effect('retains a fractional saved fire and records its cell fault once while healthy fire advances', () =>
+    Effect.gen(function* () {
+      const invalidCell = { x: 0.5, y: 64, z: 0 }
+      const healthyCell = fixtureBlockPosition(9, 64, 9)
+      const fireBlock = Option.getOrThrow(blockIdOf('fire'))
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      const harness = yield* makeHarness(world([[healthyCell, fireBlock], [fixtureBlockPosition(9, 63, 9), stone]]), true)
+      const fire = Option.getOrThrow(Option.fromNullishOr(fireStageWithCommit(harness, harness.commit)))
+      yield* Ref.set(harness.state.fireLifecycle, makeFireLifecycleState([invalidCell, healthyCell], 41))
+      yield* restoreFireLifecycle(harness.state, yield* snapshotFireLifecycle(harness.state))
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual({
+        _tag: 'EntityWorldDataFault', source: 'Fire', target: { _tag: 'Position', position: invalidCell },
+        failure: { _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: invalidCell },
+      })
+      const next = yield* Ref.get(harness.state.fireLifecycle)
+      expect(next.fires).toContainEqual({ position: invalidCell, ageTicks: 0 })
+      expect(next.fires.find((cell) => cell.position.x === healthyCell.x)?.ageTicks).toBe(1)
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records a fractional saved fire cell as a typed write failure without losing fire state', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const commit = harness.commit!
+      const cell = { x: 0.5, y: 64, z: 0 }
+      const initial = makeFireLifecycleState([cell], 41)
+      yield* Ref.set(harness.state.fireLifecycle, initial)
+      const saved = yield* snapshotFireLifecycle(harness.state)
+      yield* restoreFireLifecycle(harness.state, saved)
+      const restored = yield* Ref.get(harness.state.fireLifecycle)
+      const result = yield* requestFireExtinguish(harness.state, cell, {
+        coordinator: commit.coordinator, dimension: INITIAL_DIMENSION, changes: [],
+      })
+      expect(result).toBe(false)
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
+        _tag: 'Failed', operation: 'WorldCommit', subject: 'Fire', error: { _tag: 'InvalidGameplayBlockWriteBatch' },
+      }])
+      expect(yield* Ref.get(harness.state.fireLifecycle)).toStrictEqual(restored)
+      expect(yield* commit.coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('rejects an invalid extinguish dimension at the write boundary without changing state', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const commit = harness.commit!
+      const cell = { x: 0, y: 64, z: 0 }
+      const initial = makeFireLifecycleState([cell], 41)
+      yield* Ref.set(harness.state.fireLifecycle, initial)
+      const context = { coordinator: commit.coordinator, dimension: INITIAL_DIMENSION, changes: [] }
+      Object.defineProperty(context, 'dimension', { value: 'invalid-dimension', enumerable: true })
+      expect(yield* requestFireExtinguish(harness.state, cell, context)).toBe(false)
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
+        _tag: 'Failed', operation: 'WorldCommit', subject: 'Fire', error: { _tag: 'InvalidGameplayBlockWriteBatch' },
+      }])
+      expect(yield* Ref.get(harness.state.fireLifecycle)).toStrictEqual(initial)
+      expect(yield* commit.coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('records an invalid status-effect delta without committing owner changes', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2, amplifier: 0 })
+      yield* harness.interactions.run(Number.NaN as DeltaTimeSecsValue).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Brewing',
+        error: {
+          _tag: 'GameplayStageExecutionFailure',
+          cause: { _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' },
+        },
+      }])
+      expect(yield* harness.commit!.coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('records a corrupted lifecycle fire seed without changing the fire state', () =>
+    Effect.gen(function* () {
+      const firePosition = fixtureBlockPosition(9, 64, 9)
+      const fireBlock = Option.getOrThrow(blockIdOf('fire'))
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      const harness = yield* makeHarness(world([[firePosition, fireBlock], [fixtureBlockPosition(9, 63, 9), stone]]), true)
+      const fire = Option.getOrThrow(Option.fromNullishOr(fireStageWithCommit(harness, harness.commit)))
+      const state = { ...makeFireLifecycleState([firePosition], 41), seed: Number.NaN }
+      yield* Ref.set(harness.state.fireLifecycle, state)
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: { field: 'seed' },
+      }])
+      expect(yield* Ref.get(harness.state.fireLifecycle)).toStrictEqual(state)
+      expect(yield* harness.commit!.coordinator.revision).toBe(0)
+    }),
+  )
+
   it.effect('does not read or mutate vitals when setting an already-living player alive', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState

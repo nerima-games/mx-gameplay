@@ -45,15 +45,17 @@ import { Effect, Option, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   blockIdOf,
-  blockTypeOfId,
   horizontalBlockNeighbours,
   type BlockId,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 
 /** Is this byte a cactus? Asked of kernel's registry; see `./place-mushroom-light`. */
-export const isCactusBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'cactus'
+export const CACTUS_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('cactus'))
+
+export const isCactusBlock = (block: BlockId): boolean => block === CACTUS_BLOCK_ID
 
 /**
  * The reference's `hasClearCactusHorizontalSides`, over three-valued readings.
@@ -68,7 +70,9 @@ export const hasClearCactusHorizontalSides = (sides: ReadonlyArray<BlockReading>
   sides.every((reading) => reading._tag === 'Block' && reading.block === AIR_BLOCK_ID)
 
 /** Why a cactus was refused. `undefined` from the gate means no objection. */
-export type CactusSidesRefusal = { readonly _tag: 'SidesBlocked' }
+export type CactusSidesRefusal =
+  | { readonly _tag: 'SidesBlocked' }
+  | { readonly _tag: 'WorldDataFault'; readonly failure: EntityWorldQueryFailure }
 
 /**
  * Do the four sides refuse the cactus? `undefined` if they do not.
@@ -97,11 +101,13 @@ export const cactusSidesObjection = (
     }
 
     for (const neighbour of neighbours) {
-      sides.push(yield* store.getBlock(neighbour))
+      const reading = yield* store.getBlock(neighbour)
+      if (reading._tag === 'Block') {
+        const data = entityWorldBlockDataAt(neighbour, reading.block)
+        if (Result.isFailure(data)) return { _tag: 'WorldDataFault', failure: data.failure }
+      }
+      sides.push(reading)
     }
 
     return hasClearCactusHorizontalSides(sides) ? undefined : { _tag: 'SidesBlocked' }
   })
-
-/** The id this rule is about, for a caller that wants to demonstrate it. */
-export const CACTUS_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('cactus'))

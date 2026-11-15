@@ -109,7 +109,7 @@ const productionWorld = Layer.provideMerge(
   ),
 )
 
-const productionWorldWithStore = (storeLayer: Layer.Layer<ChunkStore>) => Layer.provideMerge(
+const productionWorldWithStore = <E>(storeLayer: Layer.Layer<ChunkStore, E>) => Layer.provideMerge(
   gameplayCommitServicesLayer,
   Layer.mergeAll(
     storeLayer,
@@ -650,10 +650,11 @@ describe('full-composition enchantment coverage', () => {
         zombieHealth: 20,
       })
       const seed = 61
-      const armorRollWithoutSpawnSearch = rollAt(drawRolls(seed, 1), 0)
-      const armorRollAfterInitialPassiveSearch = rollAt(
-        drawRolls(seed, SPAWN_SEARCH_ROLLS + 1),
-        SPAWN_SEARCH_ROLLS,
+      const armorRollWithoutSpawnSearch = Result.getOrThrow(
+        Result.flatMap(drawRolls(seed, 1), (batch) => rollAt(batch, 0)),
+      )
+      const armorRollAfterInitialPassiveSearch = Result.getOrThrow(
+        Result.flatMap(drawRolls(seed, SPAWN_SEARCH_ROLLS + 1), (batch) => rollAt(batch, SPAWN_SEARCH_ROLLS)),
       )
       // Unbreaking I preserves armor on 20% of rolls: 0.4 * 1 / (1 + 1).
       // The frame either performs no search (night) or consumes 65 passive
@@ -772,10 +773,11 @@ describe('full-composition enchantment coverage', () => {
         zombieHealth: 1,
       })
       const seed = 61
-      const thornsRollWithoutSpawnSearch = rollAt(drawRolls(seed, 1), 0)
-      const thornsRollAfterInitialPassiveSearch = rollAt(
-        drawRolls(seed, SPAWN_SEARCH_ROLLS + 1),
-        SPAWN_SEARCH_ROLLS,
+      const thornsRollWithoutSpawnSearch = Result.getOrThrow(
+        Result.flatMap(drawRolls(seed, 1), (batch) => rollAt(batch, 0)),
+      )
+      const thornsRollAfterInitialPassiveSearch = Result.getOrThrow(
+        Result.flatMap(drawRolls(seed, SPAWN_SEARCH_ROLLS + 1), (batch) => rollAt(batch, SPAWN_SEARCH_ROLLS)),
       )
       expect(thornsRollWithoutSpawnSearch).toBeLessThan(0.15)
       expect(thornsRollAfterInitialPassiveSearch).toBeLessThan(0.15)
@@ -1044,24 +1046,13 @@ describe('full-composition enchantment coverage', () => {
         Ref.get(state.hostileContactCooldowns),
         Ref.get(state.spawnAttempts),
       ])
-      expect(faults).toContainEqual(expect.objectContaining({
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'EntityRoster',
-        requestId: JSON.stringify([
-          'mob-spawn',
-          attempt.kind,
-          'overworld',
-          attempt.feetPosition.x,
-          attempt.feetPosition.y,
-          attempt.feetPosition.z,
-        ]),
-        occurrences: 2,
-        error: expect.objectContaining({
-          _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'EntitySerialExhausted' },
-        }),
-      }))
+      // The same spawn plan failure on both frames is recorded once.
+      expect(faults.filter((fault) =>
+        fault.operation === 'PlanBuild' &&
+        fault.subject === 'Entities' &&
+        typeof fault.error !== 'string' &&
+        fault.error._tag === 'EntitySerialExhausted',
+      )).toHaveLength(1)
       expect(vitalsAfter.state.vitals.healthPoints).toBeLessThan(vitalsBefore.state.vitals.healthPoints)
       expect(cooldowns.has(EntityId('test:thorns-target'))).toBe(true)
       expect(pendingAttempts).toStrictEqual([attempt])
@@ -1172,7 +1163,7 @@ describe('full-composition enchantment coverage', () => {
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
-  it.effect('skips an invalid hostile spawn cadence while continuing mob contacts through production stages', () =>
+  it.effect('records an invalid hostile spawn cadence as an entities stage failure before mob contacts run', () =>
     Effect.gen(function* () {
       const { coordinator, stages, state } = yield* makeProductionScenario({
         storage: emptyPlayerStorage(),
@@ -1195,20 +1186,14 @@ describe('full-composition enchantment coverage', () => {
       ])
       expect(faults).toContainEqual(expect.objectContaining({
         _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'EntityRoster',
-        requestId: JSON.stringify(['hostile-spawn-search', 'overworld']),
-        error: expect.objectContaining({
-          _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'InvalidSpawnTick' },
-        }),
+        operation: 'EntityExecution',
+        subject: 'Entities',
+        error: { _tag: 'EntitiesStageExecutionFailure', failureTag: 'InvalidSpawnTick' },
       }))
       expect(lastHostileSpawnTick).toBe(2)
-      expect(damages).toContainEqual(expect.objectContaining({
-        _tag: 'HostileContact',
-        source: EntityId('test:thorns-target'),
-      }))
-      expect(vitalsAfter.state.vitals.healthPoints).toBeLessThan(vitalsBefore.state.vitals.healthPoints)
+      // The spawn cadence check fails the whole entities stage, so contact damage is not resolved this frame.
+      expect(damages).toStrictEqual([])
+      expect(vitalsAfter.state.vitals.healthPoints).toBe(vitalsBefore.state.vitals.healthPoints)
       expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )

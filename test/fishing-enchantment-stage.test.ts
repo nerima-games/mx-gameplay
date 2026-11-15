@@ -176,7 +176,7 @@ describe('fishing enchantments in the interactions stage', () => {
       expect(bite).toMatchObject({ action: 'AdvanceFishing', success: true, outcome: { _tag: 'Bite' } })
 
       yield* Ref.set(state.rollSeed, LUCK_SAMPLE_SEED)
-      expect(nextRoll(LUCK_SAMPLE_SEED).roll).toBeCloseTo(0.88700156, 8)
+      expect(Result.getOrThrow(nextRoll(LUCK_SAMPLE_SEED)).roll).toBeCloseTo(0.88700156, 8)
       yield* requestFishingReel(state, 'reel-luck-of-the-sea', FISHER)
       yield* runInteractions(stages)
 

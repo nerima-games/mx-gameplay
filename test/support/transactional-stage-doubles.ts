@@ -7,13 +7,30 @@ import {
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
   WorldCommitCoordinator,
+  type EntitySerialExhausted,
   type InventoryServiceApi,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
   type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
-import { AIR_BLOCK_ID, WorldIdSchema, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
-import { ChunkStore, type ChunkBiomeType, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import {
+  AIR_BLOCK_ID,
+  WorldIdSchema,
+  chunkCoordOfBlock,
+  localCoordOfBlock,
+  type BlockId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
+import {
+  ChunkStore,
+  blockIndex,
+  type ChunkBiomeType,
+  type ChunkStoreApi,
+  type ChunkStoreError,
+} from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Schema } from 'effect'
-import { makeInMemoryWorld } from '../../src/domain/in-memory-world.js'
+import { makeInMemoryWorld, type WorldInputFailure } from '../../src/domain/in-memory-world.js'
 import {
   GAMEPLAY_BREWING_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
@@ -30,16 +47,42 @@ import {
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   gameplayOwnerRegistrations,
   type GameplayOwnerInitialState,
+  type GameplayOwnerRegistrationFailure,
 } from '../../src/stages/gameplay-owner-registrations.js'
 import type { GameplayStageCommitServices } from '../../src/stages/registration-core.js'
 import type { ChunkStoreDouble, StoreCalls } from './chunk-store-double.js'
 
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests')
 
+/** Inject a corrupt persisted id after the valid chunk has been loaded. */
+export const injectRawBlockId = (
+  store: ChunkStoreApi,
+  position: BlockPosition,
+  block: BlockId,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const chunk = yield* store.peek(chunkCoordOfBlock(position))
+    if (chunk === undefined) return yield* Effect.die(new Error('Raw block injection requires a loaded chunk'))
+
+    const local = localCoordOfBlock(position)
+    const index = blockIndex(local.lx, local.ly, local.lz)
+    if (!Reflect.set(chunk.blocks, index, block)) {
+      return yield* Effect.die(new Error('Raw block injection could not update the chunk buffer'))
+    }
+  })
+
 export const makeTransactionalChunkStoreDouble = (
   initial: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string>,
-): Effect.Effect<ChunkStoreDouble> =>
+): Effect.Effect<
+  ChunkStoreDouble,
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+  | ChunkStoreError
+> =>
   Effect.gen(function* () {
     const world = yield* makeInMemoryWorld({
       world: { blocks: initial, loaded: new Set(loaded) },
@@ -103,15 +146,19 @@ export const makeGameplayCommitServices = (
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   initial: GameplayOwnerInitialState = {},
-): Effect.Effect<GameplayStageCommitServices, WorldCommitCoordinatorError> =>
+): Effect.Effect<
+  GameplayStageCommitServices,
+  WorldCommitCoordinatorError | GameplayOwnerRegistrationFailure
+> =>
   Effect.gen(function* () {
     const initialStorage = yield* inventory.storageSnapshot
+    const ownerInitialState = Object.hasOwn(initial, 'playerStorage')
+      ? initial
+      : { ...initial, playerStorage: initialStorage }
+    const owners = yield* Effect.fromResult(gameplayOwnerRegistrations(ownerInitialState))
     const coordinator = yield* makeWorldCommitCoordinator({
       world: WORLD_ID,
-      owners: gameplayOwnerRegistrations({
-        ...initial,
-        playerStorage: initial.playerStorage ?? initialStorage,
-      }),
+      owners,
       chunkStores: { forDimension: () => store },
     })
     const bucketService = yield* makeBucketService().pipe(
@@ -141,7 +188,7 @@ export const makeGameplayCommitServices = (
 
 export const gameplayCommitServicesLayer: Layer.Layer<
   BucketService | WorldCommitCoordinator,
-  WorldCommitCoordinatorError,
+  WorldCommitCoordinatorError | GameplayOwnerRegistrationFailure,
   ChunkStore | InventoryService
 > = Layer.provideMerge(
   BucketServiceLayer,
@@ -151,9 +198,10 @@ export const gameplayCommitServicesLayer: Layer.Layer<
       const store = yield* ChunkStore
       const inventory = yield* InventoryService
       const initialStorage = yield* inventory.storageSnapshot
+      const owners = yield* Effect.fromResult(gameplayOwnerRegistrations({ playerStorage: initialStorage }))
       return yield* makeWorldCommitCoordinator({
         world: WORLD_ID,
-        owners: gameplayOwnerRegistrations({ playerStorage: initialStorage }),
+        owners,
         chunkStores: { forDimension: () => store },
       })
     }),

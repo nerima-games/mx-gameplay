@@ -319,7 +319,7 @@ describe('fishing enchantment record owner', () => {
       }])
 
       yield* Ref.set(second.state.rollSeed, LUCK_SAMPLE_SEED)
-      expect(nextRoll(LUCK_SAMPLE_SEED).roll).toBeCloseTo(0.88700156, 8)
+      expect(Result.getOrThrow(nextRoll(LUCK_SAMPLE_SEED)).roll).toBeCloseTo(0.88700156, 8)
       const beforeReel = yield* observeOwners(commit)
       yield* requestFishingReel(second.state, 'reel-plain-rod', FISHER, PLAIN_ROD_SLOT)
       yield* runInteractions(second.stages)

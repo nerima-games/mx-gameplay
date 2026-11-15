@@ -58,12 +58,13 @@
  * ---------------------------------------------------------------------------
  *
  * HOW MANY is difficulty-configured; the search and frame own the roster census
- * and cadence. Biomes here use worldgen's coarse categories, which cannot
- * distinguish several vanilla sub-biomes or structure-only spawn locations.
+ * and cadence. Exact biome ids use the nearest existing coarse policy; this
+ * still does not encode structure-only spawn locations.
  */
 import { Brand, Result } from 'effect'
 import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId, type SimulationTick } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
+import type { DayNightInputFailure } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { ChunkBiomeType, Dimension } from '@nerima-games/mc-worldgen'
 import type { HostileDifficulty } from './hostile-despawn.js'
@@ -129,11 +130,12 @@ const OVERWORLD_HOSTILES = ['creeper', 'enderman', 'zombie', 'skeleton', 'spider
 const FARM_ANIMALS = ['cow', 'pig', 'sheep'] as const
 
 /**
- * The current worldgen API stores 13 coarse Overworld biomes plus Nether and
- * End. These entries approximate the species each label can represent; they do
- * not encode sub-biome variants, spawn weights, group sizes, or structures.
+ * Coarse biome labels and exact kernel biome ids share the same approximate
+ * spawn policy. Every concrete id is listed so a kernel biome addition requires
+ * an explicit choice here instead of silently refusing every mob.
  */
 export const MOB_BIOME_SPAWN_TABLE: Readonly<Record<ChunkBiomeType, ReadonlyArray<string>>> = {
+  // Coarse worldgen labels retained for existing callers.
   PLAINS: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
   DESERT: [...OVERWORLD_HOSTILES],
   FOREST: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
@@ -149,10 +151,79 @@ export const MOB_BIOME_SPAWN_TABLE: Readonly<Record<ChunkBiomeType, ReadonlyArra
   SAVANNA: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
   NETHER: ['enderman', 'zombified_piglin', 'blaze'],
   END: [],
+
+  // Exact kernel biome ids grouped by the nearest existing coarse policy.
+  badlands: [...OVERWORLD_HOSTILES],
+  bamboo_jungle: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  basalt_deltas: ['enderman', 'zombified_piglin', 'blaze'],
+  beach: [...OVERWORLD_HOSTILES],
+  birch_forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  cherry_grove: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  cold_ocean: [...OVERWORLD_HOSTILES],
+  crimson_forest: ['enderman', 'zombified_piglin', 'blaze'],
+  dappled_forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  dark_forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  deep_cold_ocean: [...OVERWORLD_HOSTILES],
+  deep_dark: [],
+  deep_frozen_ocean: [...OVERWORLD_HOSTILES],
+  deep_lukewarm_ocean: [...OVERWORLD_HOSTILES],
+  deep_ocean: [...OVERWORLD_HOSTILES],
+  desert: [...OVERWORLD_HOSTILES],
+  dripstone_caves: [...OVERWORLD_HOSTILES],
+  end_barrens: [],
+  end_highlands: [],
+  end_midlands: [],
+  eroded_badlands: [...OVERWORLD_HOSTILES],
+  flower_forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  frozen_ocean: [...OVERWORLD_HOSTILES],
+  frozen_peaks: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  frozen_river: [...OVERWORLD_HOSTILES],
+  grove: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  ice_spikes: [...OVERWORLD_HOSTILES],
+  jagged_peaks: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  jungle: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  lukewarm_ocean: [...OVERWORLD_HOSTILES],
+  lush_caves: [...OVERWORLD_HOSTILES],
+  mangrove_swamp: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  meadow: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  mushroom_fields: [],
+  nether_wastes: ['enderman', 'zombified_piglin', 'blaze'],
+  ocean: [...OVERWORLD_HOSTILES],
+  old_growth_birch_forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  old_growth_pine_taiga: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  old_growth_spruce_taiga: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  pale_garden: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  plains: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  river: [...OVERWORLD_HOSTILES],
+  savanna_plateau: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  savanna: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  small_end_islands: [],
+  snowy_beach: [...OVERWORLD_HOSTILES],
+  snowy_plains: [...OVERWORLD_HOSTILES],
+  snowy_slopes: [...OVERWORLD_HOSTILES],
+  snowy_taiga: [...OVERWORLD_HOSTILES],
+  soul_sand_valley: ['enderman', 'zombified_piglin', 'blaze'],
+  sparse_jungle: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  stony_peaks: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  stony_shore: [...OVERWORLD_HOSTILES],
+  sulfur_caves: [...OVERWORLD_HOSTILES],
+  sunflower_plains: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  swamp: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  taiga: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  the_end: [],
+  the_void: [],
+  warm_ocean: [...OVERWORLD_HOSTILES],
+  warped_forest: ['enderman', 'zombified_piglin', 'blaze'],
+  windswept_forest: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  windswept_gravelly_hills: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  windswept_hills: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  windswept_savanna: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  wooded_badlands: [...OVERWORLD_HOSTILES],
 }
 
 export const biomeAllowsMob = (kind: EntityKind, biome: ChunkBiomeType): boolean =>
-  MOB_BIOME_SPAWN_TABLE[biome]?.includes(kind) === true
+  MOB_BIOME_SPAWN_TABLE[biome].includes(kind)
 
 /**
  * Everything the rule needs to know, and nothing it does not.
@@ -190,12 +261,10 @@ export type SpawnCandidate = {
  * only the second is findable. `apps/preview-mining-site`'s arena screen prints
  * this word.
  *
- * `unmeasurable` is the answer to a light level or a distance that is not a
- * number. It exists because refusing is the inert direction and because this
- * repository has already been bitten once in the other: the preview's finding F5
- * is `NaN` reaching `applyDamage` through a bare `number`, and `NaN > 7` is
- * `false`, so a light level of `NaN` would otherwise read as pitch dark and
- * spawn a mob in daylight.
+ * `unmeasurable` is the refusal for an absent measurement, such as having no
+ * player distance to compare. A present but malformed numeric reading is a
+ * typed input failure; `NaN > 7` must not make invalid light look like pitch
+ * dark and spawn a mob in daylight.
  */
 export type SpawnRefusal =
   | 'daylight'
@@ -212,8 +281,27 @@ export type SpawnVerdict =
   | { readonly _tag: 'Spawn' }
   | { readonly _tag: 'Refused'; readonly reason: SpawnRefusal }
 
+export type HostileSpawnInputFailure = DayNightInputFailure | Readonly<{
+  _tag: 'InvalidSpawnCandidate'
+  field: 'dimension' | 'distanceToPlayerBlocksXZ' | 'blockLight' | 'skyLight' | 'feetPosition'
+}>
+
 const REFUSED = (reason: SpawnRefusal): SpawnVerdict => ({ _tag: 'Refused', reason })
 const isLightLevel = (value: number): boolean => Number.isInteger(value) && value >= 0 && value <= 15
+const invalidMeasurement = (
+  candidate: SpawnCandidate,
+): SpawnVerdict | HostileSpawnInputFailure | undefined => {
+  const fields = ['distanceToPlayerBlocksXZ', 'blockLight', 'skyLight'] as const
+  for (const field of fields) {
+    if (!Object.hasOwn(candidate, field)) return REFUSED('unmeasurable')
+    const value = candidate[field]
+    const valid = field === 'distanceToPlayerBlocksXZ'
+      ? Number.isFinite(value) && value >= 0
+      : isLightLevel(value)
+    if (!valid) return { _tag: 'InvalidSpawnCandidate', field }
+  }
+  return undefined
+}
 
 // Valid but unregistered ids retain kernel's default capability values.
 const isSpawnSurface = (block: BlockId): boolean =>
@@ -233,17 +321,15 @@ const isSpawnSurface = (block: BlockId): boolean =>
  * NOT decided here: whether the roster has room for another hostile, and which
  * mob it would be. See the module header.
  */
-export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
-  if (
-    !Number.isFinite(candidate.distanceToPlayerBlocksXZ) ||
-    !isLightLevel(candidate.blockLight) ||
-    !isLightLevel(candidate.skyLight) ||
-    !Number.isFinite(candidate.timeOfDay)
-  ) {
-    return REFUSED('unmeasurable')
-  }
+export const canHostileSpawnAt = (
+  candidate: SpawnCandidate,
+): SpawnVerdict | HostileSpawnInputFailure => {
+  const measurement = invalidMeasurement(candidate)
+  if (measurement !== undefined) return measurement
 
-  if (!hostileSpawnsAllowed(candidate.timeOfDay) && candidate.skyLight > HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT) {
+  const nightWindow = hostileSpawnsAllowed(candidate.timeOfDay)
+  if (Result.isFailure(nightWindow)) return nightWindow.failure
+  if (!nightWindow.success && candidate.skyLight > HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT) {
     return REFUSED('daylight')
   }
 
@@ -277,8 +363,18 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
   return { _tag: 'Spawn' }
 }
 
-export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): SpawnVerdict => {
-  const dimension = candidate.dimension ?? 'overworld'
+export const canMobSpawnAt = (
+  kind: EntityKind,
+  candidate: SpawnCandidate,
+): SpawnVerdict | HostileSpawnInputFailure => {
+  if (Object.hasOwn(candidate, 'dimension') && candidate.dimension === undefined) {
+    return { _tag: 'InvalidSpawnCandidate', field: 'dimension' }
+  }
+  const dimension = Object.hasOwn(candidate, 'dimension') ? candidate.dimension : 'overworld'
+  if (
+    dimension === undefined ||
+    (dimension !== 'overworld' && dimension !== 'nether' && dimension !== 'end')
+  ) return { _tag: 'InvalidSpawnCandidate', field: 'dimension' }
   if (!biomeAllowsMob(kind, candidate.biome)) return REFUSED('wrong-biome')
   if (!ecosystemDimensionAllows(kind, dimension)) return REFUSED('wrong-dimension')
 
@@ -288,7 +384,8 @@ export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): Spaw
     return canHostileSpawnAt(candidate)
   }
 
-  if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !isLightLevel(candidate.blockLight) || !isLightLevel(candidate.skyLight)) return REFUSED('unmeasurable')
+  const measurement = invalidMeasurement(candidate)
+  if (measurement !== undefined) return measurement
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
   if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
   if (!isSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')

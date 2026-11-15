@@ -1310,7 +1310,7 @@ describe('the break loop', () => {
       }
       const registeredCoordinator = yield* makeWorldCommitCoordinator({
         world: commit.coordinator.worldId,
-        owners: gameplayOwnerRegistrations({ playerStorage: localStorageBefore }),
+        owners: Result.getOrThrow(gameplayOwnerRegistrations({ playerStorage: localStorageBefore })),
         chunkStores: { forDimension: () => world.chunkStore },
       })
       const stageRequests: Array<Parameters<WorldCommitCoordinatorApi['commit']>[0]> = []
@@ -1513,7 +1513,11 @@ describe('the break loop', () => {
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      expect((yield* subscription.drain).changed).toStrictEqual([chunkOf(AT)])
+      expect((yield* subscription.drain).changed).toStrictEqual([{
+        ...chunkOf(AT),
+        min: [3, 64, 7],
+        max: [4, 65, 8],
+      }])
     }),
   )
 })

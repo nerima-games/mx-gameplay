@@ -44,11 +44,18 @@ import {
   adjacentBlockPosition,
   blockPositionKeyOf,
   blockPositionOfKey,
-  capabilityOfBlockId,
+  type BlockPosition,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId } from '@nerima-games/mc-kernel'
-import type { BlockReading, BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockReading,
+  BlockStateCodecFailure,
+  BlockWriteOutcome,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
+import { entityWorldBlockDataAt, type EntityWorldQueryFailure } from './entity-world-cell.js'
 
 export type FallingBlockMoves = {
   /** How many blocks actually sank one cell this tick. */
@@ -61,20 +68,40 @@ export type FallingBlockMoves = {
    * stops one cell short of where it belongs.
    */
   readonly destinations: ReadonlyArray<BlockPositionKey>
+  readonly failures?: ReadonlyArray<FallingBlockWriteFailure>
+  /** World cells whose registry data could not be resolved. */
+  readonly faults: ReadonlyArray<EntityWorldQueryFailure>
 }
 
-/** The block that would fall from `reading`, or `undefined` if none would. */
-const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
-  if (reading._tag !== 'Block') return undefined
-  return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'fallsWhenUnsupported')) === true
-    ? reading.block
-    : undefined
+type FallingBlockWriteFailure = Readonly<{
+  operation: 'WriteBlock'
+  position: BlockPosition
+  reason: BlockStateCodecFailure | LightQueueUnderflowError
+}>
+
+const worldCell = (position: BlockPosition): BlockPosition => position
+
+/** The block that would fall from `reading`, or a typed world-data fault. */
+const fallingMaterial = (
+  position: BlockPosition,
+  reading: BlockReading,
+): Result.Result<BlockId | undefined, EntityWorldQueryFailure> => {
+  if (reading._tag !== 'Block') return Result.succeed(undefined)
+  const data = entityWorldBlockDataAt(worldCell(position), reading.block)
+  if (Result.isFailure(data)) return Result.fail(data.failure)
+  return Result.succeed(data.success.capabilities.fallsWhenUnsupported ? reading.block : undefined)
 }
 
-/** Whether a falling block may occupy `reading`'s cell. */
-const canReceive = (reading: BlockReading): boolean =>
-  reading._tag === 'Block' &&
-  Result.getOrUndefined(capabilityOfBlockId(reading.block, 'replaceable')) === true
+/** Whether a falling block may occupy `reading`'s cell, or a typed world-data fault. */
+const canReceive = (
+  position: BlockPosition,
+  reading: BlockReading,
+): Result.Result<boolean, EntityWorldQueryFailure> => {
+  if (reading._tag !== 'Block') return Result.succeed(false)
+  const data = entityWorldBlockDataAt(worldCell(position), reading.block)
+  if (Result.isFailure(data)) return Result.fail(data.failure)
+  return Result.succeed(data.success.capabilities.replaceable)
+}
 
 /** Whether the source cell really was emptied by our write. */
 const vacated = (outcome: BlockWriteOutcome): boolean => outcome._tag === 'Written'
@@ -95,6 +122,8 @@ export const applyFallingBlocks = (
 ): Effect.Effect<FallingBlockMoves> =>
   Effect.gen(function* () {
     const destinations: Array<BlockPositionKey> = []
+    const failures: Array<FallingBlockWriteFailure> = []
+    const faults: Array<EntityWorldQueryFailure> = []
     let moved = 0
 
     for (const positionKey of batch) {
@@ -107,27 +136,56 @@ export const applyFallingBlocks = (
         continue
       }
 
-      const material = fallingMaterial(yield* store.getBlock(source))
-      if (material === undefined) {
+      const materialResult = fallingMaterial(source, yield* store.getBlock(source))
+      if (Result.isFailure(materialResult)) {
+        faults.push(materialResult.failure)
+        destinations.push(positionKey)
         continue
       }
+      if (materialResult.success === undefined) {
+        continue
+      }
+      const material = materialResult.success
 
-      if (!canReceive(yield* store.getBlock(target))) {
+      const receive = canReceive(target, yield* store.getBlock(target))
+      if (Result.isFailure(receive)) {
+        faults.push(receive.failure)
+        destinations.push(positionKey)
+        continue
+      }
+      if (!receive.success) {
         continue
       }
 
       // Source first, then destination. The reverse order would duplicate the
       // block if the second write were refused; this order can only ever lose
       // it, and the branch below puts it back.
-      if (!vacated(yield* store.setBlock(source, AIR_BLOCK_ID))) {
+      const vacatedResult = yield* Effect.result(store.setBlock(source, AIR_BLOCK_ID))
+      if (vacatedResult._tag === 'Failure') {
+        failures.push({ operation: 'WriteBlock', position: source, reason: vacatedResult.failure })
+        continue
+      }
+      if (!vacated(vacatedResult.success)) {
         continue
       }
 
-      const placed = yield* store.setBlock(target, material)
+      const placedResult = yield* Effect.result(store.setBlock(target, material))
+      if (placedResult._tag === 'Failure') {
+        failures.push({ operation: 'WriteBlock', position: target, reason: placedResult.failure })
+        const restored = yield* Effect.result(store.setBlock(source, material))
+        if (restored._tag === 'Failure') {
+          failures.push({ operation: 'WriteBlock', position: source, reason: restored.failure })
+        }
+        continue
+      }
+      const placed = placedResult.success
       if (placed._tag !== 'Written' && placed._tag !== 'Unchanged') {
         // The destination can become unavailable between its read and write.
         // Restore the source rather than silently losing the falling block.
-        yield* store.setBlock(source, material)
+        const restored = yield* Effect.result(store.setBlock(source, material))
+        if (restored._tag === 'Failure') {
+          failures.push({ operation: 'WriteBlock', position: source, reason: restored.failure })
+        }
         continue
       }
 
@@ -145,5 +203,5 @@ export const applyFallingBlocks = (
       destinations.push(blockPositionKeyOf(source))
     }
 
-    return { moved, destinations }
+    return failures.length === 0 ? { moved, destinations, faults } : { moved, destinations, faults, failures }
   })

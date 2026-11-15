@@ -45,6 +45,8 @@
  * presentation concern. Doing that now would mean inventing an i18n contract
  * before there is a screen to consume it.
  */
+import { Result } from 'effect'
+
 
 export type DeathCause =
   | 'fall'
@@ -132,6 +134,14 @@ export type Vitals = {
 
 export const MAX_HEALTH_POINTS = 20
 
+export type DamageApplicationFailure = Readonly<{
+  _tag: 'InvalidDamageApplicationInput'
+  field: 'vitals' | 'damage' | 'vitals.healthPoints' | 'vitals.lastDeathCause' | 'damage.amount' | 'damage.cause'
+}>
+
+const isDeathCause = (value: unknown): value is DeathCause =>
+  typeof value === 'string' && Object.hasOwn(DEATH_MESSAGES, value)
+
 export const fullHealth: Vitals = { healthPoints: MAX_HEALTH_POINTS, lastDeathCause: undefined }
 
 export const isDead = (vitals: Vitals): boolean => vitals.healthPoints <= 0
@@ -142,27 +152,62 @@ export const isDead = (vitals: Vitals): boolean => vitals.healthPoints <= 0
  * Damage to an already-dead player is ignored, so a corpse hit by a second
  * creeper does not have its death message rewritten.
  */
-export const applyDamage = (vitals: Vitals, damage: Damage): Vitals => {
-  if (isDead(vitals) || !Number.isFinite(damage.amount)) {
-    return vitals
+export const applyDamage = (
+  vitals: Vitals,
+  damage: Damage,
+): Result.Result<Vitals, DamageApplicationFailure> => {
+  if (typeof vitals !== 'object' || vitals === null) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals' })
   }
+  if (typeof damage !== 'object' || damage === null) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage' })
+  }
+  if (!Number.isFinite(vitals.healthPoints) || vitals.healthPoints < 0 || vitals.healthPoints > MAX_HEALTH_POINTS) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals.healthPoints' })
+  }
+  if (!Object.hasOwn(vitals, 'lastDeathCause') ||
+    (vitals.lastDeathCause !== undefined && !isDeathCause(vitals.lastDeathCause))) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals.lastDeathCause' })
+  }
+  if (!Number.isFinite(damage.amount) || damage.amount < 0) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' })
+  }
+  if (!isDeathCause(damage.cause)) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage.cause' })
+  }
+  if (isDead(vitals)) return Result.succeed(vitals)
 
-  const healthPoints = Math.max(0, vitals.healthPoints - Math.max(0, damage.amount))
+  const healthPoints = Math.max(0, vitals.healthPoints - damage.amount)
   const justDied = healthPoints <= 0
 
-  return {
+  return Result.succeed({
     healthPoints,
     lastDeathCause: justDied ? damage.cause : vitals.lastDeathCause,
-  }
+  })
 }
 
-/**
- * The message the death screen shows, or `undefined` while the player lives.
- *
- * A dead player with no recorded cause is impossible by construction (the only
- * route to zero health is `applyDamage`, which always records), so the `??`
- * below is a total-function formality rather than a real fallback. If it ever
- * fires, something has constructed a `Vitals` by hand.
- */
-export const deathMessage = (vitals: Vitals): string | undefined =>
-  isDead(vitals) ? describeDeath(vitals.lastDeathCause ?? 'generic') : undefined
+export type DeathMessageFailure = Readonly<{
+  _tag: 'InvalidDeathMessageInput'
+  field: 'vitals' | 'vitals.healthPoints' | 'vitals.lastDeathCause'
+}>
+
+/** The message for a valid death, or `undefined` while the player lives. */
+export const deathMessage = (vitals: Vitals): Result.Result<string | undefined, DeathMessageFailure> => {
+  if (typeof vitals !== 'object' || vitals === null) {
+    return Result.fail({ _tag: 'InvalidDeathMessageInput', field: 'vitals' })
+  }
+  if (!Number.isFinite(vitals.healthPoints) || vitals.healthPoints < 0 || vitals.healthPoints > MAX_HEALTH_POINTS) {
+    return Result.fail({ _tag: 'InvalidDeathMessageInput', field: 'vitals.healthPoints' })
+  }
+  if (!Object.hasOwn(vitals, 'lastDeathCause')) {
+    return Result.fail({ _tag: 'InvalidDeathMessageInput', field: 'vitals.lastDeathCause' })
+  }
+  if (vitals.lastDeathCause !== undefined && !isDeathCause(vitals.lastDeathCause)) {
+    return Result.fail({ _tag: 'InvalidDeathMessageInput', field: 'vitals.lastDeathCause' })
+  }
+  if (!isDead(vitals)) return Result.succeed(undefined)
+  if (vitals.lastDeathCause === undefined) {
+    return Result.fail({ _tag: 'InvalidDeathMessageInput', field: 'vitals.lastDeathCause' })
+  }
+  return Result.succeed(describeDeath(vitals.lastDeathCause))
+}

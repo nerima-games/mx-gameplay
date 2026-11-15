@@ -4,6 +4,7 @@ import { Effect, Option, Result, Schema } from "effect"
 import {
   AIR_BLOCK_ID,
   BlockPositionSchema,
+  BlockIdSchema,
   ChunkAxis,
   DimensionRevisionSchema,
   WorldIdSchema,
@@ -23,6 +24,7 @@ import {
 } from "@nerima-games/mc-worldgen"
 import { emptyBlocks } from "@nerima-games/mc-worldgen/testing"
 import { WORLD_HEIGHT } from "./support/chunk-store-double"
+import { injectRawBlockId } from "./support/transactional-stage-doubles"
 import {
   emptyPlayerStorage,
   itemStack,
@@ -269,6 +271,53 @@ describe("breakBlock support cascade transaction", () => {
     expect(result.primary).toEqual(primary)
     expect(result.removed).toEqual([primary])
     expect(await readBlocks(fixture.store, [primary])).toEqual([{ _tag: "Block", block: AIR_BLOCK_ID }])
+  })
+
+  it("returns the unregistered primary block as a typed world-data failure", async () => {
+    const fixture = await makeFixture()
+    const primary = positionAt(60)
+    const unknownBlock = decode(BlockIdSchema)(65_535)
+    expect((await Effect.runPromise(fixture.store.setBlock(primary, sand)))._tag).toBe("Written")
+    await Effect.runPromise(injectRawBlockId(fixture.store, primary, unknownBlock))
+
+    const raw = await Effect.runPromise(breakBlock(fixture.store, primary, fixture.context))
+    const result = decode(BreakTransactionResultSchema)(raw)
+
+    expect(result).toMatchObject({
+      _tag: "TransactionFailure",
+      failure: {
+        _tag: "WorldDataFault",
+        failure: { _tag: "EntityWorldUnregisteredBlockId", cell: primary, blockId: unknownBlock },
+      },
+    })
+    expect(await readBlocks(fixture.store, [primary])).toEqual([{ _tag: "Block", block: unknownBlock }])
+    expect((await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)).revision).toBe(0)
+  })
+
+  it("faults a support cascade on an unregistered upper block without removing either cell", async () => {
+    const fixture = await makeFixture()
+    const primary = positionAt(60)
+    const upper = positionAt(61)
+    const unknownBlock = decode(BlockIdSchema)(65_535)
+    expect((await Effect.runPromise(fixture.store.setBlock(primary, sand)))._tag).toBe("Written")
+    expect((await Effect.runPromise(fixture.store.setBlock(upper, sand)))._tag).toBe("Written")
+    await Effect.runPromise(injectRawBlockId(fixture.store, upper, unknownBlock))
+
+    const raw = await Effect.runPromise(breakBlock(fixture.store, primary, fixture.context))
+    const result = decode(BreakTransactionResultSchema)(raw)
+
+    expect(result).toMatchObject({
+      _tag: "TransactionFailure",
+      failure: {
+        _tag: "WorldDataFault",
+        failure: { _tag: "EntityWorldUnregisteredBlockId", cell: upper, blockId: unknownBlock },
+      },
+    })
+    expect(await readBlocks(fixture.store, [primary, upper])).toEqual([
+      { _tag: "Block", block: sand },
+      { _tag: "Block", block: unknownBlock },
+    ])
+    expect((await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)).revision).toBe(0)
   })
 
   it("keeps a supported block above the primary break target", async () => {

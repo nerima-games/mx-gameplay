@@ -1,6 +1,10 @@
 import { Effect, Option } from 'effect'
 import { AIR_BLOCK_ID, blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 
 export const TNT_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('tnt'))
 
@@ -14,7 +18,7 @@ export type IgniteTntOutcome =
 export const igniteTnt = (
   store: ChunkStoreApi,
   position: BlockPosition,
-): Effect.Effect<IgniteTntOutcome> =>
+): Effect.Effect<IgniteTntOutcome, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.gen(function* () {
     const target = yield* store.getBlock(position)
     if (target._tag !== 'Block') return target

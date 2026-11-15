@@ -54,6 +54,7 @@ describe('public API surface', () => {
         'CollectBrewingBottleRequestSchema',
         'GameplayBrewingBottleItemUseResultSchema',
         'GameplayFishingItemUseResultSchema',
+        'drainGameplayEntityStageFaults',
         'requestCollectBrewingBottle',
         'setPlayerDead',
         'setPortalCandidates',
@@ -94,6 +95,8 @@ describe('public API surface', () => {
       for (const name of contract) {
         expect(Object.keys(gameplay)).toContain(name)
       }
+      expect(Object.keys(gameplay)).not.toContain('GameplayStageFaults')
+      expect(Object.keys(gameplay)).not.toContain('GameplayStageFaultsLayer')
     }),
   )
 

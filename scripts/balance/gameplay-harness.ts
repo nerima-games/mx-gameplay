@@ -1,4 +1,4 @@
-import { Effect, Layer, Ref, Result, Schema } from 'effect'
+import { Effect, Layer, Option, Ref, Result, Schema } from 'effect'
 import {
   DeltaTimeSecs,
   EpochMillis,
@@ -9,6 +9,7 @@ import {
   NonNegativeTickCount,
   PositionAxis,
   WorldIdSchema,
+  blockIdOf,
   blockPosition,
   chunkCoord,
   position,
@@ -16,7 +17,16 @@ import {
   type Position,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
-import { NoiseSeed } from '@nerima-games/mc-worldgen'
+import {
+  CHUNK_SIZE_XZ,
+  CHUNK_VOLUME,
+  NoiseSeed,
+  blockIndex,
+  generatedChunkSource,
+  surfaceHeightAt,
+  type ChunkStoreError,
+  type ChunkSource,
+} from '@nerima-games/mc-worldgen'
 import {
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
@@ -25,6 +35,10 @@ import {
   type PlayerServiceInputError,
   type WorldCommitCoordinatorError,
   type PlayerPose,
+  type EntitySerialExhausted,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
 } from '@nerima-games/mc-sim'
 import {
   HeadlessHarness,
@@ -40,6 +54,7 @@ import {
   makeGeneratedWorld as makeGameplayGeneratedWorld,
   makeInMemoryWorld,
   type InMemoryWorld,
+  type WorldInputFailure,
   type WorldContents,
 } from '../../src/domain/in-memory-world.js'
 import {
@@ -57,9 +72,11 @@ import {
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   gameplayOwnerRegistrations,
+  type GameplayOwnerRegistrationFailure,
 } from '../../src/stages/gameplay-owner-registrations.js'
 import {
   gameplayStages,
+  drainGameplayEntityStageFaults,
   makeGameplayFrameStateForOwner,
   requestBlockBreak,
   type GameplayFrameState,
@@ -94,7 +111,7 @@ export type BalanceMobSpawnRecord = Readonly<{
   kind: string
   position: Readonly<{ x: number; y: number; z: number }>
   timeService: BalanceTimeServiceReading
-  candidateBlockLight:
+  spawnPositionBlockLight:
     | Readonly<{ status: 'observed'; block: number }>
     | Readonly<{ status: 'unavailable'; reason: string }>
 }>
@@ -106,7 +123,7 @@ export type BalanceAttackerProvenance = Readonly<{
   spawnPosition: Readonly<{ x: number; y: number; z: number }> | null
   spawnTick: number | null
   spawnTimeService: BalanceTimeServiceReading | null
-  spawnCandidateBlockLight:
+  spawnPositionBlockLight:
     | Readonly<{ status: 'observed'; block: number }>
     | Readonly<{ status: 'unavailable'; reason: string }>
 }>
@@ -118,11 +135,23 @@ export type BalanceRecordedDamage = Readonly<{
   attacker?: BalanceAttackerProvenance
 }>
 
+type WorldBuildFailure =
+  | WorldInputFailure
+  | ItemStackFailure
+  | RecipeFailure
+  | PlayerStorageFailure
+  | EntitySerialExhausted
+
+type InMemoryWorldBuildFailure = WorldBuildFailure | ChunkStoreError
+
 export const makeBalanceGameplayRuntime = (
   contents: WorldContents,
   spawnPose?: PlayerPose,
   rollSeed = 1,
-): Effect.Effect<BalanceGameplayRuntime> => Effect.gen(function* () {
+): Effect.Effect<
+  BalanceGameplayRuntime,
+  InMemoryWorldBuildFailure | GameplayOwnerRegistrationFailure
+> => Effect.gen(function* () {
   const world = yield* makeInMemoryWorld<MobBehaviour>({
     world: contents,
     ...(spawnPose === undefined ? {} : { spawnPose }),
@@ -134,11 +163,19 @@ export const makeGeneratedBalanceGameplayRuntime = (
   seed: number,
   spawn: Readonly<{ x: number; z: number }>,
   rollSeed: number = seed,
-): Effect.Effect<BalanceGameplayRuntime> => Effect.gen(function* () {
+  options: Readonly<{ flatHostileSpawnSurface?: boolean }> = {},
+): Effect.Effect<
+  BalanceGameplayRuntime,
+  WorldBuildFailure | GameplayOwnerRegistrationFailure
+> => Effect.gen(function* () {
+  const chunkSource = options.flatHostileSpawnSurface === true
+    ? yield* makeFlatHostileSpawnChunkSource(seed, spawn)
+    : undefined
   const world = yield* makeGameplayGeneratedWorld<MobBehaviour>({
     seed,
     spawnX: spawn.x,
     spawnZ: spawn.z,
+    ...(chunkSource === undefined ? {} : { chunkSource }),
   })
   const minimumChunkX = Math.floor((spawn.x - 40) / 16)
   const maximumChunkX = Math.floor((spawn.x + 40) / 16)
@@ -152,17 +189,45 @@ export const makeGeneratedBalanceGameplayRuntime = (
   return yield* makeRuntimeFromWorld(world, rollSeed)
 })
 
+const makeFlatHostileSpawnChunkSource = (
+  seed: number,
+  spawn: Readonly<{ x: number; z: number }>,
+): Effect.Effect<ChunkSource> => Effect.gen(function* () {
+  const worldSeed = yield* Effect.orDie(Effect.fromResult(NoiseSeed.result(seed)))
+  const spawnBlockX = yield* Effect.orDie(Effect.fromResult(BlockAxis.result(Math.floor(spawn.x))))
+  const spawnBlockZ = yield* Effect.orDie(Effect.fromResult(BlockAxis.result(Math.floor(spawn.z))))
+  const surfaceY = surfaceHeightAt(worldSeed, spawnBlockX, spawnBlockZ)
+  const stone = Option.getOrThrow(blockIdOf('stone'))
+  const generated = generatedChunkSource(worldSeed)
+  const source: ChunkSource = (coord) => generated(coord).pipe(Effect.map((chunk) => {
+    const blocks = new Uint16Array(CHUNK_VOLUME)
+    for (let localX = 0; localX < CHUNK_SIZE_XZ; localX += 1) {
+      for (let localZ = 0; localZ < CHUNK_SIZE_XZ; localZ += 1) {
+        blocks[blockIndex(localX, surfaceY, localZ)] = stone
+      }
+    }
+    return { ...chunk, blocks }
+  }))
+  return source
+})
+
 const makeRuntimeFromWorld = (
   world: InMemoryWorld<MobBehaviour>,
   rollSeed: number,
-): Effect.Effect<BalanceGameplayRuntime> => Effect.gen(function* () {
+): Effect.Effect<BalanceGameplayRuntime, GameplayOwnerRegistrationFailure> => Effect.gen(function* () {
   const playerPose = yield* world.player.pose
   const dimension = yield* world.player.dimension
   const playerStorage = yield* world.inventory.storageSnapshot
   const entities = yield* world.entities.snapshot
+  const owners = yield* Effect.fromResult(gameplayOwnerRegistrations({
+    playerPose,
+    dimension,
+    playerStorage,
+    entities,
+  }))
   const coordinator = yield* Effect.orDie(makeWorldCommitCoordinator({
     world: WORLD_ID,
-    owners: gameplayOwnerRegistrations({ playerPose, dimension, playerStorage, entities }),
+    owners,
     chunkStores: { forDimension: () => world.chunkStore },
   }))
   const commit: GameplayStageCommitServices = {
@@ -251,7 +316,8 @@ const harnessStagesFor = (
   const ordered = scheduleGameplayStages(runtime.stages)
   const advanceGameplay: TestingHeadlessHarnessStages['intentsAndRules'] = (input) => {
     const tick = Number(input.tick)
-    return Effect.gen(function* () {
+    const advance = Effect.gen(function* () {
+      if ((yield* Ref.get(runtime.measurementFailure)) !== undefined) return EMPTY_CANDIDATE
       yield* Ref.set(runtime.stageTickCount, tick)
       yield* Ref.set(runtime.state.tickCount, tick)
       yield* Effect.orDie(runtime.world.time.advance(SIMULATION_TICK_COUNT))
@@ -295,7 +361,7 @@ const harnessStagesFor = (
                   z: Number(entity.feetPosition.z),
                 },
                 timeService,
-                candidateBlockLight: light._tag === 'Light'
+                spawnPositionBlockLight: light._tag === 'Light'
                   ? { status: 'observed' as const, block: light.block }
                   : { status: 'unavailable' as const, reason: light._tag },
               }
@@ -332,7 +398,7 @@ const harnessStagesFor = (
                 spawnPosition: spawn?.position ?? null,
                 spawnTick: spawn?.tick ?? null,
                 spawnTimeService: spawn?.timeService ?? null,
-                spawnCandidateBlockLight: spawn?.candidateBlockLight ?? {
+                spawnPositionBlockLight: spawn?.spawnPositionBlockLight ?? {
                   status: 'unavailable' as const,
                   reason: 'attacker did not spawn during the recorded harness run',
                 },
@@ -355,6 +421,37 @@ const harnessStagesFor = (
       monotonicSecs: MonotonicTimeSecs(tick / BALANCE_HARNESS_TICKS_PER_SECOND),
       wallClockEpochMillis: EpochMillis(0),
     })))
+    return Effect.flatMap(Effect.result(advance), (result) => Effect.gen(function* () {
+      if (Result.isFailure(result)) {
+        yield* Ref.update(runtime.measurementFailure, (current) => current ?? String(result.failure))
+      }
+
+      const stageFaults = yield* drainGameplayEntityStageFaults(runtime.state)
+      if (stageFaults.length > 0) {
+        const summary = stageFaults.map((fault): string => {
+          if (fault._tag === 'WorldDataFailure') {
+            return `${fault.source}/${fault.operation}@${fault.position.x},${fault.position.y},${fault.position.z}:${fault.reason._tag}`
+          }
+          if (fault._tag === 'EntityWorldDataFault') {
+            if (fault.target._tag === 'Entity') {
+              return `${fault.source}@${fault.target.entityId}:${fault.failure._tag}`
+            }
+            const faultPosition = fault.target._tag === 'Cell' ? fault.target.cell : fault.target.position
+            return `${fault.source}@${faultPosition.x},${faultPosition.y},${faultPosition.z}:${fault.failure._tag}`
+          }
+          if (fault._tag === 'GameplayRequestFault') return `${fault.source}:${fault.reason}`
+          if (fault._tag === 'FluidNeighbourPositionFault') {
+            return `Fluid@${fault.cell.x},${fault.cell.y},${fault.cell.z}:${fault.reason}`
+          }
+          if (fault._tag === 'MobBehaviourRepairFault') return `${fault._tag}@${fault.entityId}:${fault.failure._tag}`
+          if (fault._tag === 'MobMovementExecutionFault') return `${fault._tag}@${fault.entityId}:${fault.reason}`
+          return `${fault._tag}@${fault.entityId}:${fault.failure._tag}:${fault.failure.field}`
+        }).join('; ')
+        yield* Ref.update(runtime.measurementFailure, (current) => current ?? `gameplay stage faults: ${summary}`)
+      }
+
+      return Result.isFailure(result) ? EMPTY_CANDIDATE : result.success
+    }))
   }
   const idle = () => Effect.succeed(EMPTY_CANDIDATE)
   return {

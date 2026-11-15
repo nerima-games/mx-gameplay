@@ -43,6 +43,7 @@ import {
   type WorldRevision,
 } from '@nerima-games/mc-kernel'
 import { isDoorBlock } from './place-door-upper.js'
+import { entityWorldBlockDataAt, EntityWorldQueryFailureSchema, type EntityWorldQueryFailure } from '../entities/entity-world-cell.js'
 import {
   PlayerStorageSnapshotSchema,
   EquipmentItemSchema,
@@ -57,7 +58,11 @@ import {
   type WorldCommitRequest,
   type WorldReadSnapshot,
 } from '@nerima-games/mc-sim'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 
 /**
  * TOTAL, mirroring `BlockWriteOutcome`. There is no error channel here because
@@ -124,6 +129,7 @@ export type BreakTransactionFailure =
   | { readonly _tag: 'MissingTransactionContext' }
   | { readonly _tag: 'BlockUnavailable'; readonly reason: 'air' | 'chunk-not-loaded' | 'out-of-world' }
   | { readonly _tag: 'ObservationIncomplete'; readonly position: BlockPosition }
+  | { readonly _tag: 'WorldDataFault'; readonly failure: EntityWorldQueryFailure }
   | { readonly _tag: 'ObservationFailed'; readonly error: ObservationFailure }
   | { readonly _tag: 'ObservationChanged'; readonly expectedWorldRevision: WorldRevision; readonly actualWorldRevision: WorldRevision }
   | { readonly _tag: 'ToolDamageRejected'; readonly reason: 'InvalidLocation' }
@@ -135,6 +141,7 @@ export const BreakTransactionFailureSchema: Schema.Codec<BreakTransactionFailure
     reason: Schema.Literals(['air', 'chunk-not-loaded', 'out-of-world']),
   }),
   Schema.TaggedStruct('ObservationIncomplete', { position: BlockPositionSchema }),
+  Schema.TaggedStruct('WorldDataFault', { failure: EntityWorldQueryFailureSchema }),
   Schema.TaggedStruct('ObservationFailed', { error: ObservationFailureSchema }),
   Schema.TaggedStruct('ObservationChanged', {
     expectedWorldRevision: WorldRevisionSchema,
@@ -182,7 +189,7 @@ const positionKey = (position: BlockPosition): string =>
 const breakBlockLegacy = (
   store: ChunkStoreApi,
   position: BlockPosition,
-): Effect.Effect<BreakOutcome> =>
+): Effect.Effect<BreakOutcome, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.map(store.setBlock(position, AIR_BLOCK_ID), (outcome): BreakOutcome => {
     if (outcome._tag === 'Written') {
       return { _tag: 'Broken', yielded: outcome.previous, chunk: outcome.chunk }
@@ -239,6 +246,10 @@ export const planBreakBlock = (
     if (primaryRead.reading.block === AIR_BLOCK_ID) {
       return failure({ _tag: 'BlockUnavailable', reason: 'air' })
     }
+    const primaryData = entityWorldBlockDataAt(position, primaryRead.reading.block)
+    if (Result.isFailure(primaryData)) {
+      return failure({ _tag: 'WorldDataFault', failure: primaryData.failure })
+    }
 
     let candidateStorage = initial.state
     if (context.toolLocation !== undefined) {
@@ -280,6 +291,11 @@ export const planBreakBlock = (
         return failure({ _tag: 'BlockUnavailable', reason: 'chunk-not-loaded' })
       }
       if (reading._tag === 'OutOfWorld' || reading.block === AIR_BLOCK_ID) break
+
+      const readingData = entityWorldBlockDataAt(above, reading.block)
+      if (Result.isFailure(readingData)) {
+        return failure({ _tag: 'WorldDataFault', failure: readingData.failure })
+      }
 
       const pairedDoor = isDoorBlock(parent.block) && isDoorBlock(reading.block)
       const isSupported = Result.getOrThrow(canBlockStaySupported(reading.block, AIR_BLOCK_ID))
@@ -345,7 +361,7 @@ const transactionBreakBlock = (
 export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
-): Effect.Effect<BreakOutcome>
+): Effect.Effect<BreakOutcome, BlockStateCodecFailure | LightQueueUnderflowError>
 export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
@@ -360,7 +376,7 @@ export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
   context?: BreakTransactionContext,
-): Effect.Effect<BreakOutcome | BreakTransactionResult> {
+): Effect.Effect<BreakOutcome | BreakTransactionResult, BlockStateCodecFailure | LightQueueUnderflowError> {
   if (arguments.length < 3) return breakBlockLegacy(store, position)
   if (context === undefined) return Effect.succeed(failure({ _tag: 'MissingTransactionContext' }))
   return transactionBreakBlock(position, context)

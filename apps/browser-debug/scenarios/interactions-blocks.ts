@@ -19,7 +19,7 @@ import {
   requestPotatoPlanting,
   requestSoilTill,
 } from '../../../src/stages/registration.js'
-import { Option } from 'effect'
+import { Option, Result } from 'effect'
 import { runBrowserDebugEffect } from '../entrypoint.js'
 import { mountGameplayScenario, type ScenarioDefinition, type ScenarioMount } from '../contract.js'
 import { requestBreak, stepFrame, type Site } from '../../preview-mining-site/site.js'
@@ -33,7 +33,11 @@ const POTATO_CROP: BlockId = Option.getOrThrow(blockIdOf('potato_crop'))
 const at = (x: number, y: number) => blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(0))
 
 const dirtDropFromLootRules = () => {
-  const drop = blockLoot(DIRT).find(({ item }) => item === 'dirt')
+  const loot = blockLoot(DIRT)
+  if (Result.isFailure(loot)) {
+    throw new Error(`browser-debug: block loot registry lookup failed (${loot.failure.lookup})`)
+  }
+  const drop = loot.success.find(({ item }) => item === 'dirt')
   if (drop === undefined) throw new Error('browser-debug: dirt loot rule does not yield dirt')
   return drop
 }
