@@ -2186,8 +2186,9 @@ const runMobSimulation = (
     }
   }
 
+  // Thorns hits are finite 'generic' damage in [1, 5) on schema-decoded mobs, so the plan has no
+  // faults to record; undead burning relies on the same invariant.
   const thornsRetaliations = planMobDamageRoster(spawnedRoster, thornsDamageHits, damageTick)
-  for (const fault of thornsRetaliations.faults) yield* recordGameplayEntityStageFault(state, fault)
   const thornsDrops = Result.getOrThrow(rollCasualtyDrops(thornsRetaliations.casualties, nextRollSeed))
   const thornsExperience = Result.getOrThrow(rollCasualtyExperience(thornsRetaliations.casualties, thornsDrops.seed))
   nextRollSeed = thornsExperience.seed
