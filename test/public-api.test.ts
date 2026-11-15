@@ -38,6 +38,7 @@ describe('public API surface', () => {
         // `frameStages`. Expressible only since the vertical-slice spike; see
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
+        'GameplayBlockStateWorld',
         'makeProjectileRuntime',
         'GAMEPLAY_PLAYER_STORAGE_OWNER_ID',
         'GAMEPLAY_DROPPED_ITEMS_OWNER_ID',
@@ -76,6 +77,8 @@ describe('public API surface', () => {
         'spawnDroppedItems',
         'requestBucketUse',
         'requestFurnaceAdvance',
+        'requestBlockStateRule',
+        'drainBlockStateRuleResults',
         'requestFishingCast',
         'requestFishingAdvance',
         'requestFishingCancel',
@@ -97,6 +100,7 @@ describe('public API surface', () => {
       }
       expect(Object.keys(gameplay)).not.toContain('GameplayStageFaults')
       expect(Object.keys(gameplay)).not.toContain('GameplayStageFaultsLayer')
+      expect(gameplay.GAMEPLAY_STAGE_IDS.blockStateRules).toBe('gameplay:block-state-rules')
     }),
   )
 
@@ -306,6 +310,37 @@ describe('public API surface', () => {
       expect(Object.keys(gameplay)).toContain('DROPPED_ITEM_KIND')
       expect(Object.keys(gameplay)).toContain('spawnMobDrops')
       expect(Object.keys(gameplay)).toContain('meleeTargetBeforeBlock')
+    }),
+  )
+
+  // A host implements the block-state port and builds requests for
+  // `requestBlockStateRule`, so it needs the brand schemas those requests carry.
+  // The rule functions behind the registered stage are not part of that contract.
+  it.effect('exports the block-state request brands but not the block-state rule functions', () =>
+    Effect.sync(() => {
+      for (const name of [
+        'BlockStateRandomRollSchema',
+        'BoneMealCropStagesSchema',
+        'CropGrowthSpeedLevelSchema',
+        'StairHitHeightSchema',
+      ]) {
+        expect(Object.keys(gameplay)).toContain(name)
+      }
+      for (const name of [
+        'applyBlockStateRule',
+        'blockStateWorldPortForChunkStore',
+        'cropGrowthProbability',
+        'cropAgeAfterRandomTick',
+        'netherWartAgeAfterRandomTick',
+        'cropAgeAfterBoneMeal',
+        'doorOpenAfterToggle',
+        'doorPlacementState',
+        'stairPlacementState',
+        'saplingStageAfterGrowthAttempt',
+        'saplingStageAfterBoneMeal',
+      ]) {
+        expect(Object.keys(gameplay)).not.toContain(name)
+      }
     }),
   )
 

@@ -63,6 +63,33 @@ export * from './domain/interactions/crop-drops.js'
 export * from './domain/interactions/interaction-intent.js'
 export * from './domain/interactions/plant-crop.js'
 export * from './domain/interactions/bone-meal.js'
+// Only the state port a host implements, the request and result shapes it sends
+// or drains, and the brand schemas it needs to build those requests. The rule
+// functions stay internal to the module.
+export {
+  BlockStateRandomRollSchema,
+  BoneMealCropStagesSchema,
+  CropGrowthSpeedLevelSchema,
+  StairHitHeightSchema,
+  type BlockIdDecodeFailure,
+  type BlockStateCell,
+  type BlockStateEdit,
+  type BlockStateRandomRoll,
+  type BlockStateRead,
+  type BlockStateRuleFailure,
+  type BlockStateRuleOutcome,
+  type BlockStateRuleRequest,
+  type BlockStateRuleRequestId,
+  type BlockStateRuleResult,
+  type BlockStateWorldPort,
+  type BlockStateWrite,
+  type BoneMealCropStages,
+  type CropGrowthSpeedLevel,
+  type HorizontalBlockStateFacing,
+  type SaplingTreeSpaceResult,
+  type SaplingTreeSpaceStatus,
+  type StairHitHeight,
+} from './domain/interactions/block-state-rules.js'
 export * from './domain/interactions/place-cactus-sides.js'
 export * from './domain/interactions/melee-attack.js'
 export * from './domain/interactions/place-door-upper.js'
@@ -106,6 +133,8 @@ export {
 export * from './domain/interactions/use-block.js'
 export * from './domain/interactions/use-eye-of-ender.js'
 export * from './stages/registration.js'
+export { GameplayBlockStateWorld } from './stages/gameplay-block-state-world.js'
+export type { GameplayBlockStateWorldApi } from './stages/gameplay-block-state-world.js'
 export * from './stages/gameplay-owner-registrations.js'
 export * from './stages/ender-dragon-encounter-stage.js'
 export * from './stages/stage-ids.js'

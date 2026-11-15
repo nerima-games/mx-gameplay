@@ -7,6 +7,8 @@ import { makeEntitiesStage } from './entities-stage.js'
 import { makeEnderDragonStage } from './ender-dragon-stage.js'
 import { makeFluidsStage } from './fluids-stage.js'
 import { makeTimeWeatherStage } from './time-weather-stage.js'
+import { makeBlockStateRulesStage } from './block-state-rules-stage.js'
+import type { GameplayBlockStateWorldApi } from './gameplay-block-state-world.js'
 import type {
   EntityManagerApi,
   GameplayFrameState,
@@ -33,6 +35,7 @@ export const gameplayStages = (
   vehicleEnvironment?: VehicleFrameEnvironment,
   options: GameplayStageOptions = {},
   commit?: GameplayStageCommitServices,
+  blockStateWorld?: GameplayBlockStateWorldApi,
 ): ReadonlyArray<StageRegistration> => {
   const context: GameplayStageContext = {
     state,
@@ -43,10 +46,12 @@ export const gameplayStages = (
     vehicleEnvironment,
     options,
     commit,
+    blockStateWorld,
   }
   return [
     makeVehiclesStage(context),
     makeInteractionsStage(context),
+    makeBlockStateRulesStage(state, blockStateWorld),
     makeFireStage(context),
     makeSurvivalHungerStage(context),
     makeEntitiesStage(context),

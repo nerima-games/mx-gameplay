@@ -275,7 +275,7 @@ describe('production enchanting table orchestration', () => {
       const stages = yield* makeGameplayStagesWithState(state).pipe(
         Effect.provideService(WorldCommitCoordinator, observedCoordinator),
       )
-      expect(stages).toHaveLength(9)
+      expect(stages).toHaveLength(10)
       yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
       const expectedSlot = MULTI_ENCHANTMENT_SLOT
       const expectedOffer = PINNED_MULTI_ENCHANTMENT_OFFER

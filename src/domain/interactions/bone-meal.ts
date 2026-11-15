@@ -2,11 +2,22 @@ import { Effect } from 'effect'
 import type { BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 
-export const BONE_MEAL_CROPS: ReadonlyArray<BlockType> = ['wheat_crop', 'potato_crop', 'nether_wart_crop']
+export const BONE_MEAL_CROPS: ReadonlyArray<BlockType> = ['wheat_crop', 'potato_crop']
 
 export type BoneMealOutcome =
   | { readonly _tag: 'applied'; readonly at: BlockPosition }
   | { readonly _tag: 'notCrop'; readonly at: BlockPosition; readonly block: BlockType | undefined }
+  | {
+      readonly _tag: 'stateUnsupported'
+      readonly at: BlockPosition
+      readonly block: BlockType | undefined
+      readonly operation: 'readState' | 'writeState'
+    }
+  | {
+      readonly _tag: 'stateUnavailable'
+      readonly at: BlockPosition
+      readonly reason: 'ChunkNotLoaded' | 'OutOfWorld'
+    }
   | {
       readonly _tag: 'cropOwnerMismatch'
       readonly at: BlockPosition
