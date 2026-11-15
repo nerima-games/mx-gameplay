@@ -2,17 +2,18 @@ import { describe, expect, it } from '@effect/vitest'
 import {
   AIR_BLOCK_ID,
   BlockAxis,
+  BlockId,
   blockIdOf,
   blockPosition,
   DeltaTimeSecs,
   enchantmentsComponent,
   itemComponents,
   type ItemType,
+  type StageRegistration,
   WorldRevisionSchema,
 } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
-  AnvilEnchantmentId,
   PlayerStorageSnapshotSchema,
   ReplicatedOwnerUnknown,
   TimeService,
@@ -25,19 +26,28 @@ import {
   makeTimeService,
   durabilityForItem,
   type DomainEventBusApi,
+  type EnchantmentTableServiceApi,
   type Slot,
+  countEnchantmentTableBookshelves,
+  generateEnchantmentTableOffers,
+  makeEnchantmentTableService,
 } from '@nerima-games/mc-sim'
-import { ChunkStore } from '@nerima-games/mc-worldgen'
-import { Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
+import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
 import * as FastCheck from 'fast-check'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
-import { publishGeneratedEnchantmentOffers } from '../src/stages/interactions-stage.js'
+import { enchantmentTableRandomForSeed } from '../src/domain/enchantment-seed.js'
+import { bindEnchantmentTableService } from '../src/stages/interactions-stage.js'
+import { gameplayStages } from '../src/stages/gameplay-stages.js'
+import { entityManagerTag, type MobBehaviour } from '../src/stages/registration-core.js'
 import {
+  GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
   drainEnchantmentTableResults,
+  drainGameplayEntityStageFaults,
   gameplayModule,
   makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
@@ -51,7 +61,7 @@ import {
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
-import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double.js'
+import { blockKey, chunkKeyOf, makeChunkStoreDouble, STONE, world } from './support/chunk-store-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
 import { gameplayCommitServicesLayer } from './support/transactional-stage-doubles.js'
 import { runFrame } from './support/frame-runner.js'
@@ -68,13 +78,15 @@ const TABLE_BLOCK_POSITION = blockPosition(
   BlockAxis(ENCHANTMENT_TABLE_POSITION.z),
 )
 const ENCHANTING_TABLE = Option.getOrThrow(blockIdOf('enchanting_table'))
+// The table at the origin has its two-block ring in the four chunks around it.
+const TABLE_RING_CHUNKS = ['-1,-1', '-1,0', '0,-1', '0,0']
 
 // Suspended because the double's Ref captures the map it is first given: an
 // eagerly built double would carry one test's block writes into the next build.
 const tableWorldStoreLayer = Layer.effect(
   ChunkStore,
   Effect.suspend(() => Effect.map(
-    makeChunkStoreDouble(world([[TABLE_BLOCK_POSITION, ENCHANTING_TABLE]]), ['0,0']),
+    makeChunkStoreDouble(world([[TABLE_BLOCK_POSITION, ENCHANTING_TABLE]]), TABLE_RING_CHUNKS),
     (double) => double.api,
   )),
 )
@@ -105,33 +117,35 @@ const PINNED_DIAMOND_SWORD_OFFERS = [
 ] as const
 const PINNED_MULTI_ENCHANTMENT_OFFER = PINNED_DIAMOND_SWORD_OFFERS[MULTI_ENCHANTMENT_SLOT]!.offer
 
-describe('generated enchantment offers adapter', () => {
-  it('exposes generated offers only with an explicit unavailable bookshelf count', () => {
-    const result = {
-      _tag: 'OffersGeneratedWithoutBookshelfCount',
-      requestId: 'unknown-bookshelves',
-      offers: PINNED_DIAMOND_SWORD_OFFERS,
-    } as const
+describe('generated enchantment offers result', () => {
+  it('carries the counted bookshelf count with the generated offers', () => {
     const offerEntryArbitrary = FastCheck.constantFrom(...PINNED_DIAMOND_SWORD_OFFERS)
 
     FastCheck.assert(FastCheck.property(
       FastCheck.string({ minLength: 1 }),
+      FastCheck.integer({ min: 0, max: 15 }),
       FastCheck.array(offerEntryArbitrary, { maxLength: 3 }),
-      (requestId, offers) => {
-        const generated = {
-          _tag: 'OffersGeneratedWithoutBookshelfCount',
-          requestId,
-          offers,
-        }
-        expect(Schema.is(GameplayEnchantmentTableResultSchema)(generated)).toBe(true)
+      (requestId, bookshelfCount, offers) => {
+        const generated = { _tag: 'OffersGenerated', requestId, bookshelfCount, offers }
         expect(Schema.decodeUnknownSync(GameplayEnchantmentTableResultSchema)(generated)).toStrictEqual(generated)
       },
     ))
 
-    expect(Schema.decodeUnknownSync(GameplayEnchantmentTableResultSchema)(result)).toStrictEqual(result)
+    const result = {
+      _tag: 'OffersGenerated',
+      requestId: 'counted-bookshelves',
+      bookshelfCount: 0,
+      offers: PINNED_DIAMOND_SWORD_OFFERS,
+    } as const
+    for (const bookshelfCount of [-1, 16, 1.5]) {
+      expect(Schema.is(GameplayEnchantmentTableResultSchema)({ ...result, bookshelfCount })).toBe(false)
+    }
+    expect(Schema.is(GameplayEnchantmentTableResultSchema)({
+      _tag: 'OffersGenerated', requestId: result.requestId, offers: result.offers,
+    })).toBe(false)
     expect(Schema.is(GameplayEnchantmentTableResultSchema)({
       ...result,
-      _tag: 'OffersGenerated',
+      _tag: 'OffersGeneratedWithoutBookshelfCount',
     })).toBe(false)
     expect(Schema.is(GameplayEnchantmentTableResultSchema)({ ...result, requestId: '' })).toBe(false)
     for (const slot of [-1, 3]) {
@@ -147,40 +161,6 @@ describe('generated enchantment offers adapter', () => {
       })).toBe(true)
     }
   })
-
-  it.effect('rejects and records a generated enchantment id outside the table service contract', () =>
-    Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const request = Schema.decodeUnknownSync(GameplayEnchantmentTableOffersRequestSchema)({
-        requestId: 'unsupported-generated-offer',
-        itemSlot: 0,
-        lapisSlot: 1,
-        tablePosition: ENCHANTMENT_TABLE_POSITION,
-      })
-      const unsupportedId = Result.getOrThrow(AnvilEnchantmentId('unsupported-enchantment'))
-      const mailbox = { requests: [], results: [], sessions: new Map() }
-
-      yield* publishGeneratedEnchantmentOffers(state, mailbox, request, stack('diamond_sword', 1), [
-        { levelCost: 1, lapisCost: 1, enchantments: [{ id: unsupportedId, level: 1 }] },
-        undefined,
-        undefined,
-      ])
-
-      expect(mailbox.results).toEqual([{
-        _tag: 'Rejected',
-        requestId: 'unsupported-generated-offer',
-        reason: 'offer-generation-failed',
-      }])
-      expect(mailbox.sessions.size).toBe(0)
-      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'ItemUse',
-        requestId: 'unsupported-generated-offer',
-        error: expect.anything(),
-      }])
-    }),
-  )
 })
 
 const countItem = (
@@ -310,11 +290,11 @@ describe('production enchanting table orchestration', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
       const generated = yield* drainEnchantmentTableResults(state)
       expect(generated).toStrictEqual([{
-        _tag: 'OffersGeneratedWithoutBookshelfCount',
+        _tag: 'OffersGenerated',
         requestId: 'table-success',
+        bookshelfCount: 0,
         offers: PINNED_DIAMOND_SWORD_OFFERS,
       }])
-      expect(generated).not.toContainEqual(expect.objectContaining({ _tag: 'OffersGenerated' }))
 
       const [beforeStorage, beforeVitals] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
@@ -473,7 +453,7 @@ describe('production enchanting table orchestration', () => {
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
-        _tag: 'OffersGeneratedWithoutBookshelfCount', requestId: 'no-table-offers', offers: [],
+        _tag: 'OffersGenerated', requestId: 'no-table-offers', bookshelfCount: 0, offers: [],
       }])
       yield* requestEnchantmentTableApply(state, { requestId: 'no-table-offers', tableSlot: 0 })
       yield* runFrame(stages, DeltaTimeSecs(0))
@@ -489,8 +469,9 @@ describe('production enchanting table orchestration', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
       const duplicateResults = yield* drainEnchantmentTableResults(state)
       expect(duplicateResults).toContainEqual({
-        _tag: 'OffersGeneratedWithoutBookshelfCount',
+        _tag: 'OffersGenerated',
         requestId: duplicateRequest.requestId,
+        bookshelfCount: 0,
         offers: PINNED_DIAMOND_SWORD_OFFERS,
       })
       expect(duplicateResults).toContainEqual({
@@ -738,8 +719,9 @@ describe('production enchanting table orchestration', () => {
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
-        _tag: 'OffersGeneratedWithoutBookshelfCount',
+        _tag: 'OffersGenerated',
         requestId: 'table-removed',
+        bookshelfCount: 0,
         offers: PINNED_DIAMOND_SWORD_OFFERS,
       }])
 
@@ -917,5 +899,277 @@ describe('production enchanting table orchestration', () => {
         expect(Exit.isFailure(exit)).toBe(true)
       }
     }),
+  )
+})
+
+const BOOKSHELF = Option.getOrThrow(blockIdOf('bookshelf'))
+// Not in the kernel registry, so mc-sim cannot map it to an enchanting power.
+const UNREGISTERED_BLOCK = BlockId(4_000)
+const TABLE_Y = ENCHANTMENT_TABLE_POSITION.y
+const RING_DIRECTIONS = [[-2, -2], [-2, 0], [-2, 2], [0, -2], [0, 2], [2, -2], [2, 0], [2, 2]] as const
+const cellAt = (x: number, y: number, z: number) => blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+const shelvesAt = (directions: ReadonlyArray<readonly [number, number]>, scale: number) =>
+  directions.flatMap(([dx, dz]) => [TABLE_Y, TABLE_Y + 1].map((y) =>
+    [cellAt((dx / 2) * scale, y, (dz / 2) * scale), BOOKSHELF] as const))
+const gapsOf = ([dx, dz]: readonly [number, number], block: BlockId) =>
+  [TABLE_Y, TABLE_Y + 1].map((y) => [cellAt(dx / 2, y, dz / 2), block] as const)
+
+const offerEntriesFor = (bookshelfCount: number, seed = ENCHANTMENT_TABLE_SEED) =>
+  Result.getOrThrow(generateEnchantmentTableOffers({
+    item: 'diamond_sword',
+    bookshelfCount,
+    random: enchantmentTableRandomForSeed(seed),
+  })).flatMap((offer, slot) => offer === undefined ? [] : [{ slot, offer }])
+
+const interactionsOnly = (stages: ReadonlyArray<StageRegistration>) =>
+  stages.filter(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)
+
+const requestTableOffers = (
+  state: Parameters<typeof drainEnchantmentTableResults>[0],
+  stages: Parameters<typeof runFrame>[0],
+  requestId: string,
+  tablePosition: Readonly<{ x: number; y: number; z: number }> = ENCHANTMENT_TABLE_POSITION,
+) => Effect.gen(function* () {
+  yield* requestEnchantmentTableOffers(state, { requestId, itemSlot: 0, lapisSlot: 1, tablePosition })
+  yield* runFrame(stages, DeltaTimeSecs(0))
+  return yield* drainEnchantmentTableResults(state)
+})
+
+const offersForLayout = (
+  layout: ReadonlyArray<readonly [ReturnType<typeof cellAt>, BlockId]>,
+  requestId: string,
+) => Effect.gen(function* () {
+  const coordinator = yield* WorldCommitCoordinator
+  const store = yield* ChunkStore
+  for (const [position, block] of layout) yield* store.setBlock(position, block)
+  const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+  yield* seedTableInputs()
+  // Other stages draw from the roll seed, so only interactions runs here.
+  const stages = interactionsOnly(yield* makeGameplayStagesWithState(state))
+  yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+  return yield* requestTableOffers(state, stages, requestId)
+})
+
+const interactionsWithService = (
+  state: Parameters<typeof drainEnchantmentTableResults>[0],
+  override: (real: EnchantmentTableServiceApi) => Partial<EnchantmentTableServiceApi>,
+) => Effect.gen(function* () {
+  const coordinator = yield* WorldCommitCoordinator
+  const store = yield* ChunkStore
+  const roster = yield* entityManagerTag<MobBehaviour>()
+  const time = yield* TimeService
+  const real = yield* makeEnchantmentTableService()
+  bindEnchantmentTableService(state, { ...real, ...override(real) })
+  return interactionsOnly(gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
+    coordinator,
+    playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+    playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+  }))
+})
+
+describe('enchanting table bookshelves counted from the world', () => {
+  it.effect('counts no bookshelves around a bare table', () =>
+    Effect.gen(function* () {
+      expect(yield* offersForLayout([], 'bare-table')).toStrictEqual([{
+        _tag: 'OffersGenerated', requestId: 'bare-table', bookshelfCount: 0, offers: offerEntriesFor(0),
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('caps sixteen ring bookshelves at fifteen', () =>
+    Effect.gen(function* () {
+      expect(yield* offersForLayout(shelvesAt(RING_DIRECTIONS, 2), 'full-ring')).toStrictEqual([{
+        _tag: 'OffersGenerated', requestId: 'full-ring', bookshelfCount: 15, offers: offerEntriesFor(15),
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('skips both shelves of a direction whose gap holds stone', () =>
+    Effect.gen(function* () {
+      const layout = [...shelvesAt(RING_DIRECTIONS, 2), ...gapsOf(RING_DIRECTIONS[6], STONE)]
+      expect(yield* offersForLayout(layout, 'blocked-direction')).toStrictEqual([{
+        _tag: 'OffersGenerated', requestId: 'blocked-direction', bookshelfCount: 14, offers: offerEntriesFor(14),
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('does not count bookshelves three blocks from the table', () =>
+    Effect.gen(function* () {
+      expect(yield* offersForLayout(shelvesAt(RING_DIRECTIONS, 3), 'distant-shelves')).toStrictEqual([{
+        _tag: 'OffersGenerated', requestId: 'distant-shelves', bookshelfCount: 0, offers: offerEntriesFor(0),
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('generates the same offers for the same seed and layout', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const store = yield* ChunkStore
+      for (const [position, block] of shelvesAt(RING_DIRECTIONS.slice(0, 3), 2)) yield* store.setBlock(position, block)
+      const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+      yield* seedTableInputs()
+      const stages = interactionsOnly(yield* makeGameplayStagesWithState(state))
+      const results = []
+      for (const requestId of ['repeat-first', 'repeat-second']) {
+        yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+        results.push(yield* requestTableOffers(state, stages, requestId))
+      }
+      const expected = (requestId: string) => [{
+        _tag: 'OffersGenerated', requestId, bookshelfCount: 6, offers: offerEntriesFor(6),
+      }]
+      expect(results).toStrictEqual([expected('repeat-first'), expected('repeat-second')])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('pre-reads every position the bookshelf counting rule can ask for', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const store = yield* ChunkStore
+      const reads = new Set<string>()
+      const recordingStore: ChunkStoreApi = {
+        ...store,
+        getBlock: (position) => {
+          reads.add(blockKey(position))
+          return store.getBlock(position)
+        },
+      }
+      const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+      yield* seedTableInputs()
+      const stages = interactionsOnly(yield* makeGameplayStagesWithState(state).pipe(
+        Effect.provideService(ChunkStore, recordingStore),
+      ))
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+      expect(yield* requestTableOffers(state, stages, 'recorded-reads')).toMatchObject([{ _tag: 'OffersGenerated' }])
+
+      // Air gaps make mc-sim's rule ask for every shelf cell as well.
+      const asked = new Set<string>()
+      Result.getOrThrow(countEnchantmentTableBookshelves({
+        tablePosition: TABLE_BLOCK_POSITION,
+        blockIdAt: (position) => {
+          asked.add(blockKey(position))
+          return AIR_BLOCK_ID
+        },
+      }))
+      expect(asked.size).toBe(32)
+      expect([...asked].filter((key) => !reads.has(key))).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('refuses offers without advancing the seed when a ring position is unreadable', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const store = yield* ChunkStore
+      const unreadable = cellAt(2, TABLE_Y + 1, 2)
+      const partialStore: ChunkStoreApi = {
+        ...store,
+        getBlock: (position) => blockKey(position) === blockKey(unreadable)
+          ? Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
+          : store.getBlock(position),
+      }
+      const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+      yield* seedTableInputs()
+      const stages = interactionsOnly(yield* makeGameplayStagesWithState(state).pipe(
+        Effect.provideService(ChunkStore, partialStore),
+      ))
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+
+      for (const requestId of ['unloaded-first', 'unloaded-second']) {
+        expect(yield* requestTableOffers(state, stages, requestId)).toStrictEqual([{
+          _tag: 'Rejected', requestId, reason: 'table-area-unloaded',
+        }])
+      }
+
+      expect(yield* Ref.get(state.rollSeed)).toBe(ENCHANTMENT_TABLE_SEED)
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([{
+        _tag: 'WorldDataFailure',
+        source: 'EnchantmentTable',
+        operation: 'ReadBlock',
+        position: unreadable,
+        reason: { _tag: 'ChunkNotLoaded', position: unreadable },
+      }])
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('refuses offers without advancing the seed when the ring leaves the safe integer range', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const farTable = { x: Number.MAX_SAFE_INTEGER - 1, y: TABLE_Y, z: 0 } as const
+      const farTablePosition = cellAt(farTable.x, farTable.y, farTable.z)
+      const farStore = yield* makeChunkStoreDouble(
+        world([[farTablePosition, ENCHANTING_TABLE]]),
+        [chunkKeyOf(farTablePosition)],
+      )
+      const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+      yield* seedTableInputs()
+      const stages = interactionsOnly(yield* makeGameplayStagesWithState(state).pipe(
+        Effect.provideService(ChunkStore, farStore.api),
+      ))
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+
+      expect(yield* requestTableOffers(state, stages, 'unsafe-ring', farTable)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'unsafe-ring', reason: 'offer-generation-failed',
+      }])
+      expect(yield* Ref.get(state.rollSeed)).toBe(ENCHANTMENT_TABLE_SEED)
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('rejects offers mc-sim cannot count without recording a stage failure', () =>
+    Effect.gen(function* () {
+      const results = yield* offersForLayout(gapsOf(RING_DIRECTIONS[0], UNREGISTERED_BLOCK), 'unregistered-gap')
+      expect(results).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'unregistered-gap', reason: 'offer-generation-failed',
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a non-rule service failure and reports the transaction as failed', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+      yield* seedTableInputs()
+      const revision = Result.getOrThrow(Schema.decodeUnknownResult(WorldRevisionSchema)(1))
+      const stages = yield* interactionsWithService(state, () => ({
+        generateOffers: () => Effect.fail(new WorldRevisionConflict({ expected: revision, actual: revision })),
+      }))
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+
+      expect(yield* requestTableOffers(state, stages, 'service-conflict')).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'service-conflict', reason: 'transaction-failed',
+      }])
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'ItemUse',
+        requestId: 'service-conflict',
+        error: { _tag: 'WorldRevisionConflict' },
+      }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('treats a service read outside the pre-read ring as a defect, not as a default block', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+      yield* seedTableInputs()
+      const outsideRing = cellAt(3, TABLE_Y, 0)
+      const stages = yield* interactionsWithService(state, (real) => ({
+        generateOffers: (request) => Effect.flatMap(
+          Effect.sync(() => request.blockIdAt(outsideRing)),
+          () => real.generateOffers(request),
+        ),
+      }))
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'outside-ring', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
+      })
+
+      const exit = yield* Effect.exit(runFrame(stages, DeltaTimeSecs(0)))
+      expect(Exit.hasDies(exit)).toBe(true)
+      const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+      expect(defect).toBeInstanceOf(Error)
+      expect(defect).toMatchObject({ message: expect.stringContaining('not pre-read at 3,64,0') })
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 })

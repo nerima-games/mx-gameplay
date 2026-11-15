@@ -31,12 +31,12 @@ import {
   type EnchantmentTableError,
   type EnchantmentTableItem,
   type EnchantmentTableOffers,
-  type EnchantmentTableRandom,
   EnchantmentTableOfferSchema as SimEnchantmentTableOfferSchema,
   type EquipmentSlot,
 } from '@nerima-games/mc-sim'
 
 import { applyArmorPointsToDamage, type ArmorPoints } from './combat/armor-mitigation.js'
+import { enchantmentTableRandomForSeed, mixSeed, normalizeSeed } from './enchantment-seed.js'
 import type { Damage } from './death-cause.js'
 import { bowPowerMultiplier } from './interactions/draw-bow.js'
 
@@ -278,17 +278,8 @@ export type EnchantmentOffer = {
   readonly lapisCost: 1 | 2 | 3
 }
 
-const normalizeSeed = (seed: number): number =>
-  Math.trunc(seed) >>> 0
 const normalizeBookshelves = (bookshelves: number): number =>
   Math.min(15, Math.max(0, Math.floor(bookshelves)))
-
-const mixSeed = (value: number): number => {
-  let mixed = value >>> 0
-  mixed = Math.imul(mixed ^ (mixed >>> 16), 0x21f0aaad)
-  mixed = Math.imul(mixed ^ (mixed >>> 15), 0x735a2d97)
-  return (mixed ^ (mixed >>> 15)) >>> 0
-}
 
 export type EnchantmentOfferFailure = Readonly<{
   _tag: 'InvalidEnchantmentOfferInput'
@@ -357,19 +348,6 @@ export const enchantmentOffers = (
     enchantmentOffer(seed, bookshelfCount, 1),
     enchantmentOffer(seed, bookshelfCount, 2),
   ] as const)
-}
-
-const enchantmentTableRandomForSeed = (seed: number): EnchantmentTableRandom => {
-  let state = normalizeSeed(seed)
-  const next = (): number => {
-    state = mixSeed((state + 0x9e3779b9) >>> 0)
-    return state / 0x1_0000_0000
-  }
-
-  return {
-    nextInt: (bound) => Math.floor(next() * bound),
-    nextFloat: next,
-  }
 }
 
 export type EnchantmentBookshelfCount = number & Brand.Brand<'EnchantmentBookshelfCount'>

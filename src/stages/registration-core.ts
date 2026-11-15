@@ -2325,6 +2325,7 @@ export type EntityWorldDataFaultSource =
   | 'Fluid'
   | 'Fire'
   | 'Fishing'
+  | 'EnchantmentTable'
 
 export type EntityStageFault =
   | Readonly<{

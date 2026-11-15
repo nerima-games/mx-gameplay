@@ -44,9 +44,11 @@ import {
   AttackRangeDistance,
   EnchantmentLevel,
   EntityHealthPoints,
+  BlockAxis,
   EntityId,
   PositionAxis,
   RandomSeed,
+  blockPosition,
   weaponComponent,
   type EnchantmentLevel as EnchantmentLevelValue,
 } from '@nerima-games/mc-kernel'
@@ -106,6 +108,7 @@ import type {
   GameplayStageBlockTypeDecodeFailure,
   GameplayStageItemUseWorldFailure,
 } from './gameplay-stage-faults.js'
+import { enchantmentTableRandomForSeed } from '../domain/enchantment-seed.js'
 
 import {
   AIR_BLOCK_ID,
@@ -158,10 +161,15 @@ import {
   type CropState,
   primeTnt,
   spawnEntity,
+  type EnchantmentTableApplyFailure,
   type EnchantmentTableApplyResult,
+  type EnchantmentTableBookshelfFailure,
+  type EnchantmentTableFailure,
+  type EnchantmentTableServiceError,
+  type EnchantmentTableBlockIdAt,
+  type EnchantmentTableBookshelfCount,
+  type EnchantmentTableGenerateOffersResult,
   type EnchantmentTableInventorySlot,
-  type EnchantmentTableOffer as RawEnchantmentTableOffer,
-  type EnchantmentTableOffers as RawEnchantmentTableOffers,
   type ItemStack,
   type EnchantmentTableServiceApi,
 } from '@nerima-games/mc-sim'
@@ -211,8 +219,6 @@ import {
   type KnockbackStrength,
   punchKnockbackBonus,
   silkTouchEnabled,
-  EnchantmentTableShelfCountSchema,
-  generateEnchantmentTableOffersForItem,
   type EnchantmentSource,
 } from '../domain/enchantment.js'
 import {
@@ -2543,15 +2549,18 @@ const advanceBlockMiningAttempt = (
 
 type GameplayEnchantmentTableRequestId = string
 type GameplayEnchantmentTableOffer = Schema.Schema.Type<typeof SimEnchantmentTableOfferSchema>
-const PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT = Schema.decodeUnknownSync(EnchantmentTableShelfCountSchema)(0)
-// mc-sim's offer generation never inspects the world, so the stage owns the
-// check that the requested position still holds an enchanting table.
+// mc-sim's offer generation reads only the bookshelf ring, never the table
+// block, so the stage owns the check that the position still holds a table.
 const ENCHANTING_TABLE_BLOCK_ID: BlockId = Option.getOrThrow(blockIdOf('enchanting_table'))
 type GameplayEnchantmentTableOffers = readonly [
   GameplayEnchantmentTableOffer | undefined,
   GameplayEnchantmentTableOffer | undefined,
   GameplayEnchantmentTableOffer | undefined,
 ]
+// Same brand as mc-sim's count, so the service result needs no re-decode.
+const EnchantmentTableBookshelfCountSchema: Schema.Codec<EnchantmentTableBookshelfCount, number> = Schema.Int
+  .check(Schema.isBetween({ minimum: 0, maximum: 15 }))
+  .pipe(Schema.brand('EnchantmentTableBookshelfCount'))
 const EnchantmentTableRequestIdSchema: Schema.Codec<GameplayEnchantmentTableRequestId, string> = Schema.String.check(
   Schema.makeFilter((requestId) => requestId.length > 0),
 )
@@ -2612,16 +2621,19 @@ type EnchantmentTableRejectionReason =
   | 'item-stack-failure'
   | 'transaction-failed'
   | 'table-missing'
+  | 'table-area-unloaded'
 const EnchantmentTableRejectionReasonSchema: Schema.Codec<EnchantmentTableRejectionReason, string> = Schema.Literals([
   'service-unavailable', 'player-dead', 'no-item', 'already-enchanted', 'invalid-seed',
   'offer-generation-failed', 'duplicate-session', 'session-not-found', 'item-changed',
   'invalid-offer', 'empty-item-slot', 'invalid-item', 'not-enchantable', 'insufficient-level',
   'insufficient-lapis', 'invalid-storage', 'item-stack-failure', 'transaction-failed', 'table-missing',
+  'table-area-unloaded',
 ])
 export type GameplayEnchantmentTableResult =
   | Readonly<{
-      readonly _tag: 'OffersGeneratedWithoutBookshelfCount'
+      readonly _tag: 'OffersGenerated'
       readonly requestId: GameplayEnchantmentTableRequestId
+      readonly bookshelfCount: EnchantmentTableBookshelfCount
       readonly offers: ReadonlyArray<EnchantmentTableOfferEntry>
     }>
   | Readonly<{
@@ -2640,8 +2652,9 @@ export const GameplayEnchantmentTableResultSchema: Schema.Codec<
   GameplayEnchantmentTableResult,
   unknown
 > = Schema.Union([
-  Schema.TaggedStruct('OffersGeneratedWithoutBookshelfCount', {
+  Schema.TaggedStruct('OffersGenerated', {
     requestId: EnchantmentTableRequestIdSchema,
+    bookshelfCount: EnchantmentTableBookshelfCountSchema,
     offers: Schema.Array(EnchantmentTableOfferEntrySchema),
   }),
   Schema.TaggedStruct('Applied', {
@@ -2722,56 +2735,28 @@ export const drainEnchantmentTableResults = (
 const sameItemStack = (left: ItemStack, right: ItemStack): boolean =>
   Equal.equals(left, right)
 
-const decodeGeneratedOffer = (
-  offer: RawEnchantmentTableOffer | undefined,
-): Result.Result<GameplayEnchantmentTableOffer | undefined, Schema.SchemaError> =>
-  offer === undefined
-    ? Result.succeed(undefined)
-    : Schema.decodeUnknownResult(SimEnchantmentTableOfferSchema)(offer)
-
-const decodeGeneratedOffers = (
-  offers: RawEnchantmentTableOffers,
-): Result.Result<GameplayEnchantmentTableOffers, Schema.SchemaError> =>
-  Result.all([
-    decodeGeneratedOffer(offers[0]),
-    decodeGeneratedOffer(offers[1]),
-    decodeGeneratedOffer(offers[2]),
-  ] as const)
-
-export const publishGeneratedEnchantmentOffers = (
-  state: GameplayFrameState,
+const publishGeneratedEnchantmentOffers = (
   mailbox: EnchantmentTableMailbox,
   request: GameplayEnchantmentTableOffersRequest,
   sourceStack: ItemStack,
-  offers: RawEnchantmentTableOffers,
-): Effect.Effect<void> => Effect.gen(function* () {
-  const serviceOffers = decodeGeneratedOffers(offers)
-  if (Result.isFailure(serviceOffers)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed',
-      operation: 'CandidateBuild',
-      subject: 'ItemUse',
-      requestId: request.requestId,
-      error: serviceOffers.failure,
-    })
-    mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
-    return
-  }
+  generated: EnchantmentTableGenerateOffersResult,
+): void => {
   mailbox.sessions.set(request.requestId, {
     itemSlot: request.itemSlot,
     lapisSlot: request.lapisSlot,
     tablePosition: request.tablePosition,
     sourceStack,
-    offers: serviceOffers.success,
+    offers: generated.offers,
   })
   mailbox.results.push({
-    _tag: 'OffersGeneratedWithoutBookshelfCount',
+    _tag: 'OffersGenerated',
     requestId: request.requestId,
-    offers: serviceOffers.success.flatMap((offer, slot) => offer === undefined
+    bookshelfCount: generated.bookshelfCount,
+    offers: generated.offers.flatMap((offer, slot) => offer === undefined
       ? []
       : [{ slot: slot as 0 | 1 | 2, offer }]),
   })
-})
+}
 
 const isEnchantingTableAt = (
   store: GameplayStageContext['store'],
@@ -2862,6 +2847,83 @@ const applyEnchantmentTableRequest = (
     })
   })
 
+// mc-sim counts bookshelves per direction and height by reading the gap cell
+// and, only when the gap is air, the shelf cell behind it. Both cells for all
+// eight directions and both heights are every position it can ask for.
+const ENCHANTMENT_TABLE_RING_DIRECTIONS: ReadonlyArray<Readonly<{ dx: number; dz: number }>> = [
+  { dx: -2, dz: -2 }, { dx: -2, dz: 0 }, { dx: -2, dz: 2 },
+  { dx: 0, dz: -2 }, { dx: 0, dz: 2 },
+  { dx: 2, dz: -2 }, { dx: 2, dz: 0 }, { dx: 2, dz: 2 },
+]
+
+const ringCell = (x: number, y: number, z: number): Result.Result<BlockPosition, Brand.BrandError> =>
+  Result.map(
+    Result.all([BlockAxis.result(x), BlockAxis.result(y), BlockAxis.result(z)] as const),
+    ([cellX, cellY, cellZ]) => blockPosition(cellX, cellY, cellZ),
+  )
+
+const enchantmentTableRingPositions = (
+  table: BlockPosition,
+): Result.Result<ReadonlyArray<BlockPosition>, Brand.BrandError> =>
+  Result.all(ENCHANTMENT_TABLE_RING_DIRECTIONS.flatMap(({ dx, dz }) =>
+    [table.y, table.y + 1].flatMap((y) => [
+      ringCell(table.x + dx / 2, y, table.z + dz / 2),
+      ringCell(table.x + dx, y, table.z + dz),
+    ])))
+
+/**
+ * Reads every ring position up front because mc-sim's `blockIdAt` is
+ * synchronous. An unreadable position is not air: it records a fault and the
+ * request is refused, so the result never counts a chunk the stage cannot see.
+ */
+const readEnchantmentTableRing = (
+  state: GameplayFrameState,
+  store: GameplayStageContext['store'],
+  ring: ReadonlyArray<BlockPosition>,
+): Effect.Effect<EnchantmentTableBlockIdAt | undefined> => Effect.gen(function* () {
+  const blocks = new Map<BlockPositionKey, BlockId>()
+  let unreadable = false
+  for (const position of ring) {
+    const reading = yield* store.getBlock(position)
+    if (reading._tag === 'Block') {
+      blocks.set(blockPositionKeyOf(position), reading.block)
+    } else {
+      unreadable = true
+      yield* recordGameplayEntityStageFault(state, {
+        _tag: 'WorldDataFailure',
+        source: 'EnchantmentTable',
+        operation: 'ReadBlock',
+        position,
+        reason: { _tag: reading._tag, position },
+      })
+    }
+  }
+  if (unreadable) return undefined
+  return (position) => {
+    const block = blocks.get(blockPositionKeyOf(position))
+    if (block === undefined) {
+      throw new Error(
+        `Enchanting table ring was not pre-read at ${position.x},${position.y},${position.z}`,
+      )
+    }
+    return block
+  }
+})
+
+type EnchantmentTableDomainFailure =
+  | EnchantmentTableFailure
+  | EnchantmentTableBookshelfFailure
+  | EnchantmentTableApplyFailure
+// generateOffers fails with mc-sim's table-rule failures or with Schema/coordinator
+// errors; the error union it declares also carries the apply failure, which the
+// stage reports the same way as the other rule failures.
+const ENCHANTMENT_TABLE_DOMAIN_FAILURE_TAGS: ReadonlySet<EnchantmentTableServiceError['_tag']> = new Set<
+  EnchantmentTableDomainFailure['_tag']
+>(['EnchantmentTableFailure', 'EnchantmentTableBookshelfFailure', 'EnchantmentTableApplyFailure'])
+const isEnchantmentTableDomainFailure = (
+  failure: EnchantmentTableServiceError,
+): failure is EnchantmentTableDomainFailure => ENCHANTMENT_TABLE_DOMAIN_FAILURE_TAGS.has(failure._tag)
+
 const generateEnchantmentTableOffersRequest = (
   state: GameplayFrameState,
   mailbox: EnchantmentTableMailbox,
@@ -2903,6 +2965,16 @@ const generateEnchantmentTableOffersRequest = (
       mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'already-enchanted' })
       return
     }
+    const ring = enchantmentTableRingPositions(request.tablePosition)
+    if (Result.isFailure(ring)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
+      return
+    }
+    const blockIdAt = yield* readEnchantmentTableRing(state, store, ring.success)
+    if (blockIdAt === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'table-area-unloaded' })
+      return
+    }
     const seedValue = yield* Ref.get(state.rollSeed)
     const seed = RandomSeed.result(seedValue)
     if (Result.isFailure(seed)) {
@@ -2911,14 +2983,28 @@ const generateEnchantmentTableOffersRequest = (
     }
     // RandomSeed accepted this frame seed, and the batch is a fixed single roll.
     yield* Ref.set(state.rollSeed, Result.getOrThrow(drawRolls(seedValue, 1)).seed)
-    // The generated seed, zero-shelf brand, and deterministic RNG satisfy
-    // mc-sim's input contract; an error here would indicate a broken producer.
-    const offers = Result.getOrThrow(generateEnchantmentTableOffersForItem(
-      sourceStack.item,
-      seed.success,
-      PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT,
-    ))
-    yield* publishGeneratedEnchantmentOffers(state, mailbox, request, sourceStack, offers)
+    const generated = yield* Effect.result(service.generateOffers({
+      item: sourceStack.item,
+      tablePosition: request.tablePosition,
+      blockIdAt,
+      random: enchantmentTableRandomForSeed(seed.success),
+    }))
+    if (Result.isFailure(generated)) {
+      if (isEnchantmentTableDomainFailure(generated.failure)) {
+        mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
+      } else {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation: 'CandidateBuild',
+          subject: 'ItemUse',
+          requestId: request.requestId,
+          error: generated.failure,
+        })
+        mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'transaction-failed' })
+      }
+      return
+    }
+    publishGeneratedEnchantmentOffers(mailbox, request, sourceStack, generated.success)
   })
 
 const processEnchantmentTableRequests = (
