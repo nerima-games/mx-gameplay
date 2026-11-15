@@ -269,19 +269,25 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `GameplayStageWorldFault` / `GameplayStageWorldFaultInput` / `GameplayStageWorldFaultReason` / `GameplayStageFaultOccurrenceCount` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageItemUseWorldFailure` | **契約** | fault と item-use failure の公開型 |
 | `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キューと、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |
+| `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キュー、`GameplayStageFaults`、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |
 | `requestShieldBlocking` | 内部(可視) | `SetShieldBlocking` を次の entities tick に積む。盾の装備状態と構え時間は stage が検証する |
 | `setPortalCandidates` | **契約** | ホストが宛先次元ごとの既知ポータル snapshot を渡す。未設定の次元は空候補として扱い、新規ポータル設計になる |
 | `drainPortalTravels` | **契約** | 成立した移動を FIFO で 1 回だけ取り出す。2 回目の drain は空になる |
 | `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
-| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union |
+| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union。配置と item-use の結果は、型付き world-data failure を返す |
 | `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
 | `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、非レバーなら通常の配置へフォールバックする |
 | `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
+
+### stages/gameplay-owner-registrations.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| owner ID、snapshot schema、owner registration | 内部(可視) | gameplay の entity owner snapshot を定義し、package barrel から参照できる |
 
 下表は**全部ではなく、判定の型が違う Ref**を挙げている —— 残りは同じ型
 （受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
@@ -540,13 +546,13 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 outbox を空にする破壊的な読み出しで、同一プロセス内では **at-most-once** である。
 永続化や配送確認を含む end-to-end の exactly-once 境界ではない。
 
-### domain/interactions/break-block.ts（**バレルから re-export しない**）
+### domain/interactions/break-block.ts
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `breakBlock` / `BreakOutcome` | 非公開 | 1 ルール 1 ファイル（DN-GP-9）の 1 本目。`setBlock` を 1 回呼ぶだけで、**read-then-write をしない** — 掘れたブロックは書き込みの戻り値 `previous` から来る |
+| `breakBlock` / `BreakOutcome` / `planBreakBlock` / `BreakTransactionResult` | 内部(可視) | 旧 overload は `setBlock` の戻り値から結果を作る。transaction overload は WCC で cascade と owner state を同じ revision から計画する |
 
-`BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
+legacy overload の `BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
 アイテムを生まず、チャンクを汚さず、落下ブロックの仕事も作らない。
 固定しているテスト: `` REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work ``。
 
