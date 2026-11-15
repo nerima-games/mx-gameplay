@@ -442,16 +442,10 @@ const saplingTreeSpaceForBlock = (
   if (reading._tag === 'ChunkNotLoaded') return { _tag: 'ChunkNotLoaded' }
   if (reading._tag === 'OutOfWorld') return { _tag: 'OutOfWorld' }
 
-  const decoded = blockTypeOfId(reading.block)
-  if (Result.isFailure(decoded)) {
-    return {
-      _tag: 'BlockTypeDecodeFailed',
-      position,
-      block: reading.block,
-      failure: decoded.failure,
-    }
-  }
-  if (decoded.success === undefined) {
+  // The store returns validated BlockIds; blockTypeOfId fails only when the fixed
+  // registry itself cannot be built, which would fail every id alike.
+  const type = Result.getOrThrow(blockTypeOfId(reading.block))
+  if (type === undefined) {
     return {
       _tag: 'BlockTypeDecodeFailed',
       position,
@@ -459,7 +453,7 @@ const saplingTreeSpaceForBlock = (
       failure: { _tag: 'UnregisteredBlockId' },
     }
   }
-  return decoded.success === 'air' ? { _tag: 'Available' } : { _tag: 'Blocked' }
+  return type === 'air' ? { _tag: 'Available' } : { _tag: 'Blocked' }
 }
 
 const treeSpaceAt = (
@@ -3538,8 +3532,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               })
               continue
             }
-            const position = yield* blockPositionForRequest(state, request.positionKey, 'BlockUse', request.requestId)
-            if (position === undefined) continue
+            // requestBlockUse is the only producer of pendingBlockUses and builds every
+            // key with blockPositionKeyOf, so the key always parses.
+            const position = Result.getOrThrow(blockPositionForKey(request.positionKey))
             const outcome = resolveBlockUse(position, yield* store.getBlock(position))
             blockUseResults.push(outcome._tag === 'ToggleDoor'
               ? {

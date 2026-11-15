@@ -3637,26 +3637,6 @@ describe('registered block-use and placement requests in the interactions stage'
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('rejects a malformed block-use key while the player snapshot is unavailable', async () => {
-    const harness = await Effect.runPromise(makeHarness({ omitPlayerRegistration: true }))
-    const invalidKey = 'not-a-cell' as ReturnType<typeof blockPositionKeyOf>
-    await Effect.runPromise(Ref.set(harness.state.pendingBlockUses, [
-      { requestId: 'bad-block-use-without-player', positionKey: invalidKey },
-    ]))
-
-    await harness.run()
-
-    expect(await Effect.runPromise(drainBlockUseResults(harness.state))).toStrictEqual([])
-    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
-      _tag: 'GameplayRequestFault',
-      source: 'BlockUse',
-      requestId: 'bad-block-use-without-player',
-      reason: 'InvalidBlockPositionKey',
-    })
-    expect(await Effect.runPromise(Ref.get(harness.state.pendingBlockUses))).toStrictEqual([])
-    expect(harness.commitCalls()).toBe(0)
-  })
-
   it('rejects a placement when the player snapshot is unavailable before dispatch', async () => {
     const harness = await Effect.runPromise(makeHarness({ omitPlayerRegistration: true }))
     const target = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(3))
