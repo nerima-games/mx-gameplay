@@ -24,6 +24,7 @@ import {
 } from "@nerima-games/mc-worldgen"
 import { emptyBlocks } from "@nerima-games/mc-worldgen/testing"
 import { WORLD_HEIGHT } from "./support/chunk-store-double"
+import { injectRawBlockId } from "./support/transactional-stage-doubles"
 import {
   emptyPlayerStorage,
   itemStack,
@@ -276,7 +277,8 @@ describe("breakBlock support cascade transaction", () => {
     const fixture = await makeFixture()
     const primary = positionAt(60)
     const unknownBlock = decode(BlockIdSchema)(65_535)
-    expect((await Effect.runPromise(fixture.store.setBlock(primary, unknownBlock)))._tag).toBe("Written")
+    expect((await Effect.runPromise(fixture.store.setBlock(primary, sand)))._tag).toBe("Written")
+    await Effect.runPromise(injectRawBlockId(fixture.store, primary, unknownBlock))
 
     const raw = await Effect.runPromise(breakBlock(fixture.store, primary, fixture.context))
     const result = decode(BreakTransactionResultSchema)(raw)
@@ -298,7 +300,8 @@ describe("breakBlock support cascade transaction", () => {
     const upper = positionAt(61)
     const unknownBlock = decode(BlockIdSchema)(65_535)
     expect((await Effect.runPromise(fixture.store.setBlock(primary, sand)))._tag).toBe("Written")
-    expect((await Effect.runPromise(fixture.store.setBlock(upper, unknownBlock)))._tag).toBe("Written")
+    expect((await Effect.runPromise(fixture.store.setBlock(upper, sand)))._tag).toBe("Written")
+    await Effect.runPromise(injectRawBlockId(fixture.store, upper, unknownBlock))
 
     const raw = await Effect.runPromise(breakBlock(fixture.store, primary, fixture.context))
     const result = decode(BreakTransactionResultSchema)(raw)

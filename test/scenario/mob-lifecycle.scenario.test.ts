@@ -74,6 +74,7 @@ import {
   GameplayEntityRosterSchema,
 } from '../../src/stages/gameplay-owner-registrations'
 import {
+  injectRawBlockId,
   makeGameplayCommitServices,
   makeTransactionalChunkStoreDouble,
 } from '../support/transactional-stage-doubles'
@@ -616,9 +617,10 @@ describe('mob lifecycle gameplay scenarios', () => {
       const current = position(20.5, 64, 20.5)
       const harness = yield* makeHarness(
         position(0.5, 64, 0.5),
-        world([[candidateFloor, unregisteredBlock]]),
+        world([[candidateFloor, STONE]]),
         ['-1,2', '0,0', '1,1'],
       )
+      yield* injectRawBlockId(harness.store.api, candidateFloor, unregisteredBlock)
       const initial = yield* harness.commit.coordinator.snapshot(
         GAMEPLAY_ENTITIES_OWNER_ID,
         GameplayEntityRosterSchema,

@@ -8,6 +8,8 @@ import {
   solidityFromStore,
   targetabilityFromStore,
 } from '../src/domain/in-memory-world'
+import { injectRawBlockId } from './support/transactional-stage-doubles'
+import { blockPosition } from './support/coordinate-fixtures'
 describe('in-memory world input boundaries', () => {
   it.effect('returns typed failures for explicitly undefined world options', () =>
     Effect.gen(function* () {
@@ -137,10 +139,11 @@ describe('in-memory world input boundaries', () => {
       const unknownBlock = BlockId(65_535)
       const world = yield* makeInMemoryWorld<MobBehaviour>({
         world: {
-          blocks: new Map([['5,5,5', unknownBlock]]),
+          blocks: new Map(),
           loaded: ['0,0'],
         },
       })
+      yield* injectRawBlockId(world.chunkStore, blockPosition(5, 5, 5), unknownBlock)
 
       const result = solidityFromStore(world.chunkStore)({ x: 5, y: 5, z: 5 })
 

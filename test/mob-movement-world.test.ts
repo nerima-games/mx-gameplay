@@ -2,6 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { Brand, Effect, Option, Result, Schema } from 'effect'
 import { BlockAxis, BlockId, BlockStateIndex, BlockStateLength, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, MobMovementStateSchema, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
+import { blockIndex } from '@nerima-games/mc-worldgen'
 import { openChunkWindow, UNREADABLE_BLOCK, type ChunkWindow } from '../src/domain/chunk-window'
 import {
   entityWorldBlockDataAt,
@@ -184,8 +185,9 @@ describe('SM3 mob movement world', () => {
 
       expect(shape(0)).toMatchObject({ minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 })
       expect(shape(1)).toMatchObject({ minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 0.5, maxZ: 1 })
-      expect(shape(2)).toMatchObject({ minX: 1 / 16, minY: 0, minZ: 1 / 16, maxX: 15 / 16, maxY: 1, maxZ: 15 / 16 })
-      expect(shape(3)).toMatchObject({ minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1 / 16, maxZ: 1 })
+      // mc-physics 0.6 defines cactus as 15 pixels tall and the unpressed plate as inset one pixel.
+      expect(shape(2)).toMatchObject({ minX: 1 / 16, minY: 0, minZ: 1 / 16, maxX: 15 / 16, maxY: 15 / 16, maxZ: 15 / 16 })
+      expect(shape(3)).toMatchObject({ minX: 1 / 16, minY: 0, minZ: 1 / 16, maxX: 15 / 16, maxY: 1 / 16, maxZ: 15 / 16 })
       expect(shapeAt(BlockAxis(4), BlockAxis(64), BlockAxis(0))).toBeNull()
       expect(port.physics.environment.blockShapeAt?.(BlockAxis(1), BlockAxis(64), BlockAxis(0))).toEqual(shape(1))
     }),
@@ -324,7 +326,18 @@ describe('SM3 mob movement world', () => {
   it.effect('keeps an unregistered block id as a typed world query fault', () =>
     Effect.gen(function* () {
       const unresolvedBlockId = BlockId(65535)
-      const port = yield* makeWorldPort([[block(0, 64, 0), unresolvedBlockId]])
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const rawIdStore = {
+        ...store.api,
+        peek: (coord: Parameters<typeof store.api.peek>[0]) => Effect.map(store.api.peek(coord), (chunk) => {
+          if (chunk === undefined) return chunk
+          const blocks = Uint16Array.from(chunk.blocks)
+          blocks[blockIndex(0, 64, 0)] = unresolvedBlockId
+          return { ...chunk, blocks }
+        }),
+      }
+      const window = yield* openChunkWindow(rawIdStore, [chunkCoord(ChunkAxis(0), ChunkAxis(0))])
+      const port = mobMovementWorldFromChunkWindow(window)
       const cell = mobMovementCell(at(0.5, 64, 0.5))!
 
       expect(port.isPassable(cell)).toBe(false)
