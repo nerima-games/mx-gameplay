@@ -76,6 +76,7 @@ import {
 } from '../../src/stages/gameplay-owner-registrations.js'
 import {
   gameplayStages,
+  drainGameplayEntityStageFaults,
   makeGameplayFrameStateForOwner,
   requestBlockBreak,
   type GameplayFrameState,
@@ -425,11 +426,27 @@ const harnessStagesFor = (
         yield* Ref.update(runtime.measurementFailure, (current) => current ?? String(result.failure))
       }
 
-      const stageFaults = yield* runtime.state.stageFaults.drain
+      const stageFaults = yield* drainGameplayEntityStageFaults(runtime.state)
       if (stageFaults.length > 0) {
-        const summary = stageFaults.map((fault) =>
-          `${fault.operation}@${fault.position.x},${fault.position.y},${fault.position.z}:${fault.reason._tag}`,
-        ).join('; ')
+        const summary = stageFaults.map((fault): string => {
+          if (fault._tag === 'WorldDataFailure') {
+            return `${fault.source}/${fault.operation}@${fault.position.x},${fault.position.y},${fault.position.z}:${fault.reason._tag}`
+          }
+          if (fault._tag === 'EntityWorldDataFault') {
+            if (fault.target._tag === 'Entity') {
+              return `${fault.source}@${fault.target.entityId}:${fault.failure._tag}`
+            }
+            const faultPosition = fault.target._tag === 'Cell' ? fault.target.cell : fault.target.position
+            return `${fault.source}@${faultPosition.x},${faultPosition.y},${faultPosition.z}:${fault.failure._tag}`
+          }
+          if (fault._tag === 'GameplayRequestFault') return `${fault.source}:${fault.reason}`
+          if (fault._tag === 'FluidNeighbourPositionFault') {
+            return `Fluid@${fault.cell.x},${fault.cell.y},${fault.cell.z}:${fault.reason}`
+          }
+          if (fault._tag === 'MobBehaviourRepairFault') return `${fault._tag}@${fault.entityId}:${fault.failure._tag}`
+          if (fault._tag === 'MobMovementExecutionFault') return `${fault._tag}@${fault.entityId}:${fault.reason}`
+          return `${fault._tag}@${fault.entityId}:${fault.failure._tag}:${fault.failure.field}`
+        }).join('; ')
         yield* Ref.update(runtime.measurementFailure, (current) => current ?? `gameplay stage faults: ${summary}`)
       }
 

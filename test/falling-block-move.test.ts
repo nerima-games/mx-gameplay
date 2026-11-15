@@ -271,6 +271,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
         failures: [{ operation: 'WriteBlock', position: source, reason: failure }],
       })
       expect(yield* store.blockAt(source)).toBe(sand)
@@ -297,6 +298,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
         failures: [
           { operation: 'WriteBlock', position: target, reason: destinationFailure },
           { operation: 'WriteBlock', position: source, reason: restoreFailure },
@@ -325,6 +327,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
         failures: [{ operation: 'WriteBlock', position: target, reason: destinationFailure }],
       })
       expect(yield* store.blockAt(source)).toBe(sand)
@@ -353,6 +356,7 @@ describe('falling block move input boundaries', () => {
       expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
         moved: 0,
         destinations: [],
+        faults: [],
         failures: [{ operation: 'WriteBlock', position: source, reason: restoreFailure }],
       })
       expect(yield* store.blockAt(source)).toBe(AIR_BLOCK_ID)

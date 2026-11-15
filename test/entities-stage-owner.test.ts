@@ -62,7 +62,7 @@ import {
   type WorldCommitCoordinatorApi,
   type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
-import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
+import { injectRawBlockId, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
 import { SAND, STONE, world } from './support/chunk-store-double.js'
 import { disturb } from '../src/domain/falling-block.js'
 import {
@@ -1373,7 +1373,8 @@ describe('entities stage owner-backed MobSimulation', () => {
   it('records an unregistered mob-blast cell while continuing the explosion tick', async () => {
     const unknownCell = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(0))
     const unknownBlock = BlockId(65_535)
-    const { harness, centre } = await makeMobBlastHarness([[unknownCell, unknownBlock]])
+    const { harness, centre } = await makeMobBlastHarness([[unknownCell, STONE]])
+    await Effect.runPromise(injectRawBlockId(harness.context.store, unknownCell, unknownBlock))
 
     const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.02)).pipe(
       Effect.provide(FrameServicesLayer),
@@ -1764,6 +1765,55 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(roster.state.resolvedMobProjectileIds).toContain(projectileId)
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(harness.state.fireLifecycle))).toMatchObject({ fires: [] })
+  })
+
+  it('isolates an undead light-read failure and drains its reason only once across ticks', async () => {
+    const failed = ecosystemMobAt('test:failed-daylight', SKELETON_KIND, 8, 64)
+    const healthy = ecosystemMobAt('test:healthy-daylight', SKELETON_KIND, 4, 64)
+    const harness = await Effect.runPromise(makeHarness({ entity: null, entities: [failed, healthy] }))
+    await Effect.runPromise(harness.time.setTimeOfDay(InterpolationFraction(0.5)))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+    const failure = new LightQueueUnderflowError({ index: 7 })
+    const context: GameplayStageContext = {
+      ...harness.context,
+      store: {
+        ...harness.context.store,
+        getLight: (at) => at.x === 8
+          ? Effect.fail(failure)
+          : Effect.succeed({ _tag: 'Light' as const, sky: 15, block: 0 }),
+      },
+    }
+    const run = () => Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    await run()
+
+    const after = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(after.state.entities.find(({ id }) => id === failed.id)).toStrictEqual(
+      before.state.entities.find(({ id }) => id === failed.id),
+    )
+    expect(after.state.entities.find(({ id }) => id === healthy.id)?.behaviour).toMatchObject({
+      behaviour: { burningTicks: 159 },
+    })
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([{
+      _tag: 'WorldDataFailure',
+      source: 'UndeadDaylight',
+      operation: 'ReadLight',
+      position: blockPosition(BlockAxis(8), BlockAxis(65), BlockAxis(0)),
+      reason: failure,
+    }])
+
+    await run()
+
+    const next = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(next.state.entities.find(({ id }) => id === failed.id)).toStrictEqual(
+      before.state.entities.find(({ id }) => id === failed.id),
+    )
+    expect(next.state.entities.find(({ id }) => id === healthy.id)?.behaviour).toMatchObject({
+      behaviour: { burningTicks: 158 },
+    })
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
   })
 
   it('keeps undead protected when their chunk and skylight are unavailable', async () => {
@@ -2650,8 +2700,9 @@ describe('entities stage owner-backed MobSimulation', () => {
         Effect.provide(FrameServicesLayer),
       ))
 
-      expect(await Effect.runPromise(harness.state.stageFaults.drain)).toContainEqual(expect.objectContaining({
+      expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(expect.objectContaining({
         _tag: 'WorldDataFailure',
+        source: 'MobSpawnSearch',
         operation: 'ReadLight',
         reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
       }))
@@ -3100,8 +3151,9 @@ describe('entities stage owner-backed MobSimulation', () => {
     ))
 
     expect(await Effect.runPromise(harness.store.blockAt(source))).toBe(SAND)
-    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toContainEqual(expect.objectContaining({
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(expect.objectContaining({
       _tag: 'WorldDataFailure',
+      source: 'FallingBlock',
       operation: 'WriteBlock',
       position: source,
       reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
@@ -3114,8 +3166,9 @@ describe('entities stage owner-backed MobSimulation', () => {
     const unknownBlock = BlockId(65_535)
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
-      blocks: [[source, unknownBlock]],
+      blocks: [[source, SAND]],
     }))
+    await Effect.runPromise(injectRawBlockId(harness.context.store, source, unknownBlock))
     await Effect.runPromise(Ref.update(harness.state.fallingBlocks, (queue) =>
       disturb(queue, [blockPositionKeyOf(target)]),
     ))
@@ -3471,7 +3524,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     const tntId = EntityId('test:tnt-unregistered-cell')
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
-      blocks: [[centre, BlockId(65_535)]],
+      blocks: [[centre, STONE]],
       tnt: {
         tnts: [{
           id: tntId,
@@ -3482,6 +3535,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       },
     }))
 
+    await Effect.runPromise(injectRawBlockId(harness.context.store, centre, BlockId(65_535)))
     const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
       Effect.provide(FrameServicesLayer),
     ))

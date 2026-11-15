@@ -12,6 +12,7 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { vi } from 'vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   EntityId,
@@ -332,16 +333,20 @@ describe('the spawn ring', () => {
   it.effect('the registered entity stage drains unregistered spawn-surface faults and completes the tick', () =>
     Effect.gen(function* () {
       const unknownBlock = BlockId(65_535)
-      const unknownWorld = world(Array.from({ length: 96 * 96 }, (_, index) => {
-        const x = index % 96 - 48
-        const z = Math.floor(index / 96) - 48
-        return [blockPosition(x, FLOOR_Y, z), unknownBlock] as const
-      }))
-      const { time, state, stages } = yield* makeStageHarness(
-        unknownWorld,
+      const { store, time, state, stages } = yield* makeStageHarness(
+        FLOORED_WORLD,
         DISTRIBUTION_LIGHT,
         DISTRIBUTION_PLAYER,
       )
+      const peek = store.api.peek
+      vi.spyOn(store.api, 'peek').mockImplementation((coord) => Effect.map(peek(coord), (chunk) => {
+        if (chunk === undefined) return chunk
+        const blocks = Uint16Array.from(chunk.blocks)
+        for (let index = 0; index < blocks.length; index += 1) {
+          if (blocks[index] === STONE) blocks[index] = unknownBlock
+        }
+        return { ...chunk, blocks }
+      }))
       yield* time.setTimeOfDay(MIDNIGHT)
       yield* Ref.set(state.passiveInitialSpawnPending, false)
       yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS)
@@ -814,12 +819,17 @@ describe('what the search reads', () => {
   it.effect('returns an unregistered block id as a typed world fault', () =>
     Effect.gen(function* () {
       const unknownBlock = BlockId(65_535)
-      const unknownWorld = world(Array.from({ length: 96 * 96 }, (_, index) => {
-        const x = index % 96 - 48
-        const z = Math.floor(index / 96) - 48
-        return [blockPosition(x, FLOOR_Y, z), unknownBlock] as const
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const peek = store.api.peek
+      vi.spyOn(store.api, 'peek').mockImplementation((coord) => Effect.map(peek(coord), (chunk) => {
+        if (chunk === undefined) return chunk
+        const blocks = Uint16Array.from(chunk.blocks)
+        for (let index = 0; index < blocks.length; index += 1) {
+          if (blocks[index] === STONE) blocks[index] = unknownBlock
+        }
+        return { ...chunk, blocks }
       }))
-      const { found } = yield* searchIn(unknownWorld, RESIDENT_CHUNKS)
+      const found = yield* searchSpawnCandidates(store.api, PLAYER, MIDNIGHT, RandomSeed(1))
 
       expect(found.attempts).toStrictEqual([])
       expect(found.worldFaults.length).toBeGreaterThan(0)

@@ -21,6 +21,7 @@ import {
 } from './registration-core.js'
 import { Brand, Equal, Option, Result, Schema } from 'effect'
 import { COLLISION_SHAPE_AABBS } from '@nerima-games/mc-physics'
+import type { LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
 import {
   AIR_BLOCK_ID,
   AngleRadians,
@@ -268,6 +269,13 @@ const undeadDaylightChunkCoords = (
   return [...coords.values()]
 }
 
+type UndeadDaylightFault = Readonly<{
+  entityId: EntityId
+}> & (
+  | Readonly<{ failure: EntityWorldQueryFailure }>
+  | Readonly<{ operation: 'ReadLight'; position: BlockPosition; reason: LightQueueUnderflowError }>
+)
+
 const undeadDaylightFacts = (
   roster: GameplayEntityRoster,
   window: import('../domain/chunk-window.js').ChunkWindow,
@@ -276,11 +284,11 @@ const undeadDaylightFacts = (
   dimension: string,
 ): Effect.Effect<Readonly<{
   facts: ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>
-  faults: ReadonlyArray<Readonly<{ entityId: import('@nerima-games/mc-sim').EntityId; failure: EntityWorldQueryFailure }>>
+  faults: ReadonlyArray<UndeadDaylightFault>
 }>> =>
   Effect.gen(function* () {
     const facts = new Map<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>()
-    const faults: Array<Readonly<{ entityId: import('@nerima-games/mc-sim').EntityId; failure: EntityWorldQueryFailure }>> = []
+    const faults: Array<UndeadDaylightFault> = []
     for (const entity of roster.entities) {
       if ((entity.kind !== 'zombie' && entity.kind !== 'skeleton') || entity.dimension !== dimension) continue
       const feetX = BlockAxis.result(Math.floor(entity.feetPosition.x))
@@ -319,7 +327,13 @@ const undeadDaylightFacts = (
         }
         /* v8 ignore stop */
       }
-      const light = yield* store.getLight(blockPosition(feetX.success, headY.success, feetZ.success))
+      const lightPosition = blockPosition(feetX.success, headY.success, feetZ.success)
+      const lightResult = yield* Effect.result(store.getLight(lightPosition))
+      if (Result.isFailure(lightResult)) {
+        faults.push({ entityId: entity.id, operation: 'ReadLight', position: lightPosition, reason: lightResult.failure })
+        continue
+      }
+      const light = lightResult.success
       const skyLight = SkyLightLevel(light._tag === 'Light' ? light.sky : -1)
       const rawBehaviour = isHostileMobSnapshot(entity.behaviour)
         ? entity.behaviour.behaviour
@@ -1637,7 +1651,14 @@ const runMobSimulation = (
       daylightFacts = daylight.facts
       const daylightFaultEntityIds = new Set(daylight.faults.map(({ entityId }) => entityId))
       for (const fault of daylight.faults) {
-        yield* recordEntityWorldDataFault(state, 'UndeadDaylight', fault.failure, fault.entityId)
+        if ('failure' in fault) {
+          yield* recordEntityWorldDataFault(state, 'UndeadDaylight', fault.failure, fault.entityId)
+        } else {
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'WorldDataFailure', source: 'UndeadDaylight',
+            operation: fault.operation, position: fault.position, reason: fault.reason,
+          })
+        }
       }
       for (const entity of tickRoster.entities) {
         if (daylightFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
@@ -1743,7 +1764,7 @@ const runMobSimulation = (
       'hostile',
     )
     for (const fault of found.faults ?? []) {
-      yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+      yield* recordGameplayEntityStageFault(state, { _tag: 'WorldDataFailure', source: 'MobSpawnSearch', ...fault })
     }
     for (const failure of found.worldFaults) {
       yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
@@ -1762,7 +1783,7 @@ const runMobSimulation = (
       'passive',
     )
     for (const fault of found.faults ?? []) {
-      yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+      yield* recordGameplayEntityStageFault(state, { _tag: 'WorldDataFailure', source: 'MobSpawnSearch', ...fault })
     }
     for (const failure of found.worldFaults) {
       yield* recordGameplayEntityWorldDataFault(state, 'MobSpawnSearch', failure)
@@ -2375,7 +2396,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
 
         const moves = yield* applyFallingBlocks(store, batch)
         for (const fault of moves.failures ?? []) {
-          yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+          yield* recordGameplayEntityStageFault(state, { _tag: 'WorldDataFailure', source: 'FallingBlock', ...fault })
         }
         for (const failure of moves.faults) {
           yield* recordGameplayEntityWorldDataFault(state, 'FallingBlock', failure)

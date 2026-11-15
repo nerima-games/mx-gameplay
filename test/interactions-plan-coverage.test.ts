@@ -3293,11 +3293,12 @@ describe('registered block-use and placement requests in the interactions stage'
         reason: { _tag: 'LightQueueUnderflowError', index: 0 },
       },
     }])
-    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([{
+      _tag: 'WorldDataFailure',
+      source: 'ItemUse',
       operation: 'ReadLight',
       position: target,
       reason: { _tag: 'LightQueueUnderflowError', index: 0 },
-      occurrences: 1,
     }])
     expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
     expect(harness.commitCalls()).toBe(0)
@@ -3319,11 +3320,12 @@ describe('registered block-use and placement requests in the interactions stage'
     await harness.run()
 
     expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toStrictEqual([])
-    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([{
+      _tag: 'WorldDataFailure',
+      source: 'ItemUse',
       operation: 'ReadLight',
       position: target,
       reason: { _tag: 'LightQueueUnderflowError', index: 0 },
-      occurrences: 1,
     }])
     expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
     expect(harness.commitCalls()).toBe(0)
@@ -5092,17 +5094,15 @@ describe('schema-valid interaction edge paths', () => {
         },
       },
     ])
-    const stageFaults = await Effect.runPromise(harness.state.stageFaults.drain)
-    expect(stageFaults).toHaveLength(5)
-    expect(stageFaults.every((fault) => fault.reason._tag === 'BlockTypeDecodeFailed')).toBe(true)
-    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject(
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual(
       [tillPosition, blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), plantPosition,
         blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), harvestPosition]
         .map((cell) => ({
-          _tag: 'EntityWorldDataFault',
+          _tag: 'WorldDataFailure',
           source: 'ItemUse',
-          target: { _tag: 'Cell', cell },
-          failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+          operation: 'DecodeBlockType',
+          position: cell,
+          reason: { _tag: 'BlockTypeDecodeFailed', position: cell, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
         })),
     )
     expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
@@ -5154,7 +5154,7 @@ describe('schema-valid interaction edge paths', () => {
         },
       },
     ])
-    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([
       { operation: 'DecodeBlockType', position: tillAbove },
       { operation: 'DecodeBlockType', position: plantAbove },
     ])
@@ -5305,8 +5305,9 @@ describe('schema-valid interaction edge paths', () => {
         reason: { _tag: 'MissingBlockReadResult', position: target },
       },
     }])
-    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([{
       _tag: 'WorldDataFailure',
+      source: 'ItemUse',
       operation: 'ReadBlock',
       position: target,
       reason: { _tag: 'MissingBlockReadResult', position: target },
@@ -6145,15 +6146,15 @@ describe('schema-valid interaction edge paths', () => {
     const sand = Option.getOrThrow(blockIdOf('sand'))
     const harness = await Effect.runPromise(makeHarness({
       blocks: [
-        [miningCell, unknownBlock],
-        [occupiedTarget, unknownBlock],
-        [torchSupport, unknownBlock],
+        [miningCell, stone],
+        [occupiedTarget, stone],
+        [torchSupport, stone],
         [caneSupport, sand],
-        [caneNeighbour, unknownBlock],
+        [caneNeighbour, stone],
         [cactusSupport, sand],
-        [cactusNeighbour, unknownBlock],
+        [cactusNeighbour, stone],
         [doorSupport, stone],
-        [doorUpper, unknownBlock],
+        [doorUpper, stone],
       ],
       playerStorage: playerStorageWithItems([
         ['stone', 1],
@@ -6163,6 +6164,9 @@ describe('schema-valid interaction edge paths', () => {
         ['door', 1],
       ]),
     }))
+
+    await Promise.all([miningCell, occupiedTarget, torchSupport, caneNeighbour, cactusNeighbour, doorUpper]
+      .map((cell) => Effect.runPromise(injectRawBlockId(harness.store.api, cell, unknownBlock))))
 
     await Effect.runPromise(requestBlockBreak(harness.state, miningCell, undefined, {
       dimension: DIMENSION,
@@ -6217,9 +6221,11 @@ describe('schema-valid interaction edge paths', () => {
     const stone = Option.getOrThrow(blockIdOf('stone'))
     const unknownBlock = BlockId(65_535)
     const store = await Effect.runPromise(makeTransactionalChunkStoreDouble(
-      world([[support, stone], [upper, unknownBlock]]),
+      world([[support, stone], [upper, stone]]),
       ['0,0'],
     ))
+
+    await Effect.runPromise(injectRawBlockId(store.api, upper, unknownBlock))
 
     const outcome = await Effect.runPromise(placeBlock(store.api, { position: target, heldItem: 'door' }))
 
@@ -6286,13 +6292,14 @@ describe('schema-valid interaction edge paths', () => {
     expect((await Effect.runPromise(store.calls)).reads).toBe(4)
   })
 
-  it('records and requeues bone meal when its observed block id is unregistered', async () => {
+  it('reports a typed bone-meal failure when its observed block id is unregistered', async () => {
     const target = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
     const unknownBlock = BlockId(65_535)
     const harness = await Effect.runPromise(makeHarness({
-      blocks: [[target, unknownBlock]],
+      blocks: [[target, Option.getOrThrow(blockIdOf('stone'))]],
       playerStorage: playerStorageWithItem('bone_meal', 1),
     }))
+    await Effect.runPromise(injectRawBlockId(harness.store.api, target, unknownBlock))
     const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
       GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
       PlayerStorageSnapshotSchema,
@@ -6302,16 +6309,20 @@ describe('schema-valid interaction edge paths', () => {
     await harness.run()
 
     expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
-      _tag: 'EntityWorldDataFault',
+      _tag: 'WorldDataFailure',
       source: 'ItemUse',
-      target: { _tag: 'Cell', cell: target },
-      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: target, blockId: unknownBlock },
+      operation: 'DecodeBlockType',
+      position: target,
+      reason: { _tag: 'BlockTypeDecodeFailed', position: target, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
     })
-    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
       action: 'ApplyBoneMeal',
       requestId: 'bone-meal-unregistered-target',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'WorldDataFailed', reason: { _tag: 'BlockTypeDecodeFailed', position: target, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } } },
     }])
-    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
     expect((await Effect.runPromise(harness.coordinator.snapshot(
       GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
       PlayerStorageSnapshotSchema,
@@ -6319,7 +6330,7 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('records and requeues bone meal when the owner snapshot omits its requested block read', async () => {
+  it('reports a typed bone-meal failure when the owner snapshot omits its requested block read', async () => {
     const target = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
     const wheat = Option.getOrThrow(blockIdOf('wheat_crop'))
     const harness = await Effect.runPromise(makeHarness({
@@ -6334,16 +6345,20 @@ describe('schema-valid interaction edge paths', () => {
     await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
 
     expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
-      _tag: 'EntityWorldDataFault',
+      _tag: 'WorldDataFailure',
       source: 'ItemUse',
-      target: { _tag: 'Cell', cell: target },
-      failure: { _tag: 'EntityWorldWindowUnavailable', cell: target },
+      operation: 'ReadBlock',
+      position: target,
+      reason: { _tag: 'MissingBlockReadResult', position: target },
     })
-    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
       action: 'ApplyBoneMeal',
       requestId: 'bone-meal-missing-read',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'WorldDataFailed', reason: { _tag: 'MissingBlockReadResult', position: target } },
     }])
-    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
   })
 

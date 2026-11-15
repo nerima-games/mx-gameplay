@@ -25,6 +25,7 @@ import {
   recordGameplayStageFailure,
   recordGameplayRequestFault,
   recordGameplayEntityWorldDataFault,
+  recordGameplayEntityStageFault,
   recordGameplayUnsupportedOperation,
   validateBlockPlacementCommand,
   recordMobRuleIssues,
@@ -1786,8 +1787,9 @@ const processPlacement = (
         }))
         if (Result.isFailure(plannedResult)) {
           const reason = plannedResult.failure
-          yield* state.stageFaults.record({
+          yield* recordGameplayEntityStageFault(state, {
             _tag: 'WorldDataFailure',
+            source: 'ItemUse',
             operation: 'ReadLight',
             position,
             reason,
@@ -2105,10 +2107,10 @@ const itemUseBlockTypeAt = (
   blockRead: WorldBlockRead | undefined,
 ): Effect.Effect<ItemUseBlockRead> => Effect.gen(function* () {
   if (blockRead === undefined) {
-    yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', { _tag: 'EntityWorldWindowUnavailable', cell: position })
     const reason = { _tag: 'MissingBlockReadResult' as const, position }
-    yield* state.stageFaults.record({
+    yield* recordGameplayEntityStageFault(state, {
       _tag: 'WorldDataFailure',
+      source: 'ItemUse',
       operation: 'ReadBlock',
       position,
       reason,
@@ -2129,8 +2131,8 @@ const itemUseBlockTypeAt = (
 
   const decoded = entityWorldBlockTypeAt(position, blockRead.reading.block)
   if (Result.isFailure(decoded)) {
-    yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', decoded.failure)
     if (decoded.failure._tag !== 'EntityWorldUnregisteredBlockId') {
+      yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', decoded.failure)
       return { _tag: 'Fault', failure: decoded.failure }
     }
     const reason: GameplayStageBlockTypeDecodeFailure = {
@@ -2139,8 +2141,9 @@ const itemUseBlockTypeAt = (
       block: blockRead.reading.block,
       failure: { _tag: 'UnregisteredBlockId' },
     }
-    yield* state.stageFaults.record({
+    yield* recordGameplayEntityStageFault(state, {
       _tag: 'WorldDataFailure',
+      source: 'ItemUse',
       operation: 'DecodeBlockType',
       position,
       reason,

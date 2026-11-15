@@ -121,7 +121,6 @@ import {
   makeGameplayFrameStateForOwner,
   makeGameplayStages,
   gameplayModule,
-  GameplayStageFaults,
   GameplayFishingItemUseResultSchema,
   GameplayBrewingItemUseRequestSchema,
   GameplayBrewingItemUseResultSchema,
@@ -709,12 +708,18 @@ describe('fire lifecycle stage integration', () => {
       )
 
       expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(initialFire.fires)
-      expect(yield* state.stageFaults.drain).toContainEqual(expect.objectContaining({
+      expect(yield* drainGameplayEntityStageFaults(state)).toContainEqual(expect.objectContaining({
         _tag: 'WorldDataFailure',
+        source: 'Fire',
         operation: 'ReadLight',
         position,
         reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
       }))
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+      expect(yield* drainGameplayEntityStageFaults(state)).toStrictEqual([])
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(initialFire.fires)
     }),
   )
 
@@ -1322,8 +1327,8 @@ describe('stage behaviour', () => {
       const unknownBlock = BlockId(65_535)
       const { state, store, stages } = yield* builtStagesInWorld(world([
         [source, WATER],
-        [malformedNeighbour, unknownBlock],
       ]))
+      yield* injectRawBlockId(store.api, malformedNeighbour, unknownBlock)
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
@@ -1605,7 +1610,6 @@ describe('stage behaviour', () => {
         'rollSeed',
         'shieldBlocking',
         'spawnAttempts',
-        'stageFaults',
         'survivalHunger',
         'targetPosition',
         'tickCount',
@@ -2091,8 +2095,9 @@ describe('stage behaviour', () => {
       const cell = fixtureBlockPosition(0, 64, 5)
       const unknownBlock = BlockId(65_535)
       const harness = yield* builtStagesInWorld(
-        world([[cell, unknownBlock]]), ['0,0'], undefined, undefined, undefined, target,
+        world([]), ['0,0'], undefined, undefined, undefined, target,
       )
+      yield* injectRawBlockId(harness.store.api, cell, unknownBlock)
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestBowShot(harness.state, 'unknown-terrain-shot', {
@@ -2484,7 +2489,7 @@ describe('the module contract has caught up with this file’s shape', () => {
    * `GameModule`" because the service set could not be named until mc-sim
    * published. That diagnosis was half wrong, and the wrong half is what the
    * spike found: mx-gameplay publishes no gameplay state for another repository
-   * to call. The module now publishes only its drainable stage-fault service.
+   * to call. Stage data faults are drained through the gameplay frame state.
    *
    * The real obstacle was that `GameModule.frameStages` was an ARRAY. These
    * stages are built from `Ref`s allocated in an Effect, so there was no way to
@@ -2499,10 +2504,10 @@ describe('the module contract has caught up with this file’s shape', () => {
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
       const module: GameModule<
-        GameplayStageFaults,
         never,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
+        never,
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -2527,15 +2532,15 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services and the module fault service to register nine stages', () =>
+  it.effect('acquires five host services to register nine stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
       > = gameplayModule.frameStages
 
-      // Providing the five host services and module-owned fault service — with
+      // Providing the five host services, with
       // no local player or inventory services —
       // discharges the whole registration context.
       // If a stage started demanding another service at REGISTRATION time, this
@@ -2621,7 +2626,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')
@@ -4737,9 +4742,10 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       const fires = (yield* Ref.get(state.fireLifecycle)).fires
       expect(fires).toHaveLength(1)
       expect(fires[0]?.position).toStrictEqual(firePosition)
-      expect(yield* state.stageFaults.drain).toMatchObject([
+      expect(yield* drainGameplayEntityStageFaults(state)).toMatchObject([
         {
           _tag: 'WorldDataFailure',
+          source: 'Fire',
           operation: 'DecodeBlockType',
           position: strangeNeighbour,
           reason: {
@@ -4747,7 +4753,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
             block: UNREGISTERED_BLOCK_ID,
             failure: { _tag: 'UnregisteredBlockId' },
           },
-          occurrences: 1,
         },
       ])
     }),
@@ -5958,15 +5963,10 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
 
       expect(yield* store.blockAt(strangeNeighbour)).toBe(UNREGISTERED_BLOCK_ID)
       expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(seeded.fires)
-      expect(yield* drainGameplayEntityStageFaults(state)).toContainEqual(expect.objectContaining({
-        _tag: 'EntityWorldDataFault',
-        source: 'Fire',
-        target: { _tag: 'Cell', cell: strangeNeighbour },
-        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: strangeNeighbour, blockId: UNREGISTERED_BLOCK_ID },
-      }))
-      expect(yield* state.stageFaults.drain).toMatchObject([
+      expect(yield* drainGameplayEntityStageFaults(state)).toMatchObject([
         {
           _tag: 'WorldDataFailure',
+          source: 'Fire',
           operation: 'DecodeBlockType',
           position: strangeNeighbour,
           reason: {
@@ -5974,7 +5974,6 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
             block: UNREGISTERED_BLOCK_ID,
             failure: { _tag: 'UnregisteredBlockId' },
           },
-          occurrences: 1,
         },
       ])
     }),
@@ -6245,7 +6244,8 @@ describe('portal faults on unregistered world cells', () => {
     Effect.gen(function* () {
       const cell = fixtureBlockPosition(0, 64, 0)
       const unknownBlock = BlockId(65_535)
-      const harness = yield* builtStagesInWorld(world([[cell, unknownBlock]]), ['0,0'])
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'])
+      yield* injectRawBlockId(harness.store.api, cell, unknownBlock)
       const dwell = { _tag: 'Standing', dwelledSecs: 3.9 } as const
       yield* Ref.set(harness.state.portalDwell, dwell)
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
@@ -6256,10 +6256,11 @@ describe('portal faults on unregistered world cells', () => {
       expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
       expect(yield* Ref.get(harness.state.endPortalTravels)).toStrictEqual([])
       expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
-        _tag: 'EntityWorldDataFault',
+        _tag: 'WorldDataFailure',
         source: 'Portal',
-        target: { _tag: 'Cell', cell },
-        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+        operation: 'DecodeBlockType',
+        position: cell,
+        reason: { _tag: 'BlockTypeDecodeFailed', position: cell, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
       }))
     }),
   )
@@ -6278,8 +6279,9 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
 
       expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
       expect(yield* Ref.get(harness.commitCalls)).toBe(0)
-      expect(yield* harness.state.stageFaults.drain).toContainEqual(expect.objectContaining({
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
         _tag: 'WorldDataFailure',
+        source: 'Portal',
         operation: 'DecodeBlockType',
         position: cell,
         reason: expect.objectContaining({
@@ -6474,8 +6476,9 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
       expect(yield* Ref.get(portalReads)).toBe(2)
       expect(yield* Ref.get(harness.commitCalls)).toBe(0)
       expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
-      expect(yield* harness.state.stageFaults.drain).toContainEqual(expect.objectContaining({
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
         _tag: 'WorldDataFailure',
+        source: 'Portal',
         operation: 'DecodeBlockType',
         position: cell,
         reason: expect.objectContaining({

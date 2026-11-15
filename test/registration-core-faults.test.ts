@@ -321,10 +321,11 @@ describe('registration-core typed world faults', () => {
       yield* interactions.run(DeltaTimeSecs(5)).pipe(Effect.provide(FrameServicesLayer))
 
       expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([{
-        _tag: 'EntityWorldDataFault',
+        _tag: 'WorldDataFailure',
         source: 'Portal',
-        target: { _tag: 'Cell', cell: portalCell },
-        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: portalCell, blockId: unknownBlockId },
+        operation: 'DecodeBlockType',
+        position: portalCell,
+        reason: { _tag: 'BlockTypeDecodeFailed', position: portalCell, block: unknownBlockId, failure: { _tag: 'UnregisteredBlockId' } },
       }])
       expect(yield* drainPortalTravels(harness.state)).toStrictEqual([])
       expect((yield* harness.commit.coordinator.snapshot(

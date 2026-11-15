@@ -165,9 +165,8 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import {
-  makeGameplayStageFaults,
   type GameplayStageBlockTypeDecodeFailure,
-  type GameplayStageFaultsApi,
+  type GameplayStageWorldFaultReason,
   type GameplayStageItemUseWorldFailure,
 } from './gameplay-stage-faults.js'
 import {
@@ -1260,7 +1259,6 @@ const gameplayEntityStageFaultKey = Brand.nominal<GameplayEntityStageFaultKey>()
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
-  readonly stageFaults: GameplayStageFaultsApi
   readonly operationFailures: Ref.Ref<ReadonlyArray<GameplayStageOperationFailure>>
   readonly entityStageFaults: Ref.Ref<Readonly<{
     pending: ReadonlyArray<EntityStageFault>
@@ -2190,7 +2188,6 @@ export type GameplayUnsupportedOperation = Readonly<{
 export type GameplayFrameStateOptions = Readonly<{
   coordinator: WorldCommitCoordinatorApi
   vitalsOwnerId: ReplicatedOwnerId
-  stageFaults?: GameplayStageFaultsApi
 }>
 
 type EntitiesStageFailureTag = string & Brand.Brand<'EntitiesStageFailureTag'>
@@ -2253,6 +2250,13 @@ export type EntityWorldDataFaultSource =
   | 'Fire'
 
 export type EntityStageFault =
+  | Readonly<{
+      _tag: 'WorldDataFailure'
+      source: EntityWorldDataFaultSource
+      operation: 'DecodeBlockType' | 'ReadBlock' | 'ReadBlockState' | 'WriteBlock' | 'ReadLight'
+      position: BlockPosition
+      reason: GameplayStageWorldFaultReason
+    }>
   | Readonly<{
       _tag: 'EntityWorldDataFault'
       source: EntityWorldDataFaultSource
@@ -2333,6 +2337,18 @@ export const recordGameplayEntityStageExecutionFailure = (
 
 const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultKey => {
   switch (fault._tag) {
+    case 'WorldDataFailure': {
+      const reason = fault.reason._tag === 'BlockStateCodecFailure'
+        ? `${fault.reason._tag}:${fault.reason.reason}`
+        : fault.reason._tag === 'LightQueueUnderflowError'
+          ? `${fault.reason._tag}:${fault.reason.index}`
+          : fault.reason._tag === 'BlockTypeDecodeFailed'
+            ? `${fault.reason._tag}:${fault.reason.block}:${fault.reason.failure._tag}`
+            : fault.reason._tag
+      return gameplayEntityStageFaultKey(
+        `world:${fault.source}:${fault.operation}:${fault.position.x}:${fault.position.y}:${fault.position.z}:${reason}`,
+      )
+    }
     case 'EntityWorldDataFault': {
       const target = fault.target._tag === 'Cell'
         ? `cell:${Number(fault.target.cell.x)}:${Number(fault.target.cell.y)}:${Number(fault.target.cell.z)}`
@@ -2456,7 +2472,6 @@ const makeGameplayFrameStateWithOptions = (
   options?: GameplayFrameStateOptions,
 ): Effect.Effect<GameplayFrameState> => Effect.gen(function* () {
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
-  const stageFaults = options?.stageFaults ?? (yield* makeGameplayStageFaults)
   const survivalHunger = options === undefined
     ? yield* makeSurvivalHungerRuntime()
     : yield* makeReplicatedSurvivalHungerRuntime(options.coordinator, options.vitalsOwnerId)
@@ -2565,7 +2580,6 @@ const makeGameplayFrameStateWithOptions = (
   const state: GameplayFrameState = {
     enderDragonEncounter,
     survivalHunger,
-    stageFaults,
     operationFailures,
     entityStageFaults,
     pendingBreaks,
@@ -2726,11 +2740,12 @@ const stepPortalTravel = (
           block: resolvedBlock.failure.blockId,
           failure: { _tag: 'UnregisteredBlockId' },
         }
-        yield* state.stageFaults.record({
-          _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: cell, reason,
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'WorldDataFailure', source: 'Portal', operation: 'DecodeBlockType', position: cell, reason,
         })
+      } else {
+        yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedBlock.failure)
       }
-      yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedBlock.failure)
       return
     }
     const block = resolvedBlock === undefined ? undefined : resolvedBlock.success
@@ -2785,13 +2800,14 @@ const stepPortalTravel = (
           block: resolvedCurrentBlock.failure.blockId,
           failure: { _tag: 'UnregisteredBlockId' },
         }
-        yield* state.stageFaults.record({
-          _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: currentCell, reason,
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'WorldDataFailure', source: 'Portal', operation: 'DecodeBlockType', position: currentCell, reason,
         })
+      } else {
+        yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedCurrentBlock.failure)
       }
       // A failed recheck did not complete travel; leave the dwell ready to retry next tick.
       yield* Ref.set(state.portalDwell, { _tag: 'Standing', dwelledSecs: PORTAL_ACTIVATION_SECS })
-      yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedCurrentBlock.failure)
       return
     }
     const currentBlock = resolvedCurrentBlock === undefined ? undefined : resolvedCurrentBlock.success
@@ -4110,12 +4126,13 @@ const stepFireTick = (
               block: reading.block,
               failure: { _tag: 'UnregisteredBlockId' },
             }
-            yield* state.stageFaults.record({
-              _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: worldPosition, reason,
+            yield* recordGameplayEntityStageFault(state, {
+              _tag: 'WorldDataFailure', source: 'Fire', operation: 'DecodeBlockType', position: worldPosition, reason,
             })
+          } else {
+            yield* recordGameplayEntityWorldDataFault(state, 'Fire', resolved.failure)
           }
           faultyCellKeys.add(firePositionKey(position))
-          yield* recordGameplayEntityWorldDataFault(state, 'Fire', resolved.failure)
           continue
         }
         block = resolved.success
@@ -4132,8 +4149,9 @@ const stepFireTick = (
           firePositionKey(contact.position) === firePositionKey(position)))) {
         const lightResult = yield* Effect.result(store.getLight(worldPosition))
         if (Result.isFailure(lightResult)) {
-          yield* state.stageFaults.record({
+          yield* recordGameplayEntityStageFault(state, {
             _tag: 'WorldDataFailure',
+            source: 'Fire',
             operation: 'ReadLight',
             position: worldPosition,
             reason: lightResult.failure,
