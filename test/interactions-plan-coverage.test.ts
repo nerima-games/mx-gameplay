@@ -571,6 +571,26 @@ const coordinatorWithOutOfWorldRead = (
   return { ...coordinator, observe }
 }
 
+const coordinatorWithUnloadedRead = (
+  coordinator: WorldCommitCoordinatorApi,
+  target: BlockPosition,
+): WorldCommitCoordinatorApi => {
+  const unavailable: Readonly<{ _tag: 'ChunkNotLoaded' }> = { _tag: 'ChunkNotLoaded' }
+  const observe: WorldCommitCoordinatorApi['observe'] = (ownerId, schema, reads) =>
+    Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => {
+      if (!('blocks' in snapshot)) return snapshot
+      return {
+        ...snapshot,
+        blocks: snapshot.blocks.map((block) =>
+          block.position.x === target.x && block.position.y === target.y && block.position.z === target.z
+            ? { ...block, reading: unavailable }
+            : block,
+        ),
+      }
+    })
+  return { ...coordinator, observe }
+}
+
 const coordinatorWithCommitRevisionBump = (
   coordinator: WorldCommitCoordinatorApi,
   revisionCoordinator: WorldCommitCoordinatorApi,
@@ -6392,6 +6412,52 @@ describe('schema-valid interaction edge paths', () => {
     }])
     expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
   })
+
+  const farmingActions: ReadonlyArray<'TillSoil' | 'PlantPotato'> = ['TillSoil', 'PlantPotato']
+  const unavailableCells: ReadonlyArray<'lower' | 'upper'> = ['lower', 'upper']
+  for (const action of farmingActions) {
+    for (const unavailableCell of unavailableCells) {
+      it(`requeues ${action} when the host reports its ${unavailableCell} cell as unloaded`, async () => {
+        const lower = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+        const upper = blockPosition(BlockAxis(5), BlockAxis(65), BlockAxis(1))
+        const groundBlock = Option.getOrThrow(blockIdOf(action === 'TillSoil' ? 'dirt' : 'farmland'))
+        const harness = await Effect.runPromise(makeHarness({
+          blocks: [[lower, groundBlock]],
+          playerStorage: playerStorageWithItems([['iron_hoe', 1], ['potato', 1]]),
+        }))
+        const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema,
+        ))
+        const cropsBefore = await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema,
+        ))
+        const requestId = `${action}-${unavailableCell}-unloaded`
+        if (action === 'TillSoil') {
+          await Effect.runPromise(requestSoilTill(harness.state, requestId, lower, 'iron_hoe'))
+        } else {
+          await Effect.runPromise(requestPotatoPlanting(harness.state, requestId, lower))
+        }
+        const interactions = harness.interactionsWithCoordinator(coordinatorWithUnloadedRead(
+          harness.coordinator, unavailableCell === 'lower' ? lower : upper,
+        ))
+
+        await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+        expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+        expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
+        expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{ action, requestId }])
+        expect(await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema,
+        ))).toStrictEqual(storageBefore)
+        expect(await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema,
+        ))).toStrictEqual(cropsBefore)
+        expect(await Effect.runPromise(harness.store.blockAt(lower))).toBe(groundBlock)
+        expect(await Effect.runPromise(harness.store.blockAt(upper))).toBeUndefined()
+        expect(harness.commitCalls()).toBe(0)
+      })
+    }
+  }
 
   it('requeues bone meal when its target chunk is not loaded', async () => {
     const target = blockPosition(BlockAxis(16), BlockAxis(64), BlockAxis(1))

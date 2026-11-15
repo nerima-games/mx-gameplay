@@ -109,6 +109,7 @@ import {
   WorldWriteBatchSchema,
   FoodNutrition,
   blockIdOf,
+  blockTypeOfId,
 } from '@nerima-games/mc-kernel'
 import {
   PlayerStorageSnapshotSchema,
@@ -192,7 +193,6 @@ import {
 } from '../domain/entities/mob-frame.js'
 import type { Damage } from '../domain/death-cause.js'
 import { solidityFromStore } from '../domain/in-memory-world.js'
-import { entityWorldBlockTypeAt } from '../domain/entities/entity-world-cell.js'
 import type { EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
 
 const blockPositionForRequest = (
@@ -2099,7 +2099,6 @@ type ItemUseBlockRead =
   | Readonly<{ _tag: 'Block'; blockType: BlockType }>
   | Readonly<{ _tag: 'ChunkNotLoaded' }>
   | Readonly<{ _tag: 'Failure'; failure: GameplayStageItemUseWorldFailure | ItemUseWorldReadRefusal }>
-  | Readonly<{ _tag: 'Fault'; failure: EntityWorldQueryFailure }>
 
 const itemUseBlockTypeAt = (
   state: GameplayStageContext['state'],
@@ -2129,12 +2128,9 @@ const itemUseBlockTypeAt = (
     }
   }
 
-  const decoded = entityWorldBlockTypeAt(position, blockRead.reading.block)
-  if (Result.isFailure(decoded)) {
-    if (decoded.failure._tag !== 'EntityWorldUnregisteredBlockId') {
-      yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', decoded.failure)
-      return { _tag: 'Fault', failure: decoded.failure }
-    }
+  // Observed blocks carry branded ids and this build's fixed registry is already resolved.
+  const decoded = Result.getOrThrow(blockTypeOfId(blockRead.reading.block))
+  if (decoded === undefined) {
     const reason: GameplayStageBlockTypeDecodeFailure = {
       _tag: 'BlockTypeDecodeFailed',
       position,
@@ -2151,7 +2147,7 @@ const itemUseBlockTypeAt = (
     return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
   }
 
-  return { _tag: 'Block', blockType: decoded.success }
+  return { _tag: 'Block', blockType: decoded }
 })
 
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
@@ -2683,7 +2679,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
-                if (blockRead._tag === 'Fault' || blockRead._tag === 'ChunkNotLoaded') {
+                if (blockRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2830,7 +2826,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const groundRead = yield* itemUseBlockTypeAt(state, ground, observed.success.blocks[0])
                 const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
-                if (groundRead._tag === 'Fault' || groundRead._tag === 'ChunkNotLoaded') {
+                if (groundRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2845,7 +2841,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                if (aboveRead._tag === 'Fault' || aboveRead._tag === 'ChunkNotLoaded') {
+                if (aboveRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -2986,7 +2982,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const soilRead = yield* itemUseBlockTypeAt(state, soil, observed.success.blocks[0])
                 const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
-                if (soilRead._tag === 'Fault' || soilRead._tag === 'ChunkNotLoaded') {
+                if (soilRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -3001,7 +2997,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                if (aboveRead._tag === 'Fault' || aboveRead._tag === 'ChunkNotLoaded') {
+                if (aboveRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }
@@ -3146,7 +3142,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
-                if (blockRead._tag === 'Fault' || blockRead._tag === 'ChunkNotLoaded') {
+                if (blockRead._tag === 'ChunkNotLoaded') {
                   yield* requeueItemUse(request)
                   continue itemUseRequests
                 }

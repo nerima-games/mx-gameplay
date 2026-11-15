@@ -2731,24 +2731,20 @@ const stepPortalTravel = (
 
     const reading = yield* store.getBlock(cell)
     const blockId = reading._tag === 'Block' ? reading.block : undefined
-    const resolvedBlock = blockId === undefined ? undefined : entityWorldBlockTypeAt(cell, blockId)
-    if (resolvedBlock !== undefined && Result.isFailure(resolvedBlock)) {
-      if (resolvedBlock.failure._tag === 'EntityWorldUnregisteredBlockId') {
-        const reason: GameplayStageBlockTypeDecodeFailure = {
-          _tag: 'BlockTypeDecodeFailed',
-          position: cell,
-          block: resolvedBlock.failure.blockId,
-          failure: { _tag: 'UnregisteredBlockId' },
-        }
-        yield* recordGameplayEntityStageFault(state, {
-          _tag: 'WorldDataFailure', source: 'Portal', operation: 'DecodeBlockType', position: cell, reason,
-        })
-      } else {
-        yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedBlock.failure)
+    // The store supplies branded ids and this build's fixed registry is already resolved.
+    const block = blockId === undefined ? undefined : Result.getOrThrow(blockTypeOfId(blockId))
+    if (blockId !== undefined && block === undefined) {
+      const reason: GameplayStageBlockTypeDecodeFailure = {
+        _tag: 'BlockTypeDecodeFailed',
+        position: cell,
+        block: blockId,
+        failure: { _tag: 'UnregisteredBlockId' },
       }
+      yield* recordGameplayEntityStageFault(state, {
+        _tag: 'WorldDataFailure', source: 'Portal', operation: 'DecodeBlockType', position: cell, reason,
+      })
       return
     }
-    const block = resolvedBlock === undefined ? undefined : resolvedBlock.success
     const inPortal =
       block !== undefined &&
       (block === 'nether_portal' || (blockId !== undefined && isEndPortalBlock(blockId)))
@@ -2789,28 +2785,22 @@ const stepPortalTravel = (
     }
     const currentReading = yield* store.getBlock(currentCell)
     const currentBlockId = currentReading._tag === 'Block' ? currentReading.block : undefined
-    const resolvedCurrentBlock = currentBlockId === undefined
-      ? undefined
-      : entityWorldBlockTypeAt(currentCell, currentBlockId)
-    if (resolvedCurrentBlock !== undefined && Result.isFailure(resolvedCurrentBlock)) {
-      if (resolvedCurrentBlock.failure._tag === 'EntityWorldUnregisteredBlockId') {
-        const reason: GameplayStageBlockTypeDecodeFailure = {
-          _tag: 'BlockTypeDecodeFailed',
-          position: currentCell,
-          block: resolvedCurrentBlock.failure.blockId,
-          failure: { _tag: 'UnregisteredBlockId' },
-        }
-        yield* recordGameplayEntityStageFault(state, {
-          _tag: 'WorldDataFailure', source: 'Portal', operation: 'DecodeBlockType', position: currentCell, reason,
-        })
-      } else {
-        yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedCurrentBlock.failure)
+    // The recheck uses the same branded-id boundary and fixed registry as the first read.
+    const currentBlock = currentBlockId === undefined ? undefined : Result.getOrThrow(blockTypeOfId(currentBlockId))
+    if (currentBlockId !== undefined && currentBlock === undefined) {
+      const reason: GameplayStageBlockTypeDecodeFailure = {
+        _tag: 'BlockTypeDecodeFailed',
+        position: currentCell,
+        block: currentBlockId,
+        failure: { _tag: 'UnregisteredBlockId' },
       }
+      yield* recordGameplayEntityStageFault(state, {
+        _tag: 'WorldDataFailure', source: 'Portal', operation: 'DecodeBlockType', position: currentCell, reason,
+      })
       // A failed recheck did not complete travel; leave the dwell ready to retry next tick.
       yield* Ref.set(state.portalDwell, { _tag: 'Standing', dwelledSecs: PORTAL_ACTIVATION_SECS })
       return
     }
-    const currentBlock = resolvedCurrentBlock === undefined ? undefined : resolvedCurrentBlock.success
     const stillInPortal = currentBlock === 'nether_portal' ||
       (currentBlockId !== undefined && isEndPortalBlock(currentBlockId))
     if (!stillInPortal) {
@@ -4117,25 +4107,22 @@ const stepFireTick = (
       const reading = yield* store.getBlock(worldPosition)
       let block: string
       if (reading._tag === 'Block') {
-        const resolved = entityWorldBlockTypeAt(worldPosition, reading.block)
-        if (Result.isFailure(resolved)) {
-          if (resolved.failure._tag === 'EntityWorldUnregisteredBlockId') {
-            const reason: GameplayStageBlockTypeDecodeFailure = {
-              _tag: 'BlockTypeDecodeFailed',
-              position: worldPosition,
-              block: reading.block,
-              failure: { _tag: 'UnregisteredBlockId' },
-            }
-            yield* recordGameplayEntityStageFault(state, {
-              _tag: 'WorldDataFailure', source: 'Fire', operation: 'DecodeBlockType', position: worldPosition, reason,
-            })
-          } else {
-            yield* recordGameplayEntityWorldDataFault(state, 'Fire', resolved.failure)
+        // The store supplies branded ids and this build's fixed registry is already resolved.
+        const resolved = Result.getOrThrow(blockTypeOfId(reading.block))
+        if (resolved === undefined) {
+          const reason: GameplayStageBlockTypeDecodeFailure = {
+            _tag: 'BlockTypeDecodeFailed',
+            position: worldPosition,
+            block: reading.block,
+            failure: { _tag: 'UnregisteredBlockId' },
           }
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'WorldDataFailure', source: 'Fire', operation: 'DecodeBlockType', position: worldPosition, reason,
+          })
           faultyCellKeys.add(firePositionKey(position))
           continue
         }
-        block = resolved.success
+        block = resolved
       } else if (reading._tag === 'ChunkNotLoaded') {
         block = FIRE_UNAVAILABLE_BLOCK
       } else if (position.y >= CHUNK_HEIGHT) {
