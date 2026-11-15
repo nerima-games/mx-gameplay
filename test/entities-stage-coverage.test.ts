@@ -73,14 +73,14 @@ const makeHarness = (options: Readonly<{
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
   const coordinatorBase = yield* makeWorldCommitCoordinator({
     world: worldId,
-    owners: gameplayOwnerRegistrations({
+    owners: Result.getOrThrow(gameplayOwnerRegistrations({
       playerPose: INITIAL_PLAYER_POSE,
       entities: { entities, nextSerial: EntitySerial(entities.length) },
       ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
       ...(options.orb === undefined
         ? {}
         : { experienceOrbs: { orbs: [{ id: options.orb.id, value: Result.getOrThrow(createExperienceOrbValue(options.orb.amount)) }] } }),
-    }),
+    })),
     chunkStores: { forDimension: () => store.api },
   })
   const requests: WorldCommitRequest[] = []
@@ -264,7 +264,7 @@ describe('entities-stage owner-backed coverage', () => {
       GAMEPLAY_ENTITIES_OWNER_ID,
     ])
     expect(after.revision).toBe(before.revision + 1)
-    expect(after.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0 })
+    expect(after.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0.05 })
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(registered.state))).toStrictEqual([])
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   hostileMobSnapshot,
   isHostileMobSnapshot,
@@ -11,12 +11,13 @@ import {
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { RANDOM_DESPAWN_CHANCE } from '../src/domain/mob/hostile-despawn'
 import { DeltaTimeSecs, EntityHealthPoints } from '@nerima-games/mc-kernel'
-import { nextRoll } from '../src/domain/frame-rolls'
+import { nextRoll as nextRollResult } from '../src/domain/frame-rolls'
 import type { Position } from '@nerima-games/mc-kernel'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 const PLAYER: Position = atPosition(0, 64, 0 )
 const AT_RANDOM_DISTANCE: Position = atPosition(40, 64, 0 )
+const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
 
 const seedWhoseNextRollDespawns = (): number => {
   for (let seed = 1; seed < 10_000; seed += 1) {

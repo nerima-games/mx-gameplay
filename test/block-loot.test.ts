@@ -38,7 +38,7 @@
  * and Silk Touch alternative.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Result } from 'effect'
+import { Brand, Effect, Option, Result } from 'effect'
 import {
   blockIdOf,
   blockTypeOfId,
@@ -53,7 +53,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   BLOCK_LOOT_ROLLS,
-  blockLoot,
+  blockLoot as resolveBlockLoot,
   FORTUNE_MULTIPLIERS,
   GRASS_SEED_DROP_CHANCE,
   LEAF_APPLE_DROP_CHANCE,
@@ -64,6 +64,9 @@ import {
   type MinedItem,
 } from '../src/domain/interactions/block-loot'
 import { BlockId, ITEM_TYPES } from '@nerima-games/mc-kernel'
+
+const blockLoot = (...args: Parameters<typeof resolveBlockLoot>) =>
+  Result.getOrThrow(resolveBlockLoot(...args))
 
 const AIR = BlockId(0)
 const STONE = BlockId(2)
@@ -109,6 +112,23 @@ describe('the kernel bridge — dropOfBlockId', () => {
       expect(Result.getOrThrow(blockTypeOfId(unknown))).toBeUndefined()
       expect(Result.getOrThrow(dropOfBlockId(unknown))).toBeUndefined()
       expect(blockLoot(BlockId(200))).toStrictEqual([])
+    }),
+  )
+
+  it.effect('preserves a registry lookup failure instead of reporting no loot', () =>
+    Effect.sync(() => {
+      const invalidId = Brand.nominal<BlockId>()(65_536)
+      const loot = resolveBlockLoot(invalidId)
+
+      expect(Result.isFailure(loot)).toBe(true)
+      if (Result.isFailure(loot)) {
+        expect(loot.failure).toMatchObject({
+          _tag: 'BlockLootRegistryFailure',
+          block: invalidId,
+          lookup: 'drop',
+          failure: { _tag: 'BrandError' },
+        })
+      }
     }),
   )
 

@@ -24,7 +24,8 @@ const BrewingAdvanceRequestSchema: Schema.Struct<{
 type BrewingAdvanceRequest = Schema.Schema.Type<typeof BrewingAdvanceRequestSchema>
 
 export type BrewingAdvanceExecution = Readonly<{
-  readonly requestId: Schema.Schema.Type<typeof BrewingAdvanceRequestSchema>['requestId']
+  /** Omitted when an automatic frame advance fails. */
+  readonly requestId?: Schema.Schema.Type<typeof BrewingAdvanceRequestSchema>['requestId']
   readonly result: Result.Result<BrewingOutcome, BrewingServiceError>
 }>
 
@@ -52,11 +53,14 @@ export const makeBrewingAdvanceStage = (
       run: (dt) => Effect.gen(function* () {
         const requests = yield* Ref.getAndSet(pending, [])
         if (requests.length === 0) {
-          yield* Effect.orDie(
+          const result = yield* Effect.result(
             brewingService.advance(dt).pipe(
               Effect.provideService(WorldCommitCoordinator, coordinator),
             ),
           )
+          if (Result.isFailure(result)) {
+            yield* Ref.update(results, (current) => [...current, { result }])
+          }
           return
         }
 

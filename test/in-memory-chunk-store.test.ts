@@ -2,7 +2,7 @@
  * The in-memory world adapts supplied sparse blocks to mc-worldgen's ChunkStore.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   blockIdOf,
@@ -164,36 +164,31 @@ describe('makeInMemoryWorld ChunkStore', () => {
     }),
   )
 
-  it.effect('skips malformed sparse keys and blocks outside the vertical extent', () =>
+  it.effect('returns typed failures for malformed world keys and out-of-range blocks', () =>
     Effect.gen(function* () {
-      const world = yield* makeInMemoryWorld({
-        world: {
-          blocks: new Map([
-            [cellKey(AT), STONE],
-            ['not,a,cell,key', DIRT],
-            ['5,999,5', DIRT],
-            ['9007199254740992,5,5', DIRT],
-          ]),
-          loaded: [
-            chunkKey(chunkOf(AT)),
-            'malformed',
-            '9007199254740992,0',
-            '0,9007199254740992',
-          ],
-        },
-      })
+      const malformedWorlds: ReadonlyArray<{
+        readonly world: WorldContents
+        readonly field: 'world.blocks' | 'world.loaded'
+      }> = [
+        { world: { blocks: new Map([['not,a,cell,key', DIRT]]), loaded: [] }, field: 'world.blocks' },
+        { world: { blocks: new Map([['5,999,5', DIRT]]), loaded: [] }, field: 'world.blocks' },
+        { world: { blocks: new Map([['9007199254740992,5,5', DIRT]]), loaded: [] }, field: 'world.blocks' },
+        { world: { blocks: new Map(), loaded: ['malformed'] }, field: 'world.loaded' },
+        { world: { blocks: new Map(), loaded: ['9007199254740992,0'] }, field: 'world.loaded' },
+        { world: { blocks: new Map(), loaded: ['0,9007199254740992'] }, field: 'world.loaded' },
+      ]
 
-      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({
-        _tag: 'Block',
-        block: STONE,
-      })
-      expect(yield* world.chunkStore.getBlock(blockPosition(6, 5, 5))).toStrictEqual({
-        _tag: 'Block',
-        block: AIR_BLOCK_ID,
-      })
-      expect((yield* world.chunkStore.getBlock(blockPosition(5, CHUNK_HEIGHT, 5)))._tag).toBe(
-        'OutOfWorld',
-      )
+      for (const { world, field } of malformedWorlds) {
+        const result = yield* Effect.result(makeInMemoryWorld({ world }))
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({
+            _tag: 'WorldInputFailure',
+            field,
+            reason: 'invalid',
+          })
+        }
+      }
     }),
   )
 
@@ -209,7 +204,7 @@ describe('makeInMemoryWorld ChunkStore', () => {
       ] as const
 
       for (const point of invalidPositions) {
-        expect(isSolid(point)).toBe(true)
+        expect(Result.getOrThrow(isSolid(point))).toBe(true)
         expect(isTargetable(point.x, point.y, point.z)).toBe(false)
       }
     }),

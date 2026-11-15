@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
+import { Result } from 'effect'
 import { CHUNK_SIZE_XZ, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import {
   advanceFireLifecycle,
@@ -7,7 +8,11 @@ import {
   FIRE_UNLOADED_RETRY_LIMIT,
   type FirePosition,
 } from '../../src/domain/fire-lifecycle'
-import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
+import {
+  dayPhase as dayPhaseResult,
+  hostileSpawnsAllowed as hostileSpawnsAllowedResult,
+  isNight as isNightResult,
+} from '../../src/domain/day-night'
 import { chunkCoordsAround } from '../../src/domain/chunk-window'
 import {
   disturb,
@@ -15,11 +20,15 @@ import {
   takeBatch,
 } from '../../src/domain/falling-block'
 import {
-  resolveNextWeatherState,
+  resolveNextWeatherState as resolveNextWeatherStateResult,
   WEATHER_DURATION_RANGES,
   WEATHERS,
 } from '../../src/domain/weather'
 import { blockPosition } from '../support/coordinate-fixtures'
+
+const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
+const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
+const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
 
 const positionKey = (id: number) => blockPositionKeyOf(blockPosition(0, id, 0))
 
@@ -63,11 +72,11 @@ describe('environment state properties', () => {
         fc.integer({ min: 0, max: FIRE_UNLOADED_RETRY_LIMIT + 1 }),
         (unloadedRetries) => {
           const position: FirePosition = { x: 0, y: 64, z: 0 }
-          const step = advanceFireLifecycle(
+          const step = Result.getOrThrow(advanceFireLifecycle(
             { fires: [{ position, ageTicks: 0, unloadedRetries }], seed: 1 },
             [{ position, block: FIRE_UNAVAILABLE_BLOCK }],
             'clear',
-          )
+          ))
 
           expect(step.mutations).toStrictEqual([])
           if (unloadedRetries < FIRE_UNLOADED_RETRY_LIMIT) {
@@ -88,14 +97,14 @@ describe('environment state properties', () => {
       fc.property(fc.constantFrom('rain', 'thunder'), (weather) => {
         const position: FirePosition = { x: 3, y: 64, z: -2 }
         const below: FirePosition = { ...position, y: position.y - 1 }
-        const step = advanceFireLifecycle(
+        const step = Result.getOrThrow(advanceFireLifecycle(
           { fires: [{ position, ageTicks: 1 }], seed: 7 },
           [
             { position, block: 'fire', exposedToSky: true },
             { position: below, block: 'stone' },
           ],
           weather,
-        )
+        ))
 
         expect(step.mutations).toContainEqual({ position, block: 'air' })
         expect(step.state.fires).toStrictEqual([])
@@ -129,10 +138,23 @@ describe('environment state properties', () => {
         fc.double({ min: 0, max: 1 }),
         fc.double({ min: 0, max: 1 }),
         (current, transitionRoll, durationRoll) => {
-          const next = resolveNextWeatherState(current, {
+          const nextResult = resolveNextWeatherStateResult(current, {
             transition: transitionRoll,
             duration: durationRoll,
           })
+          const invalidField = !Number.isFinite(transitionRoll)
+            ? 'transition'
+            : !Number.isFinite(durationRoll)
+              ? 'duration'
+              : undefined
+          if (invalidField !== undefined) {
+            expect(nextResult).toStrictEqual(Result.fail({
+              _tag: 'InvalidWeatherInput',
+              field: invalidField,
+            }))
+            return
+          }
+          const next = Result.getOrThrow(nextResult)
           const range = WEATHER_DURATION_RANGES[next.weather]
 
           expect(next.weather).not.toBe(current)

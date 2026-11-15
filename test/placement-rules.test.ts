@@ -233,6 +233,18 @@ describe('sugar cane needs water beside its support', () => {
     }),
   )
 
+  it.effect('reads neighboring water when the caller did not read the support cell', () =>
+    Effect.gen(function* () {
+      const besideSupport = yield* makeChunkStoreDouble(
+        world([[blockPosition(5, 63, 4), WATER]]),
+        ['0,0'],
+      )
+
+      expect(yield* sugarCaneWaterObjection(besideSupport.api, SUGAR_CANE, target, undefined)).toBeUndefined()
+      expect((yield* besideSupport.calls).reads).toBe(4)
+    }),
+  )
+
   it.effect('sees water in the NEXT CHUNK, which the reference cannot', () =>
     Effect.gen(function* () {
       // A cane at x = 0 with water at x = -1. The reference filters that

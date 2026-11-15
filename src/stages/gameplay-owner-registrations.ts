@@ -30,18 +30,21 @@ import {
   type ReplicatedOwnerRegistration,
   type Vitals,
 } from '@nerima-games/mc-sim'
-import { Schema, SchemaParser } from 'effect'
+import { Effect, Schema, SchemaParser } from 'effect'
 import { Result } from 'effect'
 import {
   DimensionIdSchema,
   EntityIdSchema,
+  ProjectileIdSchema,
+  WorldPositionSchema,
   ITEM_TYPES,
   SimulationTickSchema,
   type Dimension,
   type EntityId,
+  type ProjectileId,
 } from '@nerima-games/mc-kernel'
 import {
-  droppedItemOwnerRegistration,
+  DroppedItemOwnerSnapshotSchema,
   type DroppedItemOwnerSnapshot,
 } from '../domain/entities/dropped-item.js'
 import {
@@ -64,12 +67,14 @@ import {
 import {
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
+  isMobBehaviourRepairFault,
   type MobBehaviour,
   type MobEntity,
   type MobKillCredit,
+  type MobProjectilePendingImpact,
   type MobRoster,
 } from '../domain/entities/mob-frame.js'
-import { repairEcosystemMobState } from '../domain/mob/mob-ecosystem.js'
+import { BLAZE_KIND, SKELETON_KIND, repairEcosystemMobState } from '../domain/mob/mob-ecosystem.js'
 import { isPrimedTnt } from '../domain/mob/primed-tnt.js'
 
 export const GAMEPLAY_PLAYER_STORAGE_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-player-storage')
@@ -119,29 +124,23 @@ const isEndermanFlinch = (value: unknown): boolean =>
 
 const isEcosystemState = (value: unknown): boolean => {
   if (!isRecord(value) || value['_tag'] !== 'EcosystemMob') return false
-
-  const hasTickCooldown =
-    hasOnlyKeys(value, ['_tag', 'attackCooldownTicks', 'motionPhase', 'provoked']) &&
-      typeof value['attackCooldownTicks'] === 'number' &&
-      Number.isSafeInteger(value['attackCooldownTicks']) &&
-      value['attackCooldownTicks'] >= 0
-  const hasLegacyCooldown =
-    hasOnlyKeys(value, ['_tag', 'attackCooldownSecs', 'motionPhase', 'provoked']) &&
-      typeof value['attackCooldownSecs'] === 'number' &&
-      Number.isFinite(value['attackCooldownSecs']) &&
-      value['attackCooldownSecs'] >= 0
-
-  return (hasTickCooldown || hasLegacyCooldown) &&
-    typeof value['motionPhase'] === 'number' &&
-    Number.isFinite(value['motionPhase']) &&
-    typeof value['provoked'] === 'boolean' &&
-    repairEcosystemMobState(value) !== undefined
+  const ecosystemKeys = [
+    '_tag', 'attackCooldownTicks', 'attackCooldownSecs', 'motionPhase', 'provoked',
+    'movementGoal', 'movement', 'hasHeadProtection', 'burningTicks',
+  ]
+  const repaired = repairEcosystemMobState(value)
+  return hasOnlyKeys(value, ecosystemKeys) && Result.isSuccess(repaired) && repaired.success !== undefined
 }
 
 const isStrictDroppedItem = (value: unknown): boolean => {
   if (!isDroppedItemBehaviour(value) || !hasOnlyKeys(value, [
     '_tag', 'item', 'count', 'durability', 'eligibleFromFrame', 'customName', 'enchantments',
   ])) return false
+  if (
+    (Object.hasOwn(value, 'eligibleFromFrame') && value.eligibleFromFrame === undefined) ||
+    (Object.hasOwn(value, 'customName') && value.customName === undefined) ||
+    (Object.hasOwn(value, 'enchantments') && value.enchantments === undefined)
+  ) return false
   return value.enchantments === undefined || value.enchantments.every((enchantment) =>
     hasOnlyKeys(enchantment, ['id', 'level']),
   )
@@ -150,9 +149,14 @@ const isStrictDroppedItem = (value: unknown): boolean => {
 const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   if (value === undefined) return true
   if (!isRecord(value)) return false
+  if (value['_tag'] === 'MobBehaviourRepairFault') {
+    return isMobBehaviourRepairFault(value) && hasOnlyKeys(value, ['_tag', 'failure'])
+  }
   if (value['_tag'] === 'HostileMob') {
     return isHostileMobSnapshot(value) &&
-      hasOnlyKeys(value, ['_tag', 'behaviour', 'ageTicks', 'persistent', 'named', 'tamed']) &&
+      hasOnlyKeys(value, ['_tag', 'behaviour', 'movement', 'ageTicks', 'persistent', 'named', 'tamed']) &&
+      !(Object.hasOwn(value, 'behaviour') && value['behaviour'] === undefined) &&
+      !(Object.hasOwn(value, 'movement') && value['movement'] === undefined) &&
       (value['behaviour'] === undefined ||
         isCreeperFuse(value['behaviour']) ||
         isEndermanFlinch(value['behaviour']) ||
@@ -170,36 +174,128 @@ export const GameplayMobBehaviourSchema: Schema.Codec<MobBehaviour, unknown> =
 export type GameplayEntity = MobEntity & Readonly<{ dimension: Dimension }>
 export type GameplayEntityRoster = Omit<EntityRoster<MobBehaviour>, 'entities'> & Readonly<{
   entities: ReadonlyArray<GameplayEntity>
+  resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+  pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
+}>
+
+export type GameplayEntityMetadataFailure = Readonly<{
+  _tag: 'InvalidGameplayEntityMetadata'
+  field:
+    | 'entities'
+    | 'resolvedMobProjectileIds'
+    | 'pendingMobProjectileImpacts'
+    | 'behaviour'
+    | 'dimension'
+    | 'killCredit'
+    | 'lastHitTick'
+}> | Readonly<{
+  _tag: 'InvalidGameplayEntityRoster'
+  error: Schema.SchemaError
 }>
 
 const GameplayMobEntityBaseSchema = EntitySchema(GameplayMobBehaviourSchema)
 const GameplayMobRosterBaseSchema = EntityRosterSchema(GameplayMobBehaviourSchema)
 
+// JSON omits an undefined entity behaviour; restoring that key preserves its no-state value.
+const migrateLegacyMissingEntityBehaviour = (): MobBehaviour => undefined
+
 export const GameplayEntityRosterSchema: Schema.Codec<GameplayEntityRoster, unknown> = strictCodec(
   Schema.Struct({
     entities: Schema.Array(Schema.Struct({
       ...GameplayMobEntityBaseSchema.fields,
+      behaviour: GameplayMobBehaviourSchema.pipe(
+        Schema.withDecodingDefaultKey(Effect.sync(migrateLegacyMissingEntityBehaviour)),
+      ),
       dimension: DimensionIdSchema,
       killCredit: Schema.optionalKey(Schema.Literals(['player', 'player-triggered-tnt'])),
       lastHitTick: Schema.optionalKey(SimulationTickSchema),
     })),
     nextSerial: GameplayMobRosterBaseSchema.fields.nextSerial,
+    resolvedMobProjectileIds: Schema.optionalKey(Schema.Array(ProjectileIdSchema)),
+    pendingMobProjectileImpacts: Schema.optionalKey(Schema.Array(Schema.Struct({
+      id: ProjectileIdSchema,
+      source: EntityIdSchema,
+      kind: Schema.Literals([SKELETON_KIND, BLAZE_KIND]),
+      hit: Schema.Union([
+        Schema.Struct({
+          kind: Schema.Literals(['entity']),
+          entityId: EntityIdSchema,
+          point: WorldPositionSchema,
+        }),
+        Schema.Struct({
+          kind: Schema.Literals(['block']),
+          point: WorldPositionSchema,
+        }),
+      ]),
+    }))),
   }),
 )
 
 export const restoreGameplayEntityMetadata = (
-  roster: MobRoster,
-  previous: MobRoster,
+  roster: MobRoster & Readonly<{
+    resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+    pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
+  }>,
+  previous: MobRoster & Readonly<{
+    resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+    pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
+  }>,
   fallbackDimension: Dimension,
-): GameplayEntityRoster => {
+): Result.Result<GameplayEntityRoster, GameplayEntityMetadataFailure> => {
+  const optionalFields = [
+    'resolvedMobProjectileIds',
+    'pendingMobProjectileImpacts',
+  ] as const
+  for (const value of [roster, previous]) {
+    if (!isRecord(value) || !Array.isArray(value.entities)) {
+      return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field: 'entities' })
+    }
+    for (const field of optionalFields) {
+      if (Object.hasOwn(value, field) && value[field] === undefined) {
+        return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field })
+      }
+    }
+    for (const entity of value.entities) {
+      if (!isRecord(entity)) {
+        return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field: 'entities' })
+      }
+      for (const field of ['dimension', 'killCredit', 'lastHitTick'] as const) {
+        if (Object.hasOwn(entity, field) && entity[field] === undefined) {
+          return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field })
+        }
+      }
+    }
+  }
   const previousById = new Map(previous.entities.map((entity) => [entity.id, entity]))
-  return Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+  const resolvedMobProjectileIds = Object.hasOwn(roster, 'resolvedMobProjectileIds')
+    ? roster.resolvedMobProjectileIds
+    : Object.hasOwn(previous, 'resolvedMobProjectileIds')
+    ? previous.resolvedMobProjectileIds
+    : undefined
+  const pendingMobProjectileImpacts = Object.hasOwn(roster, 'pendingMobProjectileImpacts')
+    ? roster.pendingMobProjectileImpacts
+    : Object.hasOwn(previous, 'pendingMobProjectileImpacts')
+    ? previous.pendingMobProjectileImpacts
+    : undefined
+  const decoded = Schema.decodeUnknownResult(GameplayEntityRosterSchema)({
     ...roster,
+    ...(resolvedMobProjectileIds === undefined ? {} : { resolvedMobProjectileIds }),
+    ...(pendingMobProjectileImpacts === undefined ? {} : { pendingMobProjectileImpacts }),
     entities: roster.entities.map((entity) => {
       const prior = previousById.get(entity.id)
-      const dimension = entity.dimension ?? prior?.dimension ?? fallbackDimension
-      const killCredit = entity.killCredit ?? prior?.killCredit
-      const lastHitTick = entity.lastHitTick ?? prior?.lastHitTick
+      let dimension = fallbackDimension
+      if (Object.hasOwn(entity, 'dimension')) dimension = entity.dimension!
+      else if (prior !== undefined && Object.hasOwn(prior, 'dimension')) dimension = prior.dimension!
+      const killCredit = Object.hasOwn(entity, 'killCredit')
+        ? entity.killCredit
+        : prior !== undefined && Object.hasOwn(prior, 'killCredit')
+        ? prior.killCredit
+        : undefined
+      const lastHitTick = Object.hasOwn(entity, 'lastHitTick')
+        ? entity.lastHitTick
+        : prior !== undefined && Object.hasOwn(prior, 'lastHitTick')
+        ? prior.lastHitTick
+        : undefined
       return {
         ...entity,
         dimension,
@@ -208,6 +304,9 @@ export const restoreGameplayEntityMetadata = (
       }
     }),
   })
+  return Result.isFailure(decoded)
+    ? Result.fail({ _tag: 'InvalidGameplayEntityRoster', error: decoded.failure })
+    : Result.succeed(decoded.success)
 }
 
 export type GameplayTntSource = Readonly<{
@@ -271,69 +370,183 @@ const playerOwnerState = (
   },
 })
 
-export const gameplayOwnerRegistrations = (
-  initial: GameplayOwnerInitialState = {},
+export type GameplayOwnerRegistrationFailure =
+  | Readonly<{
+      _tag: 'ExplicitUndefinedGameplayOwnerInitialState'
+      field: keyof GameplayOwnerInitialState | 'initial'
+    }>
+  | Readonly<{
+      _tag: 'InvalidGameplayOwnerInitialState'
+      field: keyof GameplayOwnerInitialState | 'initial'
+    }>
+  | GameplayEntityMetadataFailure
+  | Readonly<{
+      _tag: 'InvalidGameplayOwnerRegistration'
+      ownerId: ReplicatedOwnerId
+      error: Schema.SchemaError
+    }>
+
+type PlayerOwnerState = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
+
+const ownerInitialValue = <K extends keyof GameplayOwnerInitialState>(
+  initial: GameplayOwnerInitialState,
+  field: K,
+  fallback: NonNullable<GameplayOwnerInitialState[K]>,
+): NonNullable<GameplayOwnerInitialState[K]> =>
+  Object.hasOwn(initial, field)
+    ? initial[field] as NonNullable<GameplayOwnerInitialState[K]>
+    : fallback
+
+const gameplayOwnerRegistrationValues = (
+  initial: GameplayOwnerInitialState,
+  playerState: PlayerOwnerState,
+  entityState: GameplayEntityRoster,
 ): ReadonlyArray<ReplicatedOwnerRegistration> => [
   {
     ownerId: GAMEPLAY_PLAYER_OWNER_ID,
     schema: PlayerServiceSnapshotSchema,
-    initialState: playerOwnerState(
-      initial.playerPose ?? INITIAL_PLAYER_POSE,
-      initial.dimension ?? INITIAL_DIMENSION,
-    ),
+    initialState: playerState,
   },
   playerStorageOwnerRegistration(
     GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-    initial.playerStorage ?? emptyPlayerStorage(),
+    ownerInitialValue(initial, 'playerStorage', emptyPlayerStorage()),
   ),
   {
     ownerId: GAMEPLAY_CROPS_OWNER_ID,
     schema: CropSnapshotSchema,
-    initialState: initial.crops ?? { crops: [] },
+    initialState: ownerInitialValue(initial, 'crops', { crops: [] }),
   },
-  droppedItemOwnerRegistration(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, initial.droppedItems ?? { items: [] }),
-  vitalsOwnerRegistration(GAMEPLAY_VITALS_OWNER_ID, { vitals: initial.vitals ?? SPAWN_VITALS }),
-  experienceOrbOwnerRegistration(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, initial.experienceOrbs ?? { orbs: [] }),
+  {
+    ownerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+    schema: DroppedItemOwnerSnapshotSchema,
+    initialState: ownerInitialValue(initial, 'droppedItems', { items: [] }),
+  },
+  vitalsOwnerRegistration(
+    GAMEPLAY_VITALS_OWNER_ID,
+    { vitals: ownerInitialValue(initial, 'vitals', SPAWN_VITALS) },
+  ),
+  experienceOrbOwnerRegistration(
+    GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+    ownerInitialValue(initial, 'experienceOrbs', { orbs: [] }),
+  ),
   {
     ownerId: GAMEPLAY_BREWING_OWNER_ID,
     schema: BrewingServiceStateSchema,
-    initialState: initial.brewing ?? Result.getOrThrow(emptyBrewingState()),
+    initialState: ownerInitialValue(initial, 'brewing', Result.getOrThrow(emptyBrewingState())),
   },
   {
     ownerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
     schema: GameplayVillagerTradeSnapshotSchema,
-    initialState: initial.villagerTrades ?? { villagers: [], restockElapsedSecs: 0 },
+    initialState: ownerInitialValue(initial, 'villagerTrades', { villagers: [], restockElapsedSecs: 0 }),
   },
   {
     ...fishingOwnerRegistration(GAMEPLAY_FISHING_OWNER_ID),
-    initialState: initial.fishing ?? emptyFishingState(),
+    initialState: ownerInitialValue(initial, 'fishing', emptyFishingState()),
   },
   {
     ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
     schema: GameplayEntityRosterSchema,
-    initialState: restoreGameplayEntityMetadata(
-      initial.entities ?? { entities: [], nextSerial: EntitySerial(0) },
-      { entities: [], nextSerial: EntitySerial(0) },
-      initial.dimension ?? INITIAL_DIMENSION,
-    ),
+    initialState: entityState,
   },
   {
     ownerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
     schema: GameplayTntSourcesSnapshotSchema,
-    initialState: initial.tntSources ?? { sources: [] },
+    initialState: ownerInitialValue(initial, 'tntSources', { sources: [] }),
   },
   {
     ownerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
     schema: strictCodec(StatusEffectStateSchema),
-    initialState: initial.statusEffects ?? emptyStatusEffectState(),
+    initialState: ownerInitialValue(initial, 'statusEffects', emptyStatusEffectState()),
   },
   {
     ownerId: PROJECTILE_REPLICATED_OWNER_ID,
     schema: ProjectileServiceSnapshotSchema,
-    initialState: initial.projectiles ?? INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
+    initialState: ownerInitialValue(initial, 'projectiles', INITIAL_PROJECTILE_SERVICE_SNAPSHOT),
   },
-  tntOwnerRegistration(TNT_REPLICATED_OWNER_ID, initial.tnt ?? INITIAL_TNT_SERVICE_SNAPSHOT),
+  tntOwnerRegistration(
+    TNT_REPLICATED_OWNER_ID,
+    ownerInitialValue(initial, 'tnt', INITIAL_TNT_SERVICE_SNAPSHOT),
+  ),
 ]
+
+export function gameplayOwnerRegistrations(): ReadonlyArray<ReplicatedOwnerRegistration>
+export function gameplayOwnerRegistrations(
+  initial: GameplayOwnerInitialState | undefined,
+): Result.Result<ReadonlyArray<ReplicatedOwnerRegistration>, GameplayOwnerRegistrationFailure>
+export function gameplayOwnerRegistrations(
+  initial?: GameplayOwnerInitialState,
+): ReadonlyArray<ReplicatedOwnerRegistration> | Result.Result<
+  ReadonlyArray<ReplicatedOwnerRegistration>,
+  GameplayOwnerRegistrationFailure
+> {
+  const emptyEntities: GameplayEntityRoster = { entities: [], nextSerial: EntitySerial(0) }
+  if (arguments.length === 0) {
+    return gameplayOwnerRegistrationValues(
+      {},
+      playerOwnerState(INITIAL_PLAYER_POSE, INITIAL_DIMENSION),
+      emptyEntities,
+    )
+  }
+  if (initial === undefined) {
+    return Result.fail({ _tag: 'ExplicitUndefinedGameplayOwnerInitialState', field: 'initial' })
+  }
+  if (!isRecord(initial)) {
+    return Result.fail({ _tag: 'InvalidGameplayOwnerInitialState', field: 'initial' })
+  }
+  const fields: ReadonlyArray<keyof GameplayOwnerInitialState> = [
+    'playerPose', 'dimension', 'playerStorage', 'crops', 'droppedItems', 'vitals',
+    'experienceOrbs', 'brewing', 'villagerTrades', 'fishing', 'entities', 'tntSources',
+    'statusEffects', 'projectiles', 'tnt',
+  ]
+  if (!hasOnlyKeys(initial, fields)) {
+    return Result.fail({ _tag: 'InvalidGameplayOwnerInitialState', field: 'initial' })
+  }
+  for (const field of fields) {
+    if (Object.hasOwn(initial, field) && initial[field] === undefined) {
+      return Result.fail({ _tag: 'ExplicitUndefinedGameplayOwnerInitialState', field })
+    }
+  }
+
+  const pose = ownerInitialValue(initial, 'playerPose', INITIAL_PLAYER_POSE)
+  const dimension = ownerInitialValue(initial, 'dimension', INITIAL_DIMENSION)
+  const playerCandidate: unknown = isRecord(pose) && isRecord(pose['feetPosition'])
+    ? {
+        pose: {
+          feetPosition: { dimension, ...pose['feetPosition'] },
+          yawRadians: pose['yawRadians'],
+          pitchRadians: pose['pitchRadians'],
+        },
+      }
+    : { pose }
+  const playerState = Schema.decodeUnknownResult(PlayerServiceSnapshotSchema)(playerCandidate)
+  if (Result.isFailure(playerState)) {
+    return Result.fail({
+      _tag: 'InvalidGameplayOwnerRegistration',
+      ownerId: GAMEPLAY_PLAYER_OWNER_ID,
+      error: playerState.failure,
+    })
+  }
+
+  const entityState = restoreGameplayEntityMetadata(
+    ownerInitialValue(initial, 'entities', { entities: [], nextSerial: EntitySerial(0) }),
+    { entities: [], nextSerial: EntitySerial(0) },
+    dimension,
+  )
+  if (Result.isFailure(entityState)) return Result.fail(entityState.failure)
+
+  const registrations = gameplayOwnerRegistrationValues(initial, playerState.success, entityState.success)
+  for (const registration of registrations) {
+    const decoded = Schema.decodeUnknownResult(registration.schema)(registration.initialState)
+    if (Result.isFailure(decoded)) {
+      return Result.fail({
+        _tag: 'InvalidGameplayOwnerRegistration',
+        ownerId: registration.ownerId,
+        error: decoded.failure,
+      })
+    }
+  }
+  return Result.succeed(registrations)
+}
 
 export const GAMEPLAY_OWNER_REGISTRATIONS: ReadonlyArray<ReplicatedOwnerRegistration> =
   gameplayOwnerRegistrations()

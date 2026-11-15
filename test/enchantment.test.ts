@@ -1,7 +1,8 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem } from '@nerima-games/mc-sim'
 import { RandomSeed } from '@nerima-games/mc-kernel'
-import { Schema } from 'effect'
+import { Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 
 import {
   ENCHANTMENT_REGISTRY,
@@ -40,9 +41,14 @@ const enchantedItem = (
   enchantments: id === undefined ? [] : [{ id, level }],
 })
 
+const expectSuccess = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
+}
+
 const compatibleOffer = (item: EnchantedItem['item']): EnchantmentOffer => {
   for (let seed = 0; seed < 10_000; seed += 1) {
-    for (const offer of enchantmentOffers(seed, 15)) {
+    for (const offer of expectSuccess(enchantmentOffers(seed, 15))) {
       if (enchantmentAppliesTo(offer.enchantment.id, item)) return offer
     }
   }
@@ -54,7 +60,7 @@ const compatibleOfferExcluding = (
   excludedId: EnchantmentId,
 ): EnchantmentOffer => {
   for (let seed = 0; seed < 10_000; seed += 1) {
-    for (const offer of enchantmentOffers(seed, 15)) {
+    for (const offer of expectSuccess(enchantmentOffers(seed, 15))) {
       if (offer.enchantment.id !== excludedId && enchantmentAppliesTo(offer.enchantment.id, item)) {
         return offer
       }
@@ -213,16 +219,44 @@ describe('enchantment table offers and transaction', () => {
     expect(enchantmentTableResultItemOf('book')).toBe('enchanted_book')
   })
 
+  it('rejects a forged non-finite random seed at the enchantment-table boundary', () => {
+    const seed = Number.NaN as ReturnType<typeof RandomSeed>
+    const invalidSeed = RandomSeed.result(seed)
+    expect(Result.isFailure(invalidSeed)).toBe(true)
+    if (Result.isFailure(invalidSeed)) {
+      const bookshelfCount = Schema.decodeUnknownSync(EnchantmentBookshelfCountSchema)(15)
+      expect(generateEnchantmentTableOffersForItem('diamond_pickaxe', seed, bookshelfCount))
+        .toEqual(Result.fail(invalidSeed.failure))
+    }
+  })
+
   it('derives deterministic offers from normalized seed, shelves and slot', () => {
     expect(enchantmentOffers(1234, 15)).toEqual(enchantmentOffers(1234, 15))
     expect(enchantmentOffer(1234, 99, 2)).toEqual(enchantmentOffer(1234, 15, 2))
     expect(enchantmentOffer(1234, -1, 0)).toEqual(enchantmentOffer(1234, 0, 0))
-    expect(enchantmentOffers(1234, 15).map((offer) => offer.lapisCost)).toEqual([1, 2, 3])
-    expect(enchantmentOffers(1234, 15).map((offer) => offer.slot)).toEqual([0, 1, 2])
-    expect(rerollEnchantmentSeed(1234)).toBe(rerollEnchantmentSeed(1234))
-    expect(rerollEnchantmentSeed(1234)).not.toBe(1234)
-    expect(enchantmentOffer(Number.NaN, 15, 0).seed).toBe(0)
-    expect(enchantmentOffer(1234, Number.NaN, 0).bookshelfCount).toBe(0)
+    expect(expectSuccess(enchantmentOffers(1234, 15)).map((offer) => offer.lapisCost)).toEqual([1, 2, 3])
+    expect(expectSuccess(enchantmentOffers(1234, 15)).map((offer) => offer.slot)).toEqual([0, 1, 2])
+    expect(rerollEnchantmentSeed(1234)).toEqual(rerollEnchantmentSeed(1234))
+    expect(expectSuccess(rerollEnchantmentSeed(1234))).not.toBe(1234)
+    expect(enchantmentOffer(Number.NaN, 15, 0)).toEqual(Result.fail({
+      _tag: 'InvalidEnchantmentOfferInput', field: 'seed',
+    }))
+    expect(enchantmentOffer(1234, Number.NaN, 0)).toEqual(Result.fail({
+      _tag: 'InvalidEnchantmentOfferInput', field: 'bookshelfCount',
+    }))
+  })
+
+  it('property: arbitrary offer seeds and bookshelf counts return a valid offer or typed failure', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), FastCheck.anything(), (seed, shelves) => {
+        const result = enchantmentOffer(seed, shelves, 0)
+        return Result.isFailure(result)
+          ? result.failure._tag === 'InvalidEnchantmentOfferInput'
+          : Number.isFinite(result.success.seed) &&
+            Number.isFinite(result.success.bookshelfCount) &&
+            result.success.slot === 0
+      }),
+    )
   })
 
   it('atomically consumes levels and lapis, enchants the item and rerolls the seed', () => {
@@ -239,7 +273,7 @@ describe('enchantment table offers and transaction', () => {
     if (!result.ok) throw new Error('expected successful transaction')
     expect(result.state.playerLevel).toBe(30 - offer.lapisCost)
     expect(result.state.lapis).toBe(3 - offer.lapisCost)
-    expect(result.state.seed).toBe(rerollEnchantmentSeed(offer.seed))
+    expect(result.state.seed).toBe(expectSuccess(rerollEnchantmentSeed(offer.seed)))
     expect(result.state.item?.enchantments).toContainEqual(offer.enchantment)
     expect(state.item.enchantments).toEqual([])
   })
@@ -283,6 +317,16 @@ describe('enchantment table offers and transaction', () => {
       state: invalidState,
       reason: 'invalid_state',
     })
+    for (const invalidPersistedState of [
+      { ...invalidState, playerLevel: 30, seed: Number.NaN },
+      { ...invalidState, playerLevel: 30, bookshelfCount: Number.POSITIVE_INFINITY },
+    ]) {
+      expect(applyEnchantmentOffer(invalidPersistedState, offer)).toEqual({
+        ok: false,
+        state: invalidPersistedState,
+        reason: 'invalid_state',
+      })
+    }
     const invalidItemState = {
       ...invalidState,
       playerLevel: 30,

@@ -35,7 +35,7 @@ import {
   type ProjectileStepOutcome,
   type ProjectileStepRequest,
 } from '@nerima-games/mc-sim'
-import { drawRolls } from '../../src/domain/frame-rolls'
+import { drawRolls as drawRollsResult } from '../../src/domain/frame-rolls'
 import { emptySlots } from '../../src/domain/in-memory-inventory'
 import {
   createDroppedItemLifetimeTracker,
@@ -47,7 +47,7 @@ import { makeProjectileRuntime } from '../../src/domain/entities/projectile-runt
 import {
   experienceOfCasualties,
   MOB_EXPERIENCE_CREDIT_WINDOW_TICKS,
-  rollCasualtyDrops,
+  rollCasualtyDrops as rollCasualtyDropsResult,
   type MobCasualty,
 } from '../../src/domain/entities/mob-frame'
 import { planExperienceOrbAbsorption, createExperienceOrbValue } from '../../src/domain/entities/xp-orb'
@@ -61,7 +61,15 @@ import {
   type MobDropRule,
 } from '../../src/domain/mob/mob-drop'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
-import { rollCasualtyExperience } from '../../src/stages/registration-core'
+import { rollCasualtyExperience as rollCasualtyExperienceResult } from '../../src/stages/registration-core'
+
+const drawRolls = (...args: Parameters<typeof drawRollsResult>) => Result.getOrThrow(drawRollsResult(...args))
+
+const rollCasualtyDrops = (...args: Parameters<typeof rollCasualtyDropsResult>) =>
+  Result.getOrThrow(rollCasualtyDropsResult(...args))
+
+const rollCasualtyExperience = (...args: Parameters<typeof rollCasualtyExperienceResult>) =>
+  Result.getOrThrow(rollCasualtyExperienceResult(...args))
 
 const ORACLE_MOB_LOOT = {
   cow: {
@@ -419,14 +427,14 @@ describe('mob entity properties', () => {
         fc.integer({ min: 1, max: DROPPED_ITEM_LIFETIME_SECS }),
         (remainingSecs) => {
           const tracker = createDroppedItemLifetimeTracker()
-          tracker.restore('overworld', [{
+          Result.getOrThrow(tracker.restore('overworld', [{
             entityId: 'property-expiring-drop',
             elapsedSecs: DROPPED_ITEM_LIFETIME_SECS - remainingSecs,
-          }])
+          }]))
 
-          expect(tracker.advance('overworld', remainingSecs - 1, ['property-expiring-drop'])).toStrictEqual([])
+          expect(Result.getOrThrow(tracker.advance('overworld', remainingSecs - 1, ['property-expiring-drop']))).toStrictEqual([])
           expect(tracker.elapsed('overworld', 'property-expiring-drop')).toBe(DROPPED_ITEM_LIFETIME_SECS - 1)
-          expect(tracker.advance('overworld', 1, ['property-expiring-drop'])).toStrictEqual(['property-expiring-drop'])
+          expect(Result.getOrThrow(tracker.advance('overworld', 1, ['property-expiring-drop']))).toStrictEqual(['property-expiring-drop'])
           expect(tracker.elapsed('overworld', 'property-expiring-drop')).toBe(0)
         },
       ),

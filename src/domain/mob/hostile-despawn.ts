@@ -78,6 +78,8 @@
  * stops a player who walks in a straight line from towing a permanent cloud of
  * newly spawned hostiles behind them.
  */
+import { Result } from 'effect'
+
 export const DESPAWN_DISTANCE_BLOCKS = 128
 
 /** Inside this radius natural random despawning is suppressed. */
@@ -136,11 +138,6 @@ export type DespawnCandidate = {
 export type DespawnReason =
   /** Further than 128 blocks from the nearest player. */
   | 'too-far'
-  /**
-   * The distance is not a number. `entity-manager-utils.ts:59-61` reaches this
-   * from a position or a velocity that has stopped being finite.
-   */
-  | 'unmeasurable'
   /** Hostile mobs cannot remain in peaceful difficulty. */
   | 'peaceful'
   /** An old, non-persistent mob passed its explicit random despawn roll. */
@@ -155,12 +152,9 @@ const KEEP: DespawnVerdict = { _tag: 'Keep' }
 /**
  * Should this mob stop existing?
  *
- * TOTAL, deterministic, and ORDERED, and the order is the reference's rather
- * than the tidy one. The finiteness check runs BEFORE the persistence exemption
- * (`entity-manager-utils.ts:59` before :66), so a PERSISTENT MOB WITH A BROKEN
- * POSITION IS STILL SWEPT. That is the right way round — an exemption from a
- * distance rule is not an exemption from being a number — and it is invisible in
- * the reference's code, so `test/mob.test.ts` pins it.
+ * Deterministic and ordered. Invalid measurements fail before exemptions are
+ * considered, so a persistent mob with a broken position is not mistaken for a
+ * valid despawn decision.
  *
  * `undefined` distance answers `Keep`. A world with no player has nobody to be
  * far from, and "remove every mob" is a different decision with a different
@@ -169,44 +163,71 @@ const KEEP: DespawnVerdict = { _tag: 'Keep' }
  * mobs-disabled switch, never from this rule. Answering `Despawn` here would
  * quietly empty a server between two players logging in.
  */
-export const despawnVerdict = (candidate: DespawnCandidate): DespawnVerdict => {
+export type DespawnVerdictFailure = Readonly<{
+  _tag: 'InvalidDespawnCandidate'
+  field: 'candidate' | 'distanceToPlayerBlocks' | 'persistent' | 'named' | 'tamed' | 'ageTicks' | 'randomRoll' | 'difficulty'
+}>
+
+const invalidCandidate = (field: DespawnVerdictFailure['field']): DespawnVerdictFailure => ({
+  _tag: 'InvalidDespawnCandidate',
+  field,
+})
+
+export const despawnVerdict = (
+  candidate: DespawnCandidate,
+): Result.Result<DespawnVerdict, DespawnVerdictFailure> => {
+  if (typeof candidate !== 'object' || candidate === null) return Result.fail(invalidCandidate('candidate'))
+  if (typeof candidate.persistent !== 'boolean') return Result.fail(invalidCandidate('persistent'))
+  if (!Object.hasOwn(candidate, 'distanceToPlayerBlocks')) {
+    return Result.fail(invalidCandidate('distanceToPlayerBlocks'))
+  }
+
   const distance = candidate.distanceToPlayerBlocks
-
-  // Before the exemption. See above.
-  if (distance !== undefined && !Number.isFinite(distance)) {
-    return { _tag: 'Despawn', reason: 'unmeasurable' }
+  if (distance !== undefined && (!Number.isFinite(distance) || distance < 0)) {
+    return Result.fail(invalidCandidate('distanceToPlayerBlocks'))
+  }
+  if (Object.hasOwn(candidate, 'named') && typeof candidate.named !== 'boolean') {
+    return Result.fail(invalidCandidate('named'))
+  }
+  if (Object.hasOwn(candidate, 'tamed') && typeof candidate.tamed !== 'boolean') {
+    return Result.fail(invalidCandidate('tamed'))
+  }
+  if (
+    Object.hasOwn(candidate, 'ageTicks') &&
+    (typeof candidate.ageTicks !== 'number' || !Number.isFinite(candidate.ageTicks) ||
+      !Number.isInteger(candidate.ageTicks) || candidate.ageTicks < 0)
+  ) {
+    return Result.fail(invalidCandidate('ageTicks'))
+  }
+  if (
+    Object.hasOwn(candidate, 'randomRoll') &&
+    (typeof candidate.randomRoll !== 'number' || !Number.isFinite(candidate.randomRoll) ||
+      candidate.randomRoll < 0 || candidate.randomRoll >= 1)
+  ) {
+    return Result.fail(invalidCandidate('randomRoll'))
   }
 
-  if (candidate.difficulty === 'peaceful') {
-    return { _tag: 'Despawn', reason: 'peaceful' }
+  const difficulty = Object.hasOwn(candidate, 'difficulty') ? candidate.difficulty : 'normal'
+  if (difficulty !== 'peaceful' && difficulty !== 'easy' && difficulty !== 'normal' && difficulty !== 'hard') {
+    return Result.fail(invalidCandidate('difficulty'))
   }
 
-  if (distance === undefined) {
-    return KEEP
-  }
-
-  if (candidate.persistent || candidate.named === true || candidate.tamed === true) {
-    return KEEP
-  }
-
-  if (distance > DESPAWN_DISTANCE_BLOCKS) {
-    return { _tag: 'Despawn', reason: 'too-far' }
-  }
+  if (difficulty === 'peaceful') return Result.succeed({ _tag: 'Despawn', reason: 'peaceful' })
+  if (distance === undefined) return Result.succeed(KEEP)
+  if (candidate.persistent || candidate.named === true || candidate.tamed === true) return Result.succeed(KEEP)
+  if (distance > DESPAWN_DISTANCE_BLOCKS) return Result.succeed({ _tag: 'Despawn', reason: 'too-far' })
 
   const age = candidate.ageTicks
   const roll = candidate.randomRoll
   if (
     distance > RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS &&
     age !== undefined &&
-    Number.isFinite(age) &&
     age > RANDOM_DESPAWN_MIN_AGE_TICKS &&
     roll !== undefined &&
-    Number.isFinite(roll) &&
-    roll >= 0 &&
     roll < RANDOM_DESPAWN_CHANCE
   ) {
-    return { _tag: 'Despawn', reason: 'natural' }
+    return Result.succeed({ _tag: 'Despawn', reason: 'natural' })
   }
 
-  return KEEP
+  return Result.succeed(KEEP)
 }

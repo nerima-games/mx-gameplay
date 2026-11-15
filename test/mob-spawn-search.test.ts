@@ -12,6 +12,7 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { vi } from 'vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   EntityId,
@@ -41,9 +42,9 @@ import {
   SPAWN_RING_RADIUS_STEPS,
   SPAWN_SEARCH_ROLLS,
 } from '../src/domain/entities/mob-spawn-search'
-import { drawRolls, rollAt } from '../src/domain/frame-rolls'
-import { isNight } from '../src/domain/day-night'
-import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
+import { drawRolls as drawRollsResult, rollAt as rollAtResult } from '../src/domain/frame-rolls'
+import { isNight as isNightResult } from '../src/domain/day-night'
+import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict as despawnVerdictResult } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
@@ -62,6 +63,7 @@ import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
   makeGameplayFrameState,
+  drainGameplayEntityStageFaults,
 } from '../src/stages/registration'
 import {
   HOSTILE_SPAWN_INTERVAL_TICKS,
@@ -82,6 +84,12 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
+
+const drawRolls = (...args: Parameters<typeof drawRollsResult>) => Result.getOrThrow(drawRollsResult(...args))
+const rollAt = (...args: Parameters<typeof rollAtResult>) => Result.getOrThrow(rollAtResult(...args))
+const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
+const despawnVerdict = (...args: Parameters<typeof despawnVerdictResult>) =>
+  Result.getOrThrow(despawnVerdictResult(...args))
 
 // ---------------------------------------------------------------------------
 // A world big enough for the ring to land in.
@@ -322,6 +330,38 @@ describe('the spawn ring', () => {
     }),
   )
 
+  it.effect('the registered entity stage drains unregistered spawn-surface faults and completes the tick', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(65_535)
+      const { store, time, state, stages } = yield* makeStageHarness(
+        FLOORED_WORLD,
+        DISTRIBUTION_LIGHT,
+        DISTRIBUTION_PLAYER,
+      )
+      const peek = store.api.peek
+      vi.spyOn(store.api, 'peek').mockImplementation((coord) => Effect.map(peek(coord), (chunk) => {
+        if (chunk === undefined) return chunk
+        const blocks = Uint16Array.from(chunk.blocks)
+        for (let index = 0; index < blocks.length; index += 1) {
+          if (blocks[index] === STONE) blocks[index] = unknownBlock
+        }
+        return { ...chunk, blocks }
+      }))
+      yield* time.setTimeOfDay(MIDNIGHT)
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS)
+      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* entities?.run(DeltaTimeSecs(0)) ?? Effect.void
+
+      const faults = yield* drainGameplayEntityStageFaults(state)
+      expect(faults.length).toBeGreaterThan(0)
+      expect(faults.every((fault) =>
+        fault._tag === 'EntityWorldDataFault' && fault.source === 'MobSpawnSearch' &&
+        fault.failure._tag === 'EntityWorldUnregisteredBlockId' && fault.failure.blockId === unknownBlock,
+      )).toBe(true)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   it.effect('measures the distance from the CELL, not from the radius that produced it', () =>
     Effect.gen(function* () {
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
@@ -553,7 +593,18 @@ describe('fixed-seed one-night spawn distribution', () => {
     }
 
     const intervalTicks = HOSTILE_SPAWN_SETTINGS.normal.intervalTicks
-    for (let tick = intervalTicks; tick <= TEST_TICKS_PER_DAY; tick += intervalTicks) {
+    let firstNightSearchTick = intervalTicks
+    while (
+      firstNightSearchTick <= TEST_TICKS_PER_DAY &&
+      !isNight(firstNightSearchTick / TEST_TICKS_PER_DAY)
+    ) {
+      firstNightSearchTick += intervalTicks
+    }
+    const skippedDaySearches = firstNightSearchTick / intervalTicks - 1
+    seed = drawRolls(seed, skippedDaySearches * SPAWN_SEARCH_ROLLS).seed
+    for (let tick = firstNightSearchTick; tick <= TEST_TICKS_PER_DAY; tick += intervalTicks) {
+      // This harness never despawns; after the cap, later night ticks cannot change the count under test.
+      if (roster.entities.length >= HOSTILE_SPAWN_SETTINGS.normal.maxPopulation) break
       const due = Result.getOrThrow(hostileSpawnSearchDue(
         SimulationTick(tick),
         SimulationTick(lastSearchTick),
@@ -562,10 +613,6 @@ describe('fixed-seed one-night spawn distribution', () => {
       if (!due) continue
       lastSearchTick = tick
       const timeOfDay = tick / TEST_TICKS_PER_DAY
-      if (!isNight(timeOfDay) || roster.entities.length >= HOSTILE_SPAWN_SETTINGS.normal.maxPopulation) {
-        seed = drawRolls(seed, SPAWN_SEARCH_ROLLS).seed
-        continue
-      }
 
       const found = yield* searchSpawnCandidates(
         store.api,
@@ -610,6 +657,7 @@ describe('what the search reads', () => {
 
       expect(found.attempts).toStrictEqual([])
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+      expect(found.worldFaults.every((fault) => fault._tag === 'EntityWorldCorruptBuffer')).toBe(true)
       expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
     }),
   )
@@ -684,6 +732,49 @@ describe('what the search reads', () => {
     }),
   )
 
+  it.effect('reports the missing foot and head cells at their own buffer indices', () =>
+    Effect.gen(function* () {
+      for (const { missingY, expectedY } of [
+        { missingY: CHUNK_HEIGHT - 2, expectedY: CHUNK_HEIGHT - 2 },
+        { missingY: CHUNK_HEIGHT - 1, expectedY: CHUNK_HEIGHT - 1 },
+      ]) {
+        const blocks = new Proxy(new Uint16Array(CHUNK_HEIGHT * 256), {
+          get: (target, property) => {
+            if (typeof property === 'string' && /^\d+$/.test(property)) {
+              const index = Number(property)
+              if (index % CHUNK_HEIGHT === missingY) return undefined
+            }
+            return Reflect.get(target, property, target)
+          },
+        })
+        const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+        const api: ChunkStoreApi = {
+          ...store.api,
+          peek: (coord) => Effect.succeed({
+            coord,
+            blocks,
+            blockStates: new Uint32Array(CHUNK_HEIGHT * 256),
+            biomes: Array.from({ length: 256 }, () => 'PLAINS' as const),
+          } satisfies ReadonlyChunkWithBlockStates),
+        }
+
+        const found = yield* searchSpawnCandidates(api, PLAYER, MIDNIGHT, RandomSeed(7))
+        const fault = found.worldFaults[0]
+
+        expect(found.attempts).toStrictEqual([])
+        expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+        expect(fault).toMatchObject({
+          _tag: 'EntityWorldCorruptBuffer',
+          cell: { y: BlockAxis(expectedY) },
+        })
+        if (fault?._tag === 'EntityWorldCorruptBuffer') {
+          expect(fault.index % CHUNK_HEIGHT).toBe(expectedY)
+          expect(fault.length).toBe(CHUNK_HEIGHT * 256)
+        }
+      }
+    }),
+  )
+
   it.effect('counts malformed chunk dimensions and missing biome data as unreadable', () =>
     Effect.gen(function* () {
       const readableBlocks = new Uint16Array(CHUNK_HEIGHT * 256)
@@ -693,23 +784,24 @@ describe('what the search reads', () => {
           ? undefined
           : Reflect.get(target, property, receiver),
       })
-      const malformedChunks: ReadonlyArray<(coord: ReadonlyChunkWithBlockStates['coord']) => ReadonlyChunkWithBlockStates> = [
-        (coord) => ({ coord, blocks: readableBlocks, blockStates: new Uint32Array(CHUNK_HEIGHT * 256), biomes: [] }),
-        (coord) => ({
-          coord,
-          blocks: readableBlocks,
-          blockStates: new Uint32Array(CHUNK_HEIGHT * 256),
-          biomes: missingBiome,
-        }),
-        (coord) => ({
-          coord,
-          blocks: new Uint16Array(CHUNK_HEIGHT * 256 - 1),
-          blockStates: new Uint32Array(CHUNK_HEIGHT * 256 - 1),
-          biomes: readableBiomes,
-        }),
+      const malformedChunks: ReadonlyArray<Readonly<{
+        chunkForCoord: (coord: ReadonlyChunkWithBlockStates['coord']) => ReadonlyChunkWithBlockStates
+        hasBlockFault: boolean
+      }>> = [
+        { chunkForCoord: (coord) => ({ coord, blocks: readableBlocks, blockStates: new Uint32Array(CHUNK_HEIGHT * 256), biomes: [] }), hasBlockFault: false },
+        { chunkForCoord: (coord) => ({ coord, blocks: readableBlocks, blockStates: new Uint32Array(CHUNK_HEIGHT * 256), biomes: missingBiome }), hasBlockFault: false },
+        {
+          chunkForCoord: (coord) => ({
+            coord,
+            blocks: new Uint16Array(CHUNK_HEIGHT * 256 - 1),
+            blockStates: new Uint32Array(CHUNK_HEIGHT * 256 - 1),
+            biomes: readableBiomes,
+          }),
+          hasBlockFault: true,
+        },
       ]
 
-      for (const chunkForCoord of malformedChunks) {
+      for (const { chunkForCoord, hasBlockFault } of malformedChunks) {
         const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
         const api: ChunkStoreApi = {
           ...store.api,
@@ -719,7 +811,32 @@ describe('what the search reads', () => {
 
         expect(found.attempts).toStrictEqual([])
         expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+        expect(found.worldFaults.some((fault) => fault._tag === 'EntityWorldCorruptBuffer')).toBe(hasBlockFault)
       }
+    }),
+  )
+
+  it.effect('returns an unregistered block id as a typed world fault', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(65_535)
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const peek = store.api.peek
+      vi.spyOn(store.api, 'peek').mockImplementation((coord) => Effect.map(peek(coord), (chunk) => {
+        if (chunk === undefined) return chunk
+        const blocks = Uint16Array.from(chunk.blocks)
+        for (let index = 0; index < blocks.length; index += 1) {
+          if (blocks[index] === STONE) blocks[index] = unknownBlock
+        }
+        return { ...chunk, blocks }
+      }))
+      const found = yield* searchSpawnCandidates(store.api, PLAYER, MIDNIGHT, RandomSeed(1))
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.worldFaults.length).toBeGreaterThan(0)
+      expect(found.worldFaults.every((fault) =>
+        fault._tag === 'EntityWorldUnregisteredBlockId' && fault.blockId === unknownBlock,
+      )).toBe(true)
+      expect(found.seed).toBe(drawRolls(1, SPAWN_SEARCH_ROLLS).seed)
     }),
   )
 
@@ -1261,9 +1378,9 @@ describe('the search inside the frame', () => {
       )
       yield* time.setTimeOfDay(InterpolationFraction(0.5))
 
-      yield* runFrames(stages, 30, DeltaTimeSecs(0.05))
+      yield* runFrames(stages, 1, DeltaTimeSecs(0.05))
 
-      expect(yield* Ref.get(state.tickCount)).toBe(30)
+      expect(yield* Ref.get(state.tickCount)).toBe(1)
       expect(yield* Ref.get(state.lastPassiveSpawnTick)).toBe(1)
       expect(yield* Ref.get(state.passiveInitialSpawnPending)).toBe(false)
       const ownerAfter = yield* commit.coordinator.snapshot(

@@ -46,7 +46,7 @@ const makeContext = (blockZ?: number) =>
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const coordinator = yield* Effect.orDie(makeWorldCommitCoordinator({
       world: Schema.decodeUnknownSync(WorldIdSchema)('primary-attack-tests'),
-      owners: gameplayOwnerRegistrations({ playerPose: PLAYER_POSE }),
+      owners: Result.getOrThrow(gameplayOwnerRegistrations({ playerPose: PLAYER_POSE })),
     }))
     const targeting: GameplayTargetingSnapshotContext = {
       coordinator,

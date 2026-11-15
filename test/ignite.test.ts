@@ -48,7 +48,7 @@ import {
   type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
 import { blockPosition, chunkCoord } from './support/coordinate-fixtures'
-import { igniteFire } from '../src/domain/interactions/ignite-fire'
+import { igniteFire, type IgniteFireCommitContext } from '../src/domain/interactions/ignite-fire'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
 import { TNT_BLOCK_ID, igniteTnt } from '../src/domain/interactions/ignite-tnt'
 import {
@@ -440,6 +440,30 @@ describe('igniteFire', () => {
       expect(yield* igniteFire(store.api, target)).toStrictEqual({ _tag: 'CommitContextMissing' })
       expect((yield* store.calls).writes).toBe(0)
       expect(yield* store.blockAt(target)).toBeUndefined()
+    }),
+  )
+
+  it.effect('rejects explicitly undefined captured revisions instead of rereading them', () =>
+    Effect.gen(function* () {
+      const ignition = yield* makeIgnitionWorld()
+      const badWorldRevision = {
+        ...ignition.commitContext,
+        expectedRevision: undefined,
+      } as unknown as IgniteFireCommitContext
+      const badDimensionRevision = {
+        ...ignition.commitContext,
+        expectedDimensionRevision: undefined,
+      } as unknown as IgniteFireCommitContext
+
+      expect(yield* igniteFire(ignition.store, target, badWorldRevision)).toStrictEqual({
+        _tag: 'InvalidCommitContext',
+        field: 'expectedRevision',
+      })
+      expect(yield* igniteFire(ignition.store, target, badDimensionRevision)).toStrictEqual({
+        _tag: 'InvalidCommitContext',
+        field: 'expectedDimensionRevision',
+      })
+      expect(yield* Ref.get(ignition.requests)).toStrictEqual([])
     }),
   )
 })

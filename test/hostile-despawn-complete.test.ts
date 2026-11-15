@@ -1,12 +1,16 @@
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
+import { Result } from 'effect'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   RANDOM_DESPAWN_CHANCE,
   RANDOM_DESPAWN_MIN_AGE_TICKS,
   RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS,
-  despawnVerdict,
+  despawnVerdict as despawnVerdictResult,
   type DespawnCandidate,
 } from '../src/domain/mob/hostile-despawn'
+
+const despawnVerdict = (input: DespawnCandidate) => Result.getOrThrow(despawnVerdictResult(input))
 
 const candidate = (overrides: Partial<DespawnCandidate> = {}): DespawnCandidate => ({
   distanceToPlayerBlocks: 64,
@@ -26,7 +30,7 @@ describe('complete hostile despawn rule', () => {
       despawnVerdict(candidate({
         distanceToPlayerBlocks: DESPAWN_DISTANCE_BLOCKS + 0.001,
         ageTicks: 0,
-        randomRoll: 1,
+        randomRoll: 0,
       })),
     ).toStrictEqual({ _tag: 'Despawn', reason: 'too-far' })
   })
@@ -75,5 +79,34 @@ describe('complete hostile despawn rule', () => {
     expect(
       despawnVerdict(candidate({ distanceToPlayerBlocks: undefined, randomRoll: 0 })),
     ).toStrictEqual({ _tag: 'Keep' })
+  })
+
+  it('requires the distance key while preserving explicit undefined as no player', () => {
+    expect(despawnVerdictResult({ persistent: false } as unknown as DespawnCandidate)).toStrictEqual(Result.fail({
+      _tag: 'InvalidDespawnCandidate',
+      field: 'distanceToPlayerBlocks',
+    }))
+    expect(Result.isSuccess(despawnVerdictResult({
+      distanceToPlayerBlocks: undefined,
+      persistent: false,
+    }))).toBe(true)
+  })
+
+  it('returns typed failures for invalid distances and malformed present rolls', () => {
+    FastCheck.assert(FastCheck.property(
+      FastCheck.double({ noNaN: false, noDefaultInfinity: false }),
+      (distance) => {
+        const result = despawnVerdictResult(candidate({ distanceToPlayerBlocks: distance }))
+        return Result.isFailure(result) === (!Number.isFinite(distance) || distance < 0)
+      },
+    ))
+    for (const distance of [-Number.MIN_VALUE, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(Result.isFailure(despawnVerdictResult(candidate({ distanceToPlayerBlocks: distance })))).toBe(true)
+    }
+    expect(Result.isSuccess(despawnVerdictResult(candidate({ distanceToPlayerBlocks: 0 })))).toBe(true)
+    expect(Result.isFailure(despawnVerdictResult({
+      ...candidate(),
+      randomRoll: undefined,
+    } as unknown as DespawnCandidate))).toBe(true)
   })
 })

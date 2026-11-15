@@ -7,8 +7,8 @@
   `package.json` の `exports` は `dist/index.js` を指し、`tsc -p tsconfig.release.json` が
   `scripts/clean-dist.mjs` に続けて emit する。`.github/workflows/release.yaml` が
   `main` へのバージョン変化を検知して GitHub Packages へ publish し、tag を打つ。
-- **`@nerima-games/*` への実行時依存は `mc-kernel` / `mc-sim` / `mc-worldgen` / `mc-audio` の 4 本。**
-  4 リポジトリとも Wave 0 で dist 付き publish 済みになったため、`dependencies` に exact pin で書ける
+- **`@nerima-games/*` への実行時依存は `mc-kernel` / `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-physics` の 5 本。**
+  5 リポジトリとも dist 付きで publish 済みになったため、`dependencies` に exact pin で書ける
   （§5 のボトムアップ publish-then-pin 順）。
 
 ## 2. 0.x に留める方針

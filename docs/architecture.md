@@ -308,12 +308,14 @@ kit は「ミニ平地ワールド + カメラ + レンダラ + 入力を 1 秒�
 
 ```
 mx-gameplay -> mc-sim -> mc-physics
+      └──────> mc-physics (direct dependency for collision-shape data)
 ```
 
-のとき、`mx-gameplay` は `mc-physics` を import **できない**。レイキャストが欲しければ `mc-sim` に尋ねる。
-`mc-sim` はその問いを所有しているリポジトリである。
+推移経路だけでは import できない。このリポジトリは、モブ移動と矢の world adapter が使う
+正規の `COLLISION_SHAPE_AABBS` のために `mc-physics` を直接・exact pin で宣言する。
+物理シミュレーションとレイキャストの実行は引き続き `mc-sim` に委譲する。
 
-実際のゲート出力はこの形になる。
+直接依存として宣言する前は、実際のゲート出力はこの形になる。
 
 ```
 stages/registration.ts:12 [transitive-import] imports @nerima-games/mc-physics, which

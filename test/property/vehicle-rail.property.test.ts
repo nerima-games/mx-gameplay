@@ -2,13 +2,19 @@ import { OccupantId, VehicleId, type Vehicle } from '@nerima-games/mc-sim'
 import { AngleRadians, PositionAxis, VehicleVelocityComponent } from '@nerima-games/mc-kernel'
 import * as FastCheck from 'fast-check'
 import { describe, expect, it } from 'vitest'
+import { Result } from 'effect'
 import { BOARDING_MAX_DISTANCE, boardVehicle, exitVehicle } from '../../src/domain/vehicle/vehicle-motion'
 import { isAscendingAhead } from '../../src/domain/vehicle/rail-ascent'
 import {
-  projectMinecartVelocity,
-  resolveRailShape,
+  projectMinecartVelocity as projectMinecartVelocityResult,
+  resolveRailShape as resolveRailShapeResult,
   type RailShape,
 } from '../../src/domain/vehicle/rail-shape'
+
+const projectMinecartVelocity = (...args: Parameters<typeof projectMinecartVelocityResult>) =>
+  Result.getOrThrow(projectMinecartVelocityResult(...args))
+const resolveRailShape = (...args: Parameters<typeof resolveRailShapeResult>) =>
+  Result.getOrThrow(resolveRailShapeResult(...args))
 
 const RAIL_SHAPES: ReadonlyArray<RailShape> = [
   'ns',
@@ -70,6 +76,22 @@ const emptyMinecart = (): Vehicle => ({
 })
 
 describe('vehicle and rail properties', () => {
+  it('rejects non-finite topology coordinates and velocity inputs', () => {
+    const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+    FastCheck.assert(FastCheck.property(anyNumber, anyNumber, anyNumber, (x, y, z) => {
+      const result = resolveRailShapeResult(() => false, x, y, z)
+      expect(Result.isFailure(result)).toBe(!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+    }))
+    FastCheck.assert(FastCheck.property(anyNumber, anyNumber, (vx, vz) => {
+      const result = projectMinecartVelocityResult('isolated', vx, vz)
+      expect(Result.isFailure(result)).toBe(
+        !Number.isFinite(vx) || !Number.isFinite(vz) || !Number.isFinite(Math.hypot(vx, vz)),
+      )
+    }))
+    expect(Result.isSuccess(projectMinecartVelocityResult('isolated', 0, 0))).toBe(true)
+    expect(Result.isFailure(projectMinecartVelocityResult('isolated', Number.MAX_VALUE, Number.MAX_VALUE))).toBe(true)
+  })
+
   // If ±1-block neighbor tolerance regresses, changing the four rail heights changes the resolved shape.
   it('keeps each neighbor layout shape when rails vary within the vertical tolerance', () => {
     const offsets = FastCheck.tuple(
