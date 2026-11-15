@@ -266,7 +266,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | stage 登録時に `ChunkStore`、`EntityManager`、`TimeService`、`WorldCommitCoordinator`、`DomainEventBus` を要求する（§2-2） |
 | `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` は `Layer.empty` |
 | `EntityStageFault` / `drainGameplayEntityStageFaults` | **契約** | `GameplayFrameState.entityStageFaults` に記録した fault を回収する。`WorldDataFailure` は source、operation、位置、型付きの理由で重複を除き、drain 後も同じ記録を繰り返さない |
-| `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageItemUseWorldFailure` | **契約** | world fault の理由と item-use failure の pure 型。`BlockStateCodecFailure`、`LightQueueUnderflowError`、`UnregisteredBlockId`、`MissingBlockReadResult` の情報を保持する |
+| `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` | **契約** | world fault の理由の pure 型。`BlockStateCodecFailure`、`LightQueueUnderflowError`、`UnregisteredBlockId`、`MissingBlockReadResult` の情報を保持する |
+| `GameplayStageItemUseWorldFailure` | **契約** | `WorldDataFailed` のみ。理由は `GameplayStageBlockTypeDecodeFailure` または `GameplayStageMissingBlockReadFailure` |
 | `gameplayStages(state, store, entities, inventory, player, time, …, commit)` | **契約（state handle の保持用途）** | ホストが保持する state と既存サービス、commit から stage を構築する。fault を回収するホストは同じ state を drain に渡す。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameStateForOwner` | **契約（state handle の生成用途）** | `{ coordinator, vitalsOwnerId }` から state を作る。ホストはこの handle を stage 構築と fault 回収に保持する |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |

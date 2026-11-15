@@ -22,13 +22,7 @@ export type GameplayStageMissingBlockReadFailure = Readonly<{
   position: BlockPosition
 }>
 
-export type GameplayStageItemUseWorldFailure =
-  | Readonly<{
-      _tag: 'WorldDataFailed'
-      reason: GameplayStageBlockTypeDecodeFailure | GameplayStageMissingBlockReadFailure
-    }>
-  | Readonly<{
-      _tag: 'WorldUnavailable'
-      position: BlockPosition
-      state: 'ChunkNotLoaded' | 'OutOfWorld'
-    }>
+export type GameplayStageItemUseWorldFailure = Readonly<{
+  _tag: 'WorldDataFailed'
+  reason: GameplayStageBlockTypeDecodeFailure | GameplayStageMissingBlockReadFailure
+}>
