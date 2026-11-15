@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { AIR_BLOCK_ID, blockPosition, BlockAxis, type BlockId } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, blockPosition, BlockAxis, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import { Effect, Result } from 'effect'
 import { fishingOpenWaterAt } from '../src/domain/interactions/fishing-open-water'
 import { blockKey, makeChunkStoreDouble, STONE, WATER } from './support/chunk-store-double'
@@ -7,6 +7,9 @@ import { blockKey, makeChunkStoreDouble, STONE, WATER } from './support/chunk-st
 const BOBBER = { x: 8.5, y: 62.2, z: 8.5 }
 
 const at = (x: number, y: number, z: number) => blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+
+const readEach = (store: Effect.Success<ReturnType<typeof makeChunkStoreDouble>>) =>
+  (positions: ReadonlyArray<BlockPosition>) => Effect.forEach(positions, store.api.getBlock)
 
 /** Water at y 61..62 and air at y 63..64 over x 6..10, z 6..10. */
 const openWaterRegion = (): Map<string, BlockId> => {
@@ -28,7 +31,7 @@ describe('fishingOpenWaterAt', () => {
       blocks.set(blockKey(at(10, 64, 10)), WATER)
       const store = yield* makeChunkStoreDouble(blocks, ['0,0'])
 
-      expect(yield* fishingOpenWaterAt(store.api.getBlock, BOBBER)).toBe(true)
+      expect(yield* fishingOpenWaterAt(readEach(store), BOBBER)).toBe(true)
     }),
   )
 
@@ -38,7 +41,7 @@ describe('fishingOpenWaterAt', () => {
       blocks.set(blockKey(at(6, 64, 10)), STONE)
       const store = yield* makeChunkStoreDouble(blocks, ['0,0'])
 
-      expect(yield* fishingOpenWaterAt(store.api.getBlock, BOBBER)).toBe(false)
+      expect(yield* fishingOpenWaterAt(readEach(store), BOBBER)).toBe(false)
     }),
   )
 
@@ -48,7 +51,7 @@ describe('fishingOpenWaterAt', () => {
       blocks.set(blockKey(at(7, 62, 9)), AIR_BLOCK_ID)
       const store = yield* makeChunkStoreDouble(blocks, ['0,0'])
 
-      expect(yield* fishingOpenWaterAt(store.api.getBlock, BOBBER)).toBe(false)
+      expect(yield* fishingOpenWaterAt(readEach(store), BOBBER)).toBe(false)
     }),
   )
 
@@ -56,7 +59,7 @@ describe('fishingOpenWaterAt', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(openWaterRegion(), ['0,0'])
 
-      const decided = yield* Effect.result(fishingOpenWaterAt(store.api.getBlock, { x: 0.5, y: 62.2, z: 8.5 }))
+      const decided = yield* Effect.result(fishingOpenWaterAt(readEach(store), { x: 0.5, y: 62.2, z: 8.5 }))
 
       expect(Result.isFailure(decided)).toBe(true)
       if (Result.isFailure(decided)) {
@@ -75,7 +78,7 @@ describe('fishingOpenWaterAt', () => {
       blocks.set(blockKey(at(8, 63, 8)), STONE)
       const store = yield* makeChunkStoreDouble(blocks, ['0,0'])
 
-      expect(yield* fishingOpenWaterAt(store.api.getBlock, BOBBER)).toBe(false)
+      expect(yield* fishingOpenWaterAt(readEach(store), BOBBER)).toBe(false)
     }),
   )
 
@@ -85,7 +88,7 @@ describe('fishingOpenWaterAt', () => {
       // 2^53 + 2 is exactly representable; the first region cell, x = 2^53, is not a safe integer.
       const huge = 2 ** 53 + 2
 
-      const decided = yield* Effect.result(fishingOpenWaterAt(store.api.getBlock, { x: huge, y: 62.2, z: 8.5 }))
+      const decided = yield* Effect.result(fishingOpenWaterAt(readEach(store), { x: huge, y: 62.2, z: 8.5 }))
 
       expect(decided).toMatchObject({
         failure: {
@@ -96,6 +99,46 @@ describe('fishingOpenWaterAt', () => {
       })
       expect(Result.isFailure(decided)).toBe(true)
       expect((yield* store.calls).reads).toBe(0)
+    }),
+  )
+  it.effect('reads the whole 5x4x5 region in one batch', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(openWaterRegion(), ['0,0'])
+      const batches: Array<ReadonlyArray<BlockPosition>> = []
+
+      yield* fishingOpenWaterAt((positions) => {
+        batches.push(positions)
+        return readEach(store)(positions)
+      }, BOBBER)
+
+      expect(batches).toHaveLength(1)
+      expect(new Set(batches[0]!.map(blockKey)).size).toBe(5 * 4 * 5)
+    }),
+  )
+
+  it.effect('fails with the first cell the reader returned no reading for', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(openWaterRegion(), ['0,0'])
+
+      const decided = yield* Effect.result(fishingOpenWaterAt(
+        (positions) => readEach(store)(positions.slice(0, 1)),
+        BOBBER,
+      ))
+
+      // The second region cell in read order is x-2, y-1, z-1 from the bobber cell (8, 62, 8).
+      expect(decided).toStrictEqual(Result.fail({
+        _tag: 'FishingOpenWaterReadFailure',
+        position: at(6, 61, 7),
+        reason: 'MissingBlockReadResult',
+      }))
+    }),
+  )
+
+  it.effect('fails with the reader failure', () =>
+    Effect.gen(function* () {
+      const decided = yield* Effect.result(fishingOpenWaterAt(() => Effect.fail('reader-failed' as const), BOBBER))
+
+      expect(decided).toStrictEqual(Result.fail('reader-failed'))
     }),
   )
 })

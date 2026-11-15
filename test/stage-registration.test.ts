@@ -103,7 +103,6 @@ import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import {
   gameplayStages,
-  drainGameplayStageFailures,
   drainItemUseResults,
   drainPlayerDamages,
   drainPlayerHeals,
@@ -2960,14 +2959,14 @@ describe('the module contract has caught up with this file’s shape', () => {
       expect((yield* coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema)).state)
         .toStrictEqual(vitalsBefore.state)
       expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
-      expect(yield* drainGameplayStageFailures(harness.state)).toMatchObject([{
+      // Each frame's injection advances the revision by one, so frame n sees revisionBefore + n - 1 against + n.
+      const conflictAfter = (frame: number) => ({
         _tag: 'Failed',
         operation: 'OwnerSnapshot',
         subject: 'Vitals',
-        error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
-        occurrences: 2,
-      }])
-      expect(yield* drainGameplayStageFailures(harness.state)).toStrictEqual([])
+        error: { _tag: 'WorldRevisionConflict', expected: revisionBefore + frame - 1, actual: revisionBefore + frame },
+      })
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([conflictAfter(1), conflictAfter(2)])
     }),
   )
 

@@ -30,7 +30,6 @@ import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   drainDroppedItemPickupExecutions,
   drainExperienceOrbAbsorptionExecutions,
-  drainGameplayStageFailures,
   drainItemUseResults,
   drainGameplayEntityStageFaults,
   drainPlayerDamages,
@@ -54,7 +53,6 @@ import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
   isRetryableWorldCommitFailure,
-  recordGameplayStageFailureDeduplicated,
 } from '../src/stages/registration-core'
 import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
@@ -136,80 +134,6 @@ const makeHarness = (
 
 type Harness = Effect.Success<ReturnType<typeof makeHarness>>
 type GameplayStageCommitServices = NonNullable<Parameters<typeof gameplayStages>[9]>
-
-describe('gameplay stage failure drain', () => {
-  it.effect('keeps same-reason failures for distinct request ids separate', () => Effect.gen(function* () {
-    const state = yield* makeGameplayFrameState
-    const failure = {
-      _tag: 'Failed' as const,
-      operation: 'OwnerSnapshot' as const,
-      subject: 'Brewing' as const,
-      error: new WorldCommitEmptyRequest(),
-    }
-
-    yield* recordGameplayStageFailureDeduplicated(state, { ...failure, requestId: 'first' })
-    yield* recordGameplayStageFailureDeduplicated(state, { ...failure, requestId: 'second' })
-
-    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
-      { ...failure, requestId: 'first', occurrences: 1 },
-      { ...failure, requestId: 'second', occurrences: 1 },
-    ])
-  }))
-
-  it.effect('deduplicates execution faults with non-string causes', () => Effect.gen(function* () {
-    const state = yield* makeGameplayFrameState
-    const causes: ReadonlyArray<unknown> = [
-      null,
-      { _tag: 1 },
-      { _tag: 1, reason: 1 },
-    ]
-
-    for (const [index, cause] of causes.entries()) {
-      const failure = {
-        _tag: 'Failed' as const,
-        operation: 'CandidateBuild' as const,
-        subject: 'EntityRoster' as const,
-        requestId: `non-string-cause-${index}`,
-        error: { _tag: 'GameplayStageExecutionFailure' as const, cause },
-      }
-      yield* recordGameplayStageFailureDeduplicated(state, failure)
-      yield* recordGameplayStageFailureDeduplicated(state, failure)
-    }
-
-    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
-      { requestId: 'non-string-cause-0', occurrences: 2 },
-      { requestId: 'non-string-cause-1', occurrences: 2 },
-      { requestId: 'non-string-cause-2', occurrences: 2 },
-    ])
-  }))
-
-  it.effect('keeps execution faults with different string causes separate', () => Effect.gen(function* () {
-    const state = yield* makeGameplayFrameState
-    const failureFor = (cause: string) => ({
-      _tag: 'Failed' as const,
-      operation: 'CandidateBuild' as const,
-      subject: 'EntityRoster' as const,
-      requestId: 'different-string-causes',
-      error: { _tag: 'GameplayStageExecutionFailure' as const, cause },
-    })
-
-    yield* recordGameplayStageFailureDeduplicated(state, failureFor('invalid-damage-state'))
-    yield* recordGameplayStageFailureDeduplicated(state, failureFor('invalid-shield-state'))
-
-    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
-      {
-        requestId: 'different-string-causes',
-        occurrences: 1,
-        error: { cause: 'invalid-damage-state' },
-      },
-      {
-        requestId: 'different-string-causes',
-        occurrences: 1,
-        error: { cause: 'invalid-shield-state' },
-      },
-    ])
-  }))
-})
 
 const interactionsWithCommit = (
   harness: Harness,
@@ -402,10 +326,7 @@ describe('registration-core public paths omitted from focused coverage', () => {
         _tag: 'Failed',
         operation: 'CandidateBuild',
         subject: 'Brewing',
-        error: {
-          _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' },
-        },
+        error: { _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' },
       }])
       expect(yield* harness.commit!.coordinator.revision).toBe(0)
     }),
@@ -864,10 +785,7 @@ describe('registration-core public paths omitted from focused coverage', () => {
         _tag: 'Failed',
         operation: 'CandidateBuild',
         subject: 'Brewing',
-        error: {
-          _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' },
-        },
+        error: { _tag: 'InvalidStatusEffectTick', reason: 'invalid-delta' },
       }))
       expect(yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema))
         .toStrictEqual(before)

@@ -223,6 +223,7 @@ import {
   type StatusEffectApplication,
   type ValidatedStatusEffectApplication,
   type StatusEffectApplicationError,
+  type InvalidStatusEffectTick,
   type StatusEffectState,
 } from '../domain/status-effect.js'
 import type {
@@ -2237,11 +2238,6 @@ export type GameplayFrameStateOptions = Readonly<{
   vitalsOwnerId: ReplicatedOwnerId
 }>
 
-export type GameplayStageExecutionFailure = Readonly<{
-  _tag: 'GameplayStageExecutionFailure'
-  cause: unknown
-}>
-
 type EntitiesStageFailureTag = string & Brand.Brand<'EntitiesStageFailureTag'>
 const entitiesStageFailureTag = Brand.nominal<EntitiesStageFailureTag>()
 
@@ -2272,7 +2268,6 @@ export type GameplayStageOperationFailure = Readonly<{
     | 'Vehicle'
     | 'Weather'
   requestId?: string
-  occurrences?: number
   error:
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
@@ -2291,8 +2286,8 @@ export type GameplayStageOperationFailure = Readonly<{
     | PrimedTntValidationFailure
     | DroppedItemPickupFailure
     | ExperienceOrbAbsorptionError
-    | GameplayStageExecutionFailure
     | StatusEffectApplicationError
+    | InvalidStatusEffectTick
     | DamageAtResult
     | FrameRollFailure
     | DayNightInputFailure
@@ -2329,6 +2324,7 @@ export type EntityWorldDataFaultSource =
   | 'Portal'
   | 'Fluid'
   | 'Fire'
+  | 'Fishing'
 
 export type EntityStageFault =
   | Readonly<{
@@ -2363,6 +2359,12 @@ export type EntityStageFault =
         | 'InvalidVehicleControlShape'
         | 'InvalidVehicleThrottle'
         | 'InvalidVehicleSteering'
+        | 'FishingRodNotHeld'
+    }>
+  | Readonly<{
+      _tag: 'FishingBobberUnavailable'
+      actor: EntityId
+      bobber: ProjectileId
     }>
   | Readonly<{
       _tag: 'FluidNeighbourPositionFault'
@@ -2398,61 +2400,6 @@ export const recordGameplayStageFailure = (
   failure: GameplayStageOperationFailure,
 ): Effect.Effect<void> =>
   Ref.update(state.operationFailures, (failures) => [...failures, failure])
-
-const sameGameplayStageFailure = (
-  left: GameplayStageOperationFailure,
-  right: GameplayStageOperationFailure,
-): boolean => {
-  const reasonOf = (error: GameplayStageOperationFailure['error']): string | undefined => {
-    const cause = typeof error !== 'string' && error._tag === 'GameplayStageExecutionFailure' ? error.cause : error
-    if (typeof cause === 'string') return cause
-    if (typeof cause !== 'object' || cause === null || !('reason' in cause)) return undefined
-    return typeof cause.reason === 'string' ? cause.reason : undefined
-  }
-  // String errors carry no tag; reasonOf keeps them distinct.
-  const errorTagOf = (error: GameplayStageOperationFailure['error']): string | undefined =>
-    typeof error === 'string' ? undefined : error._tag
-  const tagOf = (error: GameplayStageOperationFailure['error']): string | undefined => {
-    if (typeof error === 'string' || error._tag !== 'GameplayStageExecutionFailure') return undefined
-    const cause = error.cause
-    if (typeof cause !== 'object' || cause === null || !('_tag' in cause)) return undefined
-    return typeof cause._tag === 'string' ? cause._tag : undefined
-  }
-  return JSON.stringify([
-    left.operation,
-    left.subject,
-    left.requestId,
-    errorTagOf(left.error),
-    tagOf(left.error),
-    reasonOf(left.error),
-  ]) === JSON.stringify([
-    right.operation,
-    right.subject,
-    right.requestId,
-    errorTagOf(right.error),
-    tagOf(right.error),
-    reasonOf(right.error),
-  ])
-}
-
-export const recordGameplayStageFailureDeduplicated = (
-  state: GameplayFrameState,
-  failure: GameplayStageOperationFailure,
-): Effect.Effect<void> => Ref.update(state.operationFailures, (failures) => {
-  const index = failures.findIndex((existing) => sameGameplayStageFailure(existing, failure))
-  if (index < 0) return [...failures, { ...failure, occurrences: 1 }]
-  const existing = failures[index]!
-  return [
-    ...failures.slice(0, index),
-    { ...existing, occurrences: (existing.occurrences ?? 1) + 1 },
-    ...failures.slice(index + 1),
-  ]
-})
-
-export const drainGameplayStageFailures = (
-  state: GameplayFrameState,
-): Effect.Effect<ReadonlyArray<GameplayStageOperationFailure>> =>
-  Ref.getAndSet(state.operationFailures, [])
 
 const stageFailureTagFor = (failure: unknown): EntitiesStageFailureTag => {
   if (typeof failure !== 'object' || failure === null) return entitiesStageFailureTag(typeof failure)
@@ -2509,6 +2456,8 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
       }
       return gameplayEntityStageFaultKey(`request:${fault.source}:key-only:${fault.reason}`)
     }
+    case 'FishingBobberUnavailable':
+      return gameplayEntityStageFaultKey(`fishing-bobber:${String(fault.actor)}:${String(fault.bobber)}`)
     case 'FluidNeighbourPositionFault':
       return gameplayEntityStageFaultKey(`fluid:${fault.cell.x}:${fault.cell.y}:${fault.cell.z}:${fault.reason}`)
     case 'MobBehaviourRepairFault': {
@@ -3895,7 +3844,7 @@ const stepStatusEffects = (
       [],
     ))
     if (Result.isFailure(observed)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observed.failure,
       })
       return
@@ -3915,9 +3864,8 @@ const stepStatusEffects = (
     }
     const ticked = tickStatusEffects(applied, dt)
     if (Result.isFailure(ticked)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing',
-        error: { _tag: 'GameplayStageExecutionFailure', cause: ticked.failure },
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: ticked.failure,
       })
       return
     }
@@ -3944,13 +3892,13 @@ const stepStatusEffects = (
         [],
       ))
       if (Result.isFailure(vitalsObserved)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals', error: vitalsObserved.failure,
         })
         return
       }
       if (vitalsObserved.success.revision !== observed.success.revision) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals',
           error: new WorldRevisionConflict({
             expected: observed.success.revision,
@@ -3983,7 +3931,7 @@ const stepStatusEffects = (
       if (tick.hungerExhaustion > 0) {
         const amount = ExhaustionAmount.result(tick.hungerExhaustion)
         if (Result.isFailure(amount)) {
-          yield* recordGameplayStageFailureDeduplicated(state, {
+          yield* recordGameplayStageFailure(state, {
             _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
           })
           return
@@ -4004,7 +3952,7 @@ const stepStatusEffects = (
       changes,
     }))
     if (Result.isFailure(committed)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'WorldCommit', subject: 'Brewing', error: committed.failure,
       })
       return

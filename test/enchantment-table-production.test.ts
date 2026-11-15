@@ -38,7 +38,6 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
   drainEnchantmentTableResults,
-  drainGameplayStageFailures,
   gameplayModule,
   makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
@@ -173,15 +172,13 @@ describe('generated enchantment offers adapter', () => {
         reason: 'offer-generation-failed',
       }])
       expect(mailbox.sessions.size).toBe(0)
-      expect(yield* drainGameplayStageFailures(state)).toMatchObject([{
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
         _tag: 'Failed',
         operation: 'CandidateBuild',
         subject: 'ItemUse',
         requestId: 'unsupported-generated-offer',
-        occurrences: 1,
         error: expect.anything(),
       }])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }),
   )
 })

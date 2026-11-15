@@ -23,6 +23,7 @@ import {
   FishingWaitTicksSchema,
   ProjectileServiceSnapshotSchema,
   SNOWBALL_PROFILE,
+  WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinator,
   equipmentItem,
   launchProjectile,
@@ -36,6 +37,7 @@ import {
   type PlayerStorage,
   type ProjectileLaunch,
   type ReplicatedOwnerId,
+  type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Ref, Result, Schema, Stream } from 'effect'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
@@ -47,7 +49,7 @@ import { makePlayerServiceDouble } from './support/player-service-double'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { runFrame } from './support/frame-runner'
 import {
-  drainGameplayStageFailures,
+  drainGameplayEntityStageFaults,
   drainItemUseResults,
   gameplayStages,
   makeGameplayFrameStateForOwner,
@@ -56,7 +58,7 @@ import {
   requestFishingCast,
   requestFishingReel,
 } from '../src/stages/registration'
-import type { GameplayStageCommitServices } from '../src/stages/registration-core'
+import type { GameplayFrameState, GameplayStageCommitServices } from '../src/stages/registration-core'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
@@ -70,6 +72,7 @@ import { nextRoll } from '../src/domain/frame-rolls'
 const FISHER = EntityId('fishing-record-actor')
 const BOBBER = Schema.decodeUnknownSync(ProjectileIdSchema)('fishing-record-bobber')
 const DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const NETHER = Schema.decodeUnknownSync(DimensionIdSchema)('nether')
 // Base roll 0.887: junk without Luck of the Sea, treasure (name tag) with level III in open water.
 const LUCK_SAMPLE_SEED = 113_335
 const ENCHANTED_ROD_SLOT = { _tag: 'Inventory', slotIndex: 0 } as const
@@ -120,11 +123,11 @@ const storageWithRods = (
   }
 }
 
-const bobberProjectiles = (position: ProjectileLaunch['position']) =>
+const bobberProjectiles = (position: ProjectileLaunch['position'], dimension: typeof DIMENSION) =>
   Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
     projectiles: [{
       id: BOBBER,
-      dimension: DIMENSION,
+      dimension,
       shooter: FISHER,
       kind: 'projectile',
       profile: SNOWBALL_PROFILE,
@@ -141,6 +144,11 @@ type SceneOptions = Readonly<{
   blocks?: Map<string, BlockId>
   fishing?: FishingState
   bobber?: ProjectileLaunch['position']
+  bobberDimension?: typeof DIMENSION
+  // Nether blocks; the coordinator reads `blocks` for every other dimension.
+  netherBlocks?: Map<string, BlockId>
+  // Applied to the coordinator handed to the stage only.
+  wrapStageCoordinator?: (coordinator: WorldCommitCoordinatorApi) => WorldCommitCoordinatorApi
   records?: GameplayFishingEnchantmentsSnapshot['records']
   // Owner ids in the services handed to the stage; the coordinator keeps every registration.
   stageProjectileOwnerId?: ReplicatedOwnerId | 'omitted'
@@ -150,6 +158,7 @@ type SceneOptions = Readonly<{
 const scene = (options: SceneOptions) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(options.blocks ?? new Map<string, BlockId>(), ['0,0'])
+    const netherStore = yield* makeChunkStoreDouble(options.netherBlocks ?? new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const inventory = yield* makeInventoryDouble(options.storage.inventory.slots)
     const player = yield* makePlayerServiceDouble()
@@ -157,9 +166,11 @@ const scene = (options: SceneOptions) =>
     const baseCommit = yield* makeGameplayCommitServices(store.api, inventory.api, {
       fishing: options.fishing ?? Schema.decodeUnknownSync(FishingStateSchema)({ rods: [] }),
       playerStorage: options.storage,
-      projectiles: options.bobber === undefined ? { projectiles: [] } : bobberProjectiles(options.bobber),
+      projectiles: options.bobber === undefined
+        ? { projectiles: [] }
+        : bobberProjectiles(options.bobber, options.bobberDimension ?? DIMENSION),
       fishingEnchantments: { records: options.records ?? [] },
-    })
+    }, (dimension) => dimension === NETHER ? netherStore.api : store.api)
     const eventBus: DomainEventBusApi = { publish: () => Effect.void, events: Stream.empty }
     const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID).pipe(
       Effect.provideService(WorldCommitCoordinator, baseCommit.coordinator),
@@ -170,6 +181,9 @@ const scene = (options: SceneOptions) =>
     const stageProjectileOwnerId = options.stageProjectileOwnerId ?? projectileOwnerId
     const stageCommit: GameplayStageCommitServices = {
       ...withoutProjectileOwnerId,
+      coordinator: options.wrapStageCoordinator === undefined
+        ? commit.coordinator
+        : options.wrapStageCoordinator(commit.coordinator),
       ...(stageProjectileOwnerId === undefined || stageProjectileOwnerId === 'omitted'
         ? {}
         : { projectileOwnerId: stageProjectileOwnerId }),
@@ -249,16 +263,32 @@ const advanceRequest = (requestId: string, elapsedTicks: number) => ({
   environment: { hasWater: true },
 })
 
-const rebuildFailure = (requestId: string, reason: string) => ({
-  _tag: 'Failed',
-  operation: 'CandidateBuild',
-  subject: 'Fishing',
+const recordedFailures = (state: GameplayFrameState) =>
+  Effect.all({
+    operationFailures: Ref.get(state.operationFailures),
+    entityStageFaults: drainGameplayEntityStageFaults(state),
+  })
+
+const NO_FAILURES = { operationFailures: [], entityStageFaults: [] }
+
+const rodNotHeldFault = (requestId: string) => ({
+  _tag: 'GameplayRequestFault',
+  source: 'ItemUse',
   requestId,
-  error: {
-    _tag: 'GameplayStageExecutionFailure',
-    cause: { _tag: 'FishingEnchantmentRebuildFailure', actor: FISHER, reason },
-  },
+  reason: 'FishingRodNotHeld',
 })
+
+const bobberUnavailableFault = { _tag: 'FishingBobberUnavailable', actor: FISHER, bobber: BOBBER }
+
+// CHUNK_EDGE_BOBBER sits in block x 0; the region starts at x -2, in the unloaded chunk -1, at y 61 and z 6.
+const unloadedRegionCell = at(-2, 61, 6)
+const unloadedRegionFault = {
+  _tag: 'WorldDataFailure',
+  source: 'Fishing',
+  operation: 'ReadBlock',
+  position: unloadedRegionCell,
+  reason: { _tag: 'ChunkNotLoaded', position: unloadedRegionCell },
+}
 
 describe('fishing enchantment record owner', () => {
   it.effect('records cast-time Lure, Luck of the Sea and open water in the cast commit and drops them on cancel', () =>
@@ -287,7 +317,7 @@ describe('fishing enchantment record owner', () => {
       expect(cancelled.revision).toBe(cast.revision + 1)
       expect(cancelled.rods).toStrictEqual([])
       expect(cancelled.records).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual(NO_FAILURES)
     }),
   )
 
@@ -333,7 +363,7 @@ describe('fishing enchantment record owner', () => {
       expect(reeled.revision).toBe(beforeReel.revision + 1)
       expect(reeled.rods).toStrictEqual([])
       expect(reeled.records).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(second.state)).toStrictEqual([])
+      expect(yield* recordedFailures(second.state)).toStrictEqual(NO_FAILURES)
     }),
   )
 
@@ -364,7 +394,7 @@ describe('fishing enchantment record owner', () => {
       expect(after.revision).toBe(before.revision + 1)
       expect(after.rods).toStrictEqual([])
       expect(after.projectileIds).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual(NO_FAILURES)
     }),
   )
 
@@ -385,10 +415,11 @@ describe('fishing enchantment record owner', () => {
       yield* runInteractions(stages)
 
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([
-        { ...rebuildFailure('reel-without-rod', 'RodNotHeld'), occurrences: 1 },
-        { ...rebuildFailure('advance-without-rod', 'RodNotHeld'), occurrences: 1 },
-      ])
+      // Neither request names a rod location, so the rebuild has no rod to read enchantments from.
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [],
+        entityStageFaults: [rodNotHeldFault('reel-without-rod'), rodNotHeldFault('advance-without-rod')],
+      })
       expect(yield* observeOwners(commit)).toStrictEqual(before)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
 
@@ -418,22 +449,10 @@ describe('fishing enchantment record owner', () => {
       yield* runInteractions(stages)
 
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
-      const failure = rebuildFailure('reel-unreadable-water', 'OpenWaterUnreadable')
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([{
-        ...failure,
-        error: {
-          ...failure.error,
-          cause: {
-            ...failure.error.cause,
-            openWater: {
-              _tag: 'FishingOpenWaterReadFailure',
-              position: { x: -2, y: 61, z: 6 },
-              reason: 'ChunkNotLoaded',
-            },
-          },
-        },
-        occurrences: 1,
-      }])
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [],
+        entityStageFaults: [unloadedRegionFault],
+      })
       expect(yield* observeOwners(commit)).toStrictEqual(before)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
     }),
@@ -481,7 +500,7 @@ describe('fishing enchantment record owner', () => {
         outcome: { _tag: 'Caught', item: 'name_tag' },
       }])
       expect((yield* observeOwners(commit)).projectileIds).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual(NO_FAILURES)
     }),
   )
 
@@ -496,9 +515,10 @@ describe('fishing enchantment record owner', () => {
       yield* runInteractions(stages)
 
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([
-        { ...rebuildFailure('reel-missing-bobber', 'BobberUnavailable'), occurrences: 1 },
-      ])
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [],
+        entityStageFaults: [bobberUnavailableFault],
+      })
       expect(yield* observeOwners(commit)).toStrictEqual(before)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
     }),
@@ -521,12 +541,11 @@ describe('fishing enchantment record owner', () => {
       yield* runInteractions(stages)
 
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toMatchObject([{
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
         _tag: 'Failed',
         operation: 'OwnerSnapshot',
         subject: 'Fishing',
         error: { _tag: 'ReplicatedOwnerUnknown' },
-        occurrences: 1,
       }])
       expect(yield* observeOwners(commit)).toStrictEqual(before)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
@@ -547,7 +566,7 @@ describe('fishing enchantment record owner', () => {
       yield* runInteractions(stages)
 
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toMatchObject([{
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
         _tag: 'Failed',
         operation: 'OwnerSnapshot',
         subject: 'Fishing',
@@ -569,7 +588,7 @@ describe('fishing enchantment record owner', () => {
       yield* runInteractions(stages)
 
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toMatchObject([
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([
         {
           _tag: 'Failed',
           operation: 'PlanBuild',
@@ -583,6 +602,160 @@ describe('fishing enchantment record owner', () => {
           error: { _tag: 'FishingInvalidState', operation: 'reel', reason: 'rod-not-active' },
         },
       ])
+      expect(yield* observeOwners(commit)).toStrictEqual(before)
+    }),
+  )
+  it.effect('records an unreadable bobber region once across two frames', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const { stageInstance } = yield* scene({
+        storage,
+        blocks: openWaterWorld(),
+        fishing: activeBite,
+        bobber: CHUNK_EDGE_BOBBER,
+      })
+      const { state, stages } = yield* stageInstance
+
+      yield* requestFishingReel(state, 'reel-unreadable-first', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+      yield* requestFishingReel(state, 'reel-unreadable-second', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [],
+        entityStageFaults: [unloadedRegionFault],
+      })
+    }),
+  )
+
+  it.effect('records a missing bobber projectile once across two frames', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const { stageInstance } = yield* scene({ storage, blocks: openWaterWorld(), fishing: activeBite })
+      const { state, stages } = yield* stageInstance
+
+      yield* requestFishingReel(state, 'reel-missing-bobber-first', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+      yield* requestFishingReel(state, 'reel-missing-bobber-second', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [],
+        entityStageFaults: [bobberUnavailableFault],
+      })
+    }),
+  )
+
+  it.effect('reads open water in the bobber dimension, not the overworld', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      // Only the nether has water around the bobber; the overworld region is air.
+      const { stageInstance } = yield* scene({
+        storage,
+        netherBlocks: openWaterWorld(),
+        fishing: activeBite,
+        bobber: OPEN_WATER_BOBBER,
+        bobberDimension: NETHER,
+      })
+      const { state, stages } = yield* stageInstance
+
+      yield* Ref.set(state.rollSeed, LUCK_SAMPLE_SEED)
+      yield* requestFishingReel(state, 'reel-nether-water', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      // The name tag is treasure, which needs open water.
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
+        action: 'ReelFishing',
+        success: true,
+        outcome: { _tag: 'Caught', item: 'name_tag' },
+      }])
+      expect(yield* recordedFailures(state)).toStrictEqual(NO_FAILURES)
+    }),
+  )
+
+  it.effect('does not take overworld water for open water when the bobber is in the nether', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const { stageInstance } = yield* scene({
+        storage,
+        blocks: openWaterWorld(),
+        fishing: activeBite,
+        bobber: OPEN_WATER_BOBBER,
+        bobberDimension: NETHER,
+      })
+      const { state, stages } = yield* stageInstance
+
+      yield* Ref.set(state.rollSeed, LUCK_SAMPLE_SEED)
+      yield* requestFishingReel(state, 'reel-nether-air', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      const results = yield* drainItemUseResults(state)
+      expect(results).toMatchObject([{ action: 'ReelFishing', success: true, outcome: { _tag: 'Caught' } }])
+      expect(results[0]).not.toMatchObject({ outcome: { item: 'name_tag' } })
+      expect(yield* recordedFailures(state)).toStrictEqual(NO_FAILURES)
+    }),
+  )
+
+  it.effect('records a bobber region cell that is not a block coordinate as an entity world fault', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      // 2^53 + 2 is exactly representable; the first region cell, x = 2^53, is not a safe integer.
+      const huge = 2 ** 53 + 2
+      const { commit, stageInstance } = yield* scene({
+        storage,
+        fishing: activeBite,
+        bobber: atPosition(huge, 62.2, 8.5),
+      })
+      const { state, stages } = yield* stageInstance
+      const before = yield* observeOwners(commit)
+
+      yield* requestFishingReel(state, 'reel-invalid-region', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      const cell = atPosition(huge - 2, 61, 6)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [],
+        entityStageFaults: [{
+          _tag: 'EntityWorldDataFault',
+          source: 'Fishing',
+          target: { _tag: 'Position', position: cell },
+          failure: { _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: cell },
+        }],
+      })
+      expect(yield* observeOwners(commit)).toStrictEqual(before)
+    }),
+  )
+
+  it.effect('records an owner snapshot fault when the bobber region read fails', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const unavailable = new WorldCommitChunkStoreUnavailable({ dimension: DIMENSION })
+      const { commit, stageInstance } = yield* scene({
+        storage,
+        blocks: openWaterWorld(),
+        fishing: activeBite,
+        bobber: OPEN_WATER_BOBBER,
+        wrapStageCoordinator: (coordinator) => ({
+          ...coordinator,
+          observe: (ownerId, schema, reads) => reads.length === 0
+            ? coordinator.observe(ownerId, schema, reads)
+            : Effect.fail(unavailable),
+        }),
+      })
+      const { state, stages } = yield* stageInstance
+      const before = yield* observeOwners(commit)
+
+      yield* requestFishingReel(state, 'reel-region-unavailable', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* recordedFailures(state)).toStrictEqual({
+        operationFailures: [{ _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: unavailable }],
+        entityStageFaults: [],
+      })
       expect(yield* observeOwners(commit)).toStrictEqual(before)
     }),
   )

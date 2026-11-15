@@ -21,6 +21,7 @@ import {
   localCoordOfBlock,
   type BlockId,
   type BlockPosition,
+  type Dimension,
 } from '@nerima-games/mc-kernel'
 import {
   ChunkStore,
@@ -146,6 +147,8 @@ export const makeGameplayCommitServices = (
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   initial: GameplayOwnerInitialState = {},
+  // Chunk store per dimension for coordinator reads; every dimension reads `store` when omitted.
+  storeFor: (dimension: Dimension) => ChunkStoreApi = () => store,
 ): Effect.Effect<
   GameplayStageCommitServices,
   WorldCommitCoordinatorError | GameplayOwnerRegistrationFailure
@@ -159,7 +162,7 @@ export const makeGameplayCommitServices = (
     const coordinator = yield* makeWorldCommitCoordinator({
       world: WORLD_ID,
       owners,
-      chunkStores: { forDimension: () => store },
+      chunkStores: { forDimension: storeFor },
     })
     const bucketService = yield* makeBucketService().pipe(
       Effect.provideService(WorldCommitCoordinator, coordinator),

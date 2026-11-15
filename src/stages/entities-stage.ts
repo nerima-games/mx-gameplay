@@ -8,7 +8,6 @@ import {
   Ref,
   applyFallingBlocks,
   hostileSpawnsAllowed,
-  recordGameplayStageFailureDeduplicated,
   recordGameplayEntityStageExecutionFailure,
   recordGameplayEntityWorldDataFault,
   recordGameplayStageFailure,
@@ -1989,7 +1988,7 @@ const runMobSimulation = (
     if (!hasShield()) shieldState = null
     for (const intent of pendingShieldBlocking) {
       if (intent.actor !== PLAYER_BLAST_ENTITY_ID) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player',
           requestId: String(intent.actor),
           error: { _tag: 'ShieldBlockingPreparation', reason: 'invalid-authoritative-state' },
@@ -2004,7 +2003,7 @@ const runMobSimulation = (
         current: shieldState,
       })
       if (Result.isFailure(prepared)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player',
           requestId: String(intent.actor),
           error: { _tag: 'ShieldBlockingPreparation', reason: prepared.failure },
@@ -2166,13 +2165,7 @@ const runMobSimulation = (
         const attempted = yield* Effect.result(attemptDamage(input))
         if (Result.isFailure(attempted)) {
           if (event._tag === 'HostileContact') contact.cooldowns.delete(event.source)
-          yield* recordGameplayStageFailureDeduplicated(state, {
-            _tag: 'Failed',
-            operation: 'CandidateBuild',
-            subject: 'Player',
-            requestId: JSON.stringify(['player-damage', event._tag, event.source]),
-            error: { _tag: 'GameplayStageExecutionFailure', cause: attempted.failure },
-          })
+          yield* recordGameplayEntityStageExecutionFailure(state, attempted.failure)
           continue
         }
         storage = attempted.success.storage
@@ -2226,7 +2219,7 @@ const runMobSimulation = (
         at: drop.at,
       }], expectedRevision)
       if (Result.isFailure(appended)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed',
           operation: 'CandidateBuild',
           subject: 'DroppedItem',
@@ -2556,7 +2549,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
       commit.coordinator.snapshot(commit.experienceOrbsOwnerId, ExperienceOrbOwnerSnapshotSchema),
     ]))
     if (Result.isFailure(snapshots)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
         requestId: String(commit.experienceOrbsOwnerId), error: snapshots.failure,
       })
@@ -2564,7 +2557,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
     }
     const [playerSnapshot, orbSnapshot] = snapshots.success
     if (playerSnapshot.revision !== orbSnapshot.revision) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
         requestId: String(commit.experienceOrbsOwnerId),
         error: new WorldRevisionConflict({ expected: playerSnapshot.revision, actual: orbSnapshot.revision }),
@@ -2573,7 +2566,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
     }
     const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
     if (Result.isFailure(tick)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
         requestId: String(commit.experienceOrbsOwnerId), error: tick.failure,
       })
@@ -2585,7 +2578,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
     for (const [eventIndex, event] of experiences.entries()) {
       const values = splitExperienceOrbReward(event.amount)
       if (Result.isFailure(values)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
           requestId: String(event.source), error: values.failure,
         })
@@ -2599,7 +2592,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
         z: event.at.z,
       })
       if (Result.isFailure(at)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
           requestId: String(event.source), error: at.failure,
         })
@@ -2615,7 +2608,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
         tick.success,
       )
       if (Result.isFailure(spawned)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
           requestId: String(event.source), error: spawned.failure,
         })
@@ -2632,7 +2625,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
         changes: [{ ownerId: commit.experienceOrbsOwnerId, state: { orbs: nextOrbs } }],
       }))
       if (Result.isFailure(committed)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'WorldCommit', subject: 'ExperienceOrb',
           requestId: String(commit.experienceOrbsOwnerId), error: committed.failure,
         })
@@ -2656,7 +2649,7 @@ const attractExperienceOrbsAndQueuePickup = (
     ExperienceOrbOwnerSnapshotSchema,
   ))
   if (Result.isFailure(orbSnapshotResult)) {
-    yield* recordGameplayStageFailureDeduplicated(state, {
+    yield* recordGameplayStageFailure(state, {
       _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
       requestId: String(commit.experienceOrbsOwnerId), error: orbSnapshotResult.failure,
     })
@@ -2665,7 +2658,7 @@ const attractExperienceOrbsAndQueuePickup = (
   const orbSnapshot = orbSnapshotResult.success
   const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
   if (Result.isFailure(tick)) {
-    yield* recordGameplayStageFailureDeduplicated(state, {
+    yield* recordGameplayStageFailure(state, {
       _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
       requestId: String(commit.experienceOrbsOwnerId), error: tick.failure,
     })
@@ -2686,7 +2679,7 @@ const attractExperienceOrbsAndQueuePickup = (
         changes: [{ ownerId: commit.experienceOrbsOwnerId, state: { orbs: liveOrbs } }],
       }))
       if (Result.isFailure(committed)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'WorldCommit', subject: 'ExperienceOrb',
           requestId: String(commit.experienceOrbsOwnerId), error: committed.failure,
         })
@@ -2699,7 +2692,7 @@ const attractExperienceOrbsAndQueuePickup = (
     PlayerServiceSnapshotSchema,
   ))
   if (Result.isFailure(playerSnapshotResult)) {
-    yield* recordGameplayStageFailureDeduplicated(state, {
+    yield* recordGameplayStageFailure(state, {
       _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
       requestId: String(commit.playerOwnerId), error: playerSnapshotResult.failure,
     })
@@ -2707,7 +2700,7 @@ const attractExperienceOrbsAndQueuePickup = (
   }
   const playerSnapshot = playerSnapshotResult.success
   if (playerSnapshot.revision !== orbSnapshot.revision) {
-    yield* recordGameplayStageFailureDeduplicated(state, {
+    yield* recordGameplayStageFailure(state, {
       _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
       requestId: String(commit.experienceOrbsOwnerId),
       error: new WorldRevisionConflict({ expected: playerSnapshot.revision, actual: orbSnapshot.revision }),
@@ -2750,7 +2743,7 @@ const attractExperienceOrbsAndQueuePickup = (
       changes: [{ ownerId: commit.experienceOrbsOwnerId, state: { orbs: nextOrbs } }],
     }))
     if (Result.isFailure(committed)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'WorldCommit', subject: 'ExperienceOrb',
         requestId: String(commit.experienceOrbsOwnerId), error: committed.failure,
       })
@@ -2778,7 +2771,7 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
       commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
     ]))
     if (Result.isFailure(observed)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed',
         operation,
         subject: 'Player',
@@ -2793,7 +2786,7 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
       playerSnapshot.revision !== vitalsSnapshot.revision ||
       playerSnapshot.revision !== storageSnapshot.revision
     ) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed',
         operation,
         subject: 'Player',
@@ -2822,13 +2815,7 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
     )
     const deathDrops = deathDropsFromPlayerStorage(storage, at)
     if (Result.isFailure(deathDrops)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'Player',
-        requestId: 'player-death-drops',
-        error: { _tag: 'GameplayStageExecutionFailure', cause: deathDrops.failure },
-      })
+      yield* recordGameplayEntityStageExecutionFailure(state, deathDrops.failure)
       return
     }
     const drops = deathDrops.success
@@ -2851,7 +2838,7 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
         DroppedItemOwnerSnapshotSchema,
       ))
       if (Result.isFailure(droppedSnapshot)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed',
           operation,
           subject: 'DroppedItem',
@@ -2861,7 +2848,7 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
         return
       }
       if (droppedSnapshot.success.revision !== playerSnapshot.revision) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
+        yield* recordGameplayStageFailure(state, {
           _tag: 'Failed',
           operation,
           subject: 'DroppedItem',
@@ -2873,22 +2860,14 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
         })
         return
       }
-      const appended = appendPlayerDeathDropSpawns(
+      // Death drops without slot metadata carry no custom name or frame field, their enchantments were
+      // decoded by the same schema, and their durability comes from the decoded player storage snapshot.
+      const appended = Result.getOrThrow(appendPlayerDeathDropSpawns(
         droppedSnapshot.success.state,
         drops,
         playerSnapshot.revision,
-      )
-      if (Result.isFailure(appended)) {
-        yield* recordGameplayStageFailureDeduplicated(state, {
-          _tag: 'Failed',
-          operation: 'CandidateBuild',
-          subject: 'DroppedItem',
-          requestId: 'player-death-drops',
-          error: appended.failure,
-        })
-        return
-      }
-      changes.push({ ownerId: commit.droppedItemsOwnerId, state: appended.success })
+      ))
+      changes.push({ ownerId: commit.droppedItemsOwnerId, state: appended })
     }
 
     operation = 'WorldCommit'
@@ -2898,7 +2877,7 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
       changes,
     }))
     if (Result.isFailure(committed)) {
-      yield* recordGameplayStageFailureDeduplicated(state, {
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed',
         operation,
         subject: 'Player',
@@ -2944,7 +2923,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             commit.coordinator.snapshot(owners.droppedItems, DroppedItemOwnerSnapshotSchema),
           ]))
           if (Result.isFailure(snapshots)) {
-            yield* recordGameplayStageFailureDeduplicated(state, {
+            yield* recordGameplayStageFailure(state, {
               _tag: 'Failed',
               operation: 'OwnerSnapshot',
               subject: 'DroppedItem',
@@ -2965,7 +2944,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             droppedItemsSnapshot.state,
           ))
           if (Result.isFailure(plannedResult)) {
-            yield* recordGameplayStageFailureDeduplicated(state, {
+            yield* recordGameplayStageFailure(state, {
               _tag: 'Failed',
               operation: 'PlanBuild',
               subject: 'DroppedItem',
@@ -3117,7 +3096,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             return { _tag: 'Completed', result } as const
           }))
           if (Result.isFailure(attempted)) {
-            yield* recordGameplayStageFailureDeduplicated(state, {
+            yield* recordGameplayStageFailure(state, {
               _tag: 'Failed',
               operation,
               subject: 'ExperienceOrb',

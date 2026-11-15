@@ -108,7 +108,6 @@ export {
   requestTargetedPrimaryAttack,
   requestMobSpawn,
   drainPlayerDamages,
-  drainGameplayStageFailures,
   type GameplayStageOperationFailure,
   requestStatusEffect,
   drainPlayerHeals,
@@ -157,6 +156,7 @@ import { Effect, Layer } from 'effect'
 export type {
   GameplayStageBlockTypeDecodeFailure,
   GameplayStageMissingBlockReadFailure,
+  GameplayStageUnavailableBlockReadFailure,
   GameplayStageItemUseWorldFailure,
   GameplayStageWorldFaultReason,
 } from './gameplay-stage-faults.js'

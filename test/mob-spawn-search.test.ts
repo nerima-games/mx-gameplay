@@ -68,7 +68,6 @@ import {
 import {
   HOSTILE_SPAWN_INTERVAL_TICKS,
   PASSIVE_SPAWN_BATCH_SIZE,
-  drainGameplayStageFailures,
 } from '../src/stages/registration-core'
 import {
   blockKey,
@@ -1355,17 +1354,14 @@ describe('the search inside the frame', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, ownerAfter] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
       ])
       expect(faults).toContainEqual(expect.objectContaining({
         _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'EntityRoster',
-        error: expect.objectContaining({
-          _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'EntitySerialExhausted' },
-        }),
+        operation: 'PlanBuild',
+        subject: 'Entities',
+        error: { _tag: 'EntitySerialExhausted' },
       }))
       expect(ownerAfter.state.entities).toStrictEqual([])
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])

@@ -24,14 +24,12 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
-  recordGameplayStageFailureDeduplicated,
   recordGameplayRequestFault,
   recordGameplayEntityWorldDataFault,
   recordGameplayEntityStageFault,
   recordGameplayUnsupportedOperation,
   validateBlockPlacementCommand,
   recordMobRuleIssues,
-  type GameplayStageOperationFailure,
   rollAt,
   isSuccessfulBlockUse,
   planFurnaceAdvance,
@@ -228,7 +226,6 @@ import {
 } from '../domain/interactions/fishing-enchantment.js'
 import {
   fishingOpenWaterAt,
-  type FishingOpenWaterReadFailure,
 } from '../domain/interactions/fishing-open-water.js'
 import {
   MeleeCooldownTicksSchema,
@@ -359,46 +356,25 @@ const validatedFishingRodAt = (
 const damageValidatedFishingRodAt = (rod: ValidatedFishingRodLocation): PlayerStorage =>
   damagePlayerStorageAt(rod.storage, rod.location, FISHING_ROD_REEL_WEAR).storage
 
-type FishingEnchantmentRebuildFailure = Readonly<{
-  _tag: 'FishingEnchantmentRebuildFailure'
-  actor: EntityId
-  reason: 'RodNotHeld' | 'BobberUnavailable' | 'OpenWaterUnreadable'
-  openWater?: FishingOpenWaterReadFailure
-}>
-
 /**
  * Recovers cast-time modifiers for an active cast that has no record, e.g. one
  * restored from a save written before the record owner existed or cast through
  * `castFishingWithService`. Enchantments come from the rod the request holds and
- * open water from the world around the bobber now; nothing is assumed.
+ * open water from the world around the bobber, in the bobber's dimension, now;
+ * nothing is assumed. Returns undefined after recording why the rebuild failed.
  */
 const rebuildFishingEnchantments = (
-  store: GameplayStageContext['store'],
+  state: GameplayStageContext['state'],
   context: NonNullable<GameplayStageContext['commit']>,
   request: FishingItemUseRequest,
   bobber: ProjectileId,
   heldRod: Pick<EquipmentItem, 'components'> | undefined,
-): Effect.Effect<FishingEnchantments, GameplayStageOperationFailure> =>
+): Effect.Effect<FishingEnchantments | undefined> =>
   Effect.gen(function* () {
-    const rebuildFailure = (
-      reason: FishingEnchantmentRebuildFailure['reason'],
-      openWater?: FishingOpenWaterReadFailure,
-    ): GameplayStageOperationFailure => ({
-      _tag: 'Failed',
-      operation: 'CandidateBuild',
-      subject: 'Fishing',
-      requestId: request.requestId,
-      error: {
-        _tag: 'GameplayStageExecutionFailure',
-        cause: {
-          _tag: 'FishingEnchantmentRebuildFailure',
-          actor: request.actor,
-          reason,
-          ...(openWater === undefined ? {} : { openWater }),
-        } satisfies FishingEnchantmentRebuildFailure,
-      },
-    })
-    if (heldRod === undefined) return yield* Effect.fail(rebuildFailure('RodNotHeld'))
+    if (heldRod === undefined) {
+      yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'FishingRodNotHeld')
+      return undefined
+    }
     const projectileOwnerId = context.projectileOwnerId ?? PROJECTILE_REPLICATED_OWNER_ID
     const projectiles = yield* Effect.result(context.coordinator.observe(
       projectileOwnerId,
@@ -406,17 +382,53 @@ const rebuildFishingEnchantments = (
       [],
     ))
     if (Result.isFailure(projectiles)) {
-      return yield* Effect.fail<GameplayStageOperationFailure>({
+      yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: projectiles.failure,
       })
+      return undefined
     }
     const record = projectiles.success.state.projectiles.find((projectile) => projectile.id === bobber)
-    if (record === undefined) return yield* Effect.fail(rebuildFailure('BobberUnavailable'))
-    const openWater = yield* Effect.result(fishingOpenWaterAt(store.getBlock, record.projectile.position))
-    if (Result.isFailure(openWater)) {
-      return yield* Effect.fail(rebuildFailure('OpenWaterUnreadable', openWater.failure))
+    if (record === undefined) {
+      yield* recordGameplayEntityStageFault(state, { _tag: 'FishingBobberUnavailable', actor: request.actor, bobber })
+      return undefined
     }
-    return fishingEnchantmentsForRod(heldRod, openWater.success)
+    const openWater = yield* Effect.result(fishingOpenWaterAt(
+      (positions) => Effect.map(
+        context.coordinator.observe(
+          projectileOwnerId,
+          ProjectileServiceSnapshotSchema,
+          positions.map((position) => ({ dimension: record.dimension, position })),
+        ),
+        (observed) => observed.blocks.map(({ reading }) => reading),
+      ),
+      record.projectile.position,
+    ))
+    if (Result.isSuccess(openWater)) return fishingEnchantmentsForRod(heldRod, openWater.success)
+    const failure = openWater.failure
+    if (failure._tag !== 'FishingOpenWaterReadFailure') {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: failure,
+      })
+    } else if (failure.reason === 'InvalidPosition') {
+      yield* recordGameplayEntityWorldDataFault(state, 'Fishing', {
+        _tag: 'EntityWorldInvalidCell',
+        reason: 'not-block-coordinate',
+        position: kernelPosition(
+          PositionAxis(failure.position.x),
+          PositionAxis(failure.position.y),
+          PositionAxis(failure.position.z),
+        ),
+      })
+    } else {
+      yield* recordGameplayEntityStageFault(state, {
+        _tag: 'WorldDataFailure',
+        source: 'Fishing',
+        operation: 'ReadBlock',
+        position: failure.position,
+        reason: { _tag: failure.reason, position: failure.position },
+      })
+    }
+    return undefined
   })
 
 type PlayerStorageCommitSnapshot = Readonly<{
@@ -1244,7 +1256,6 @@ const processFishingItemUse = (
   state: GameplayStageContext['state'],
   context: GameplayStageContext['commit'],
   request: FishingItemUseRequest,
-  store: GameplayStageContext['store'],
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (context === undefined) {
@@ -1355,18 +1366,9 @@ const processFishingItemUse = (
       activeRod !== undefined &&
       (request.action === 'AdvanceFishing' || request.action === 'ReelFishing')
     ) {
-      const rebuilt = yield* Effect.result(rebuildFishingEnchantments(
-        store,
-        context,
-        request,
-        activeRod.bobber,
-        heldRod,
-      ))
-      if (Result.isFailure(rebuilt)) {
-        yield* recordGameplayStageFailureDeduplicated(state, rebuilt.failure)
-        return
-      }
-      enchantments = rebuilt.success
+      const rebuilt = yield* rebuildFishingEnchantments(state, context, request, activeRod.bobber, heldRod)
+      if (rebuilt === undefined) return
+      enchantments = rebuilt
     }
     if (request.action === 'CastFishing') {
         const cast = yield* Effect.result(context.fishingService.planCast(snapshot, {
@@ -1845,7 +1847,7 @@ const processBrewingItemUse = (
           [],
         ))
         if (Result.isFailure(observedEffects)) {
-          yield* recordGameplayStageFailureDeduplicated(state, {
+          yield* recordGameplayStageFailure(state, {
             _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observedEffects.failure,
             requestId: request.requestId,
           })
@@ -2745,7 +2747,7 @@ export const publishGeneratedEnchantmentOffers = (
 ): Effect.Effect<void> => Effect.gen(function* () {
   const serviceOffers = decodeGeneratedOffers(offers)
   if (Result.isFailure(serviceOffers)) {
-    yield* recordGameplayStageFailureDeduplicated(state, {
+    yield* recordGameplayStageFailure(state, {
       _tag: 'Failed',
       operation: 'CandidateBuild',
       subject: 'ItemUse',
@@ -4313,7 +4315,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     ValidatedStatusEffectStateSchema,
                   ))
                   if (Result.isFailure(statusEffectsSnapshot)) {
-                    yield* recordGameplayStageFailureDeduplicated(state, {
+                    yield* recordGameplayStageFailure(state, {
                       _tag: 'Failed',
                       operation: 'OwnerSnapshot',
                       subject: 'ItemUse',
@@ -4323,7 +4325,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     break itemUseAction
                   }
                   if (statusEffectsSnapshot.success.revision !== storageSnapshot.success.revision) {
-                    yield* recordGameplayStageFailureDeduplicated(state, {
+                    yield* recordGameplayStageFailure(state, {
                       _tag: 'Failed',
                       operation: 'OwnerSnapshot',
                       subject: 'ItemUse',
@@ -4363,7 +4365,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   ],
                 }))
                 if (Result.isFailure(committed)) {
-                  yield* recordGameplayStageFailureDeduplicated(state, {
+                  yield* recordGameplayStageFailure(state, {
                     _tag: 'Failed',
                     operation: 'WorldCommit',
                     subject: 'Vitals',
@@ -4438,7 +4440,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break itemUseAction
               }
               else if (request.action === 'CastFishing' || request.action === 'AdvanceFishing' || request.action === 'CancelFishing' || request.action === 'ReelFishing') {
-                yield* processFishingItemUse(state, commit, request, store)
+                yield* processFishingItemUse(state, commit, request)
                 break itemUseAction
               }
               else if (request.action === 'CollectBrewingBottle') {

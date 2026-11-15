@@ -77,7 +77,6 @@ import {
   makeGameplayFrameStateForOwner,
   drainDroppedItemPickupExecutions,
   drainExperienceOrbAbsorptionExecutions,
-  drainGameplayStageFailures,
   requestDroppedItemPickup,
   requestMobSpawn,
   requestExperienceOrbAbsorption,
@@ -172,6 +171,14 @@ const vanishingCurseStorage = () => {
       slots: { ...storage.equipment.slots, head: helmet },
     },
   }
+}
+
+// prepareHostileAttack fails with the string 'invalid-damage-state' for a damage-immunity tick in the future.
+const hostileDamageExecutionFailure = {
+  _tag: 'Failed',
+  operation: 'EntityExecution',
+  subject: 'Entities',
+  error: { _tag: 'EntitiesStageExecutionFailure', failureTag: 'string' },
 }
 
 const outOfRangeEnchantmentStorage = () => {
@@ -443,15 +450,16 @@ describe('full-composition enchantment coverage', () => {
 
       const [storage, failures] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
       ])
       expect(storage.state).toStrictEqual(outOfRangeEnchantmentStorage())
-      expect(failures).toContainEqual(expect.objectContaining({
+      // Sharpness 6 is above the level-5 maximum, so the death-drop enchantment decode fails.
+      expect(failures).toContainEqual({
         _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'Player',
-        requestId: 'player-death-drops',
-      }))
+        operation: 'EntityExecution',
+        subject: 'Entities',
+        error: { _tag: 'EntitiesStageExecutionFailure', failureTag: 'SchemaError' },
+      })
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
@@ -466,7 +474,7 @@ describe('full-composition enchantment coverage', () => {
 
       const [storageAfter, failures] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
       ])
       expect(storageAfter.state).toStrictEqual(storage)
       expect(failures).toContainEqual(expect.objectContaining({
@@ -489,7 +497,7 @@ describe('full-composition enchantment coverage', () => {
 
       const [storageAfter, failures] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
       ])
       expect(storageAfter.state).toStrictEqual(storage)
       expect(failures).toContainEqual(expect.objectContaining({
@@ -513,7 +521,7 @@ describe('full-composition enchantment coverage', () => {
 
       const [storageAfter, failures] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
       ])
       expect(storageAfter.state).toStrictEqual(storage)
       expect(failures).toContainEqual(expect.objectContaining({
@@ -576,7 +584,7 @@ describe('full-composition enchantment coverage', () => {
 
       const [storageAfter, failures] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
       ])
       expect(storageAfter.state).toStrictEqual(storage)
       expect(failures).toContainEqual(expect.objectContaining({
@@ -599,7 +607,7 @@ describe('full-composition enchantment coverage', () => {
 
       const [storageAfter, failures] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
       ])
       expect(storageAfter.state).toStrictEqual(storage)
       expect(failures).toContainEqual(expect.objectContaining({
@@ -623,7 +631,7 @@ describe('full-composition enchantment coverage', () => {
 
       const [storageAfter, failures, statusEffects] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         coordinator.snapshot(GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema),
       ])
       expect(storageAfter.state).toStrictEqual(storage)
@@ -786,7 +794,7 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0.25))
 
       const [faults, roster, storage, droppedItems, orbs] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
         coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
@@ -920,7 +928,7 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, executions, vitals, orbs] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         drainExperienceOrbAbsorptionExecutions(state),
         coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
         coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema),
@@ -930,13 +938,13 @@ describe('full-composition enchantment coverage', () => {
         operation: 'PlanBuild',
         subject: 'ExperienceOrb',
         requestId: String(missingOrbId),
-        occurrences: 2,
         error: expect.objectContaining({ _tag: 'ExperienceOrbUnavailable', reason: 'missing-orb' }),
       }))
+      // Each of the two requests for the missing orb records its own failure.
+      expect(faults.filter((fault) => fault.requestId === String(missingOrbId))).toHaveLength(2)
       expect(executions.map(({ outcome }) => outcome._tag)).toStrictEqual(['Failed', 'Failed', 'Completed'])
       expect(vitals.state.vitals.totalExperience).toBe(3)
       expect(orbs.state.orbs).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
@@ -981,7 +989,7 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, executions, storage, droppedItems] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         drainDroppedItemPickupExecutions(state),
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
         coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
@@ -991,13 +999,11 @@ describe('full-composition enchantment coverage', () => {
         operation: 'PlanBuild',
         subject: 'DroppedItem',
         requestId: String(invalidRequest.actor),
-        occurrences: 1,
         error: expect.any(Object),
       }))
       expect(executions.map(({ outcome }) => outcome._tag)).toStrictEqual(['Failed', 'Completed'])
       expect(storage.state.inventory.slots.some((slot) => slot?.item === 'gunpowder' && slot.count === 1)).toBe(true)
       expect(droppedItems.state.items).toStrictEqual([])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
@@ -1041,7 +1047,7 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, vitalsAfter, cooldowns, pendingAttempts] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
         Ref.get(state.hostileContactCooldowns),
         Ref.get(state.spawnAttempts),
@@ -1056,7 +1062,6 @@ describe('full-composition enchantment coverage', () => {
       expect(vitalsAfter.state.vitals.healthPoints).toBeLessThan(vitalsBefore.state.vitals.healthPoints)
       expect(cooldowns.has(EntityId('test:thorns-target'))).toBe(true)
       expect(pendingAttempts).toStrictEqual([attempt])
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
@@ -1087,23 +1092,14 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, vitalsAfter, orbs, immunityAfter, contactCooldowns] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
         coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema),
         Ref.get(state.damageImmunity),
         Ref.get(state.hostileContactCooldowns),
       ])
-      expect(faults).toContainEqual(expect.objectContaining({
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'Player',
-        requestId: JSON.stringify(['player-damage', 'HostileContact', 'test:thorns-target']),
-        occurrences: 2,
-        error: expect.objectContaining({
-          _tag: 'GameplayStageExecutionFailure',
-          cause: 'invalid-damage-state',
-        }),
-      }))
+      // A string failure carries no _tag, so the execution-failure tag is its typeof; one per frame.
+      expect(faults).toStrictEqual([hostileDamageExecutionFailure, hostileDamageExecutionFailure])
       expect(vitalsAfter.state.vitals).toStrictEqual(vitalsBefore.state.vitals)
       expect(immunityAfter).toStrictEqual(futureDamageState)
       expect(contactCooldowns.has(EntityId('test:thorns-target'))).toBe(false)
@@ -1111,7 +1107,6 @@ describe('full-composition enchantment coverage', () => {
         id: EntityId('mx-gameplay:experience-orb/test:queued-xp-after-damage-fault/0/0/0'),
         value: 3,
       }))
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
@@ -1143,23 +1138,13 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0.02))
 
       const [faults, roster, vitals] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
         coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
       ])
-      expect(faults).toContainEqual(expect.objectContaining({
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'Player',
-        requestId: JSON.stringify(['player-damage', 'Explosion', 'test:blast-creeper']),
-        error: expect.objectContaining({
-          _tag: 'GameplayStageExecutionFailure',
-          cause: 'invalid-damage-state',
-        }),
-      }))
+      expect(faults).toStrictEqual([hostileDamageExecutionFailure])
       expect(roster.state.entities).toStrictEqual([])
       expect(vitals.state.vitals.healthPoints).toBe(20)
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
@@ -1179,7 +1164,7 @@ describe('full-composition enchantment coverage', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, vitalsAfter, damages, lastHostileSpawnTick] = yield* Effect.all([
-        drainGameplayStageFailures(state),
+        Ref.get(state.operationFailures),
         coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
         Ref.get(state.playerDamages),
         Ref.get(state.lastHostileSpawnTick),
@@ -1194,7 +1179,6 @@ describe('full-composition enchantment coverage', () => {
       // The spawn cadence check fails the whole entities stage, so contact damage is not resolved this frame.
       expect(damages).toStrictEqual([])
       expect(vitalsAfter.state.vitals.healthPoints).toBe(vitalsBefore.state.vitals.healthPoints)
-      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 

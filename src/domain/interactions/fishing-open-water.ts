@@ -14,13 +14,20 @@ export const FISHING_OPEN_WATER_HORIZONTAL_RADIUS = 2
 export const FISHING_OPEN_WATER_LOWEST_LAYER = -1
 export const FISHING_OPEN_WATER_HIGHEST_LAYER = 2
 
-export type FishingOpenWaterReadFailure = Readonly<{
-  _tag: 'FishingOpenWaterReadFailure'
-  position: Readonly<{ x: number; y: number; z: number }>
-  reason: 'ChunkNotLoaded' | 'OutOfWorld' | 'InvalidPosition'
-}>
+export type FishingOpenWaterReadFailure =
+  | Readonly<{
+      _tag: 'FishingOpenWaterReadFailure'
+      position: Readonly<{ x: number; y: number; z: number }>
+      reason: 'InvalidPosition'
+    }>
+  | Readonly<{
+      _tag: 'FishingOpenWaterReadFailure'
+      position: BlockPosition
+      reason: 'ChunkNotLoaded' | 'OutOfWorld' | 'MissingBlockReadResult'
+    }>
 
-type BlockReader = (position: BlockPosition) => Effect.Effect<BlockReading>
+/** Reads every position in one call; the readings follow the order of `positions`. */
+type BlockBatchReader<E> = (positions: ReadonlyArray<BlockPosition>) => Effect.Effect<ReadonlyArray<BlockReading>, E>
 
 /**
  * Decides open water from the blocks around the bobber's block cell, after
@@ -32,13 +39,13 @@ type BlockReader = (position: BlockPosition) => Effect.Effect<BlockReading>
  * Every cell is read before any is judged, so an unreadable cell fails the
  * decision even when another cell would already rule open water out.
  */
-export const fishingOpenWaterAt = (
-  getBlock: BlockReader,
+export const fishingOpenWaterAt = <E>(
+  readBlocks: BlockBatchReader<E>,
   bobber: Readonly<{ x: number; y: number; z: number }>,
-): Effect.Effect<boolean, FishingOpenWaterReadFailure> =>
+): Effect.Effect<boolean, FishingOpenWaterReadFailure | E> =>
   Effect.gen(function* () {
     const origin = { x: Math.floor(bobber.x), y: Math.floor(bobber.y), z: Math.floor(bobber.z) }
-    const cells: Array<Readonly<{ layer: number; block: BlockId }>> = []
+    const cells: Array<Readonly<{ layer: number; position: BlockPosition }>> = []
     for (let layer = FISHING_OPEN_WATER_LOWEST_LAYER; layer <= FISHING_OPEN_WATER_HIGHEST_LAYER; layer++) {
       for (let dx = -FISHING_OPEN_WATER_HORIZONTAL_RADIUS; dx <= FISHING_OPEN_WATER_HORIZONTAL_RADIUS; dx++) {
         for (let dz = -FISHING_OPEN_WATER_HORIZONTAL_RADIUS; dz <= FISHING_OPEN_WATER_HORIZONTAL_RADIUS; dz++) {
@@ -51,18 +58,23 @@ export const fishingOpenWaterAt = (
               reason: 'InvalidPosition',
             } satisfies FishingOpenWaterReadFailure)
           }
-          const reading = yield* getBlock(decoded.success)
-          if (reading._tag !== 'Block') {
-            return yield* Effect.fail({
-              _tag: 'FishingOpenWaterReadFailure',
-              position: coordinates,
-              reason: reading._tag,
-            } satisfies FishingOpenWaterReadFailure)
-          }
-          cells.push({ layer, block: reading.block })
+          cells.push({ layer, position: decoded.success })
         }
       }
     }
-    return cells.every(({ layer, block }) =>
+    const readings = yield* readBlocks(cells.map(({ position }) => position))
+    const blocks: Array<Readonly<{ layer: number; block: BlockId }>> = []
+    for (const [index, { layer, position }] of cells.entries()) {
+      const reading = readings[index]
+      if (reading === undefined || reading._tag !== 'Block') {
+        return yield* Effect.fail({
+          _tag: 'FishingOpenWaterReadFailure',
+          position,
+          reason: reading === undefined ? 'MissingBlockReadResult' : reading._tag,
+        } satisfies FishingOpenWaterReadFailure)
+      }
+      blocks.push({ layer, block: reading.block })
+    }
+    return blocks.every(({ layer, block }) =>
       block === WATER_BLOCK_ID || (layer > 0 && block === AIR_BLOCK_ID))
   })

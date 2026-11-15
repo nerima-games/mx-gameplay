@@ -397,11 +397,11 @@ describe('entities-stage owner-backed coverage', () => {
     const tickFailures = failures.filter((failure) =>
       failure._tag === 'Failed' && failure.operation === 'CandidateBuild' && failure.subject === 'ExperienceOrb',
     )
-    expect(tickFailures).toHaveLength(1)
-    expect(tickFailures[0]).toMatchObject({
-      requestId: String(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID),
-      occurrences: 2,
-    })
+    // XP reward spawning and orb attraction each decode the tick and record their own failure.
+    expect(tickFailures).toMatchObject([
+      { requestId: String(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID) },
+      { requestId: String(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID) },
+    ])
     expect(harness.requests).toHaveLength(0)
   })
 })
