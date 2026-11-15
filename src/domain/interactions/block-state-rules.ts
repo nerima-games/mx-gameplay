@@ -1,4 +1,4 @@
-import { Effect, Option, Result, Schema } from 'effect'
+import { Brand, Effect, Option, Result, Schema } from 'effect'
 import {
   BlockStateAgeSchema,
   BlockStateStageSchema,
@@ -53,6 +53,38 @@ export type BlockStateWorldPort = Readonly<{
 // ChunkStoreApi stores block IDs only, so this adapter cannot return a stateful cell.
 type ChunkStoreBlockStateRead = Exclude<BlockStateRead, Readonly<{ _tag: 'Found' }>>
 
+/** One uniform random draw in [0, 1), as produced by the frame roll stream. */
+export type BlockStateRandomRoll = number & Brand.Brand<'BlockStateRandomRoll'>
+export const BlockStateRandomRollSchema: Schema.Codec<BlockStateRandomRoll, number> = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .check(Schema.isLessThan(1))
+  .pipe(Schema.brand('BlockStateRandomRoll'))
+
+/** The crop growth speed level of the vanilla random-tick formula, 1 to 10. */
+export type CropGrowthSpeedLevel = number & Brand.Brand<'CropGrowthSpeedLevel'>
+export const CropGrowthSpeedLevelSchema: Schema.Codec<CropGrowthSpeedLevel, number> = Schema.Finite
+  .check(Schema.isBetween({ minimum: 1, maximum: 10 }))
+  .pipe(Schema.brand('CropGrowthSpeedLevel'))
+
+/** Chance that one random tick advances a crop, derived from its speed level. */
+export type CropGrowthProbability = number & Brand.Brand<'CropGrowthProbability'>
+const CropGrowthProbabilitySchema: Schema.Codec<CropGrowthProbability, number> = Schema.Finite
+  .check(Schema.isBetween({ minimum: 0, maximum: 1 }))
+  .pipe(Schema.brand('CropGrowthProbability'))
+
+/** Crop stages one bone meal use adds, 2 to 5. */
+export type BoneMealCropStages = number & Brand.Brand<'BoneMealCropStages'>
+export const BoneMealCropStagesSchema: Schema.Codec<BoneMealCropStages, number> = Schema.Int
+  .check(Schema.isBetween({ minimum: 2, maximum: 5 }))
+  .pipe(Schema.brand('BoneMealCropStages'))
+
+/** Height of a side-face hit within the clicked block, in [0, 1). */
+export type StairHitHeight = number & Brand.Brand<'StairHitHeight'>
+export const StairHitHeightSchema: Schema.Codec<StairHitHeight, number> = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .check(Schema.isLessThanOrEqualTo(1))
+  .pipe(Schema.brand('StairHitHeight'))
+
 /** Host-provided correlation key for one block-state rule request. */
 export type BlockStateRuleRequestId = string
 
@@ -71,20 +103,20 @@ export type BlockStateRuleRequest = Readonly<{
         block: 'oak_stairs' | 'purpur_stairs'
         facing: HorizontalBlockStateFacing
         hitFace: BlockFace
-        hitY: number
+        hitY: StairHitHeight
       }>
     | Readonly<{ _tag: 'RefreshStairShapes' }>
-    | Readonly<{ _tag: 'CropRandomTick'; speedLevel?: number; roll: number }>
+    | Readonly<{ _tag: 'CropRandomTick'; speedLevel?: CropGrowthSpeedLevel; roll: BlockStateRandomRoll }>
     | Readonly<{
         /** Sampled roll for a light-eligible random tick; the caller handles the light gate. */
         _tag: 'SaplingGrowthAttempt'
-        roll: number
+        roll: BlockStateRandomRoll
         treeSpace: SaplingTreeSpaceResult
       }>
     | Readonly<{
         _tag: 'BoneMeal'
-        cropStages: number
-        saplingRoll: number
+        cropStages: BoneMealCropStages
+        saplingRoll: BlockStateRandomRoll
         treeSpaceAvailable: boolean
       }>
 }>
@@ -106,7 +138,7 @@ export type BlockStateRuleFailure = Readonly<{
   reason: 'ChunkNotLoaded' | 'OutOfWorld'
 }> | Readonly<{
   _tag: 'InvalidInput'
-  reason: 'cropSpeedLevel' | 'cropAge' | 'randomRoll' | 'boneMealGrowth' | 'stairPlacement'
+  reason: 'cropSpeedLevel' | 'cropAge'
 }> | Readonly<{
   _tag: 'InvalidState'
   position: BlockPosition
@@ -144,19 +176,18 @@ export type BlockStateRuleResult = Readonly<{
 
 export type HorizontalBlockStateFacing = Extract<BlockStateFacing, 'north' | 'east' | 'south' | 'west'>
 
-const CROP_MAX_AGE: Readonly<Partial<Record<BlockType, number>>> = {
-  wheat_crop: 7,
-  potato_crop: 7,
+const MATURE_CROP_AGE = Schema.decodeUnknownSync(BlockStateAgeSchema)(7)
+const CROP_MAX_AGE: Readonly<Partial<Record<BlockType, BlockStateAge>>> = {
+  wheat_crop: MATURE_CROP_AGE,
+  potato_crop: MATURE_CROP_AGE,
 }
-const NETHER_WART_MAX_AGE = 3
+const NETHER_WART_MAX_AGE = Schema.decodeUnknownSync(BlockStateAgeSchema)(3)
 const NETHER_WART_RANDOM_TICK_CHANCE = 10 / 100
 const SAPLING_STAGE_ONE = Schema.decodeUnknownSync(BlockStateStageSchema)(1)
 
-const cropAge = (value: number): BlockStateAge | undefined =>
-  Result.getOrUndefined(Schema.decodeUnknownResult(BlockStateAgeSchema)(value))
-
-const validCropAgeRange = (age: number, maximumAge: number): boolean =>
-  cropAge(age) !== undefined && cropAge(maximumAge) !== undefined && age <= maximumAge
+// Callers advance only an age below a BlockStateAge maximum, so the result never
+// exceeds that maximum and is always a valid BlockStateAge.
+const advancedCropAge = (age: number): BlockStateAge => Schema.decodeUnknownSync(BlockStateAgeSchema)(age)
 
 type TypedBlockStateCell = Readonly<{ cell: BlockStateCell; type: BlockType }>
 
@@ -210,29 +241,26 @@ export const blockStateWorldPortForChunkStore = (store: ChunkStoreApi): Readonly
   write: () => Effect.succeed({ _tag: 'Unsupported', operation: 'writeState' }),
 })
 
-export const cropGrowthProbability = (speedLevel: number): number | undefined => {
-  if (!Number.isFinite(speedLevel) || speedLevel < 1 || speedLevel > 10) return undefined
-  return 1 / (Math.floor(25 / speedLevel) + 1)
-}
+// A speed level in [1, 10] gives 1 / (floor(25 / speedLevel) + 1), inside [1/26, 1/3].
+export const cropGrowthProbability = (speedLevel: CropGrowthSpeedLevel): CropGrowthProbability =>
+  Schema.decodeUnknownSync(CropGrowthProbabilitySchema)(1 / (Math.floor(25 / speedLevel) + 1))
 
 export const cropAgeAfterRandomTick = (
-  age: number,
-  maximumAge: number,
-  speedLevel: number,
-  roll: number,
+  age: BlockStateAge,
+  maximumAge: BlockStateAge,
+  speedLevel: CropGrowthSpeedLevel,
+  roll: BlockStateRandomRoll,
 ): Readonly<{ _tag: 'Grew'; age: BlockStateAge } | { _tag: 'NoChange'; reason: 'growthMiss' | 'mature' } | { _tag: 'InvalidInput' }> => {
-  const probability = cropGrowthProbability(speedLevel)
-  if (probability === undefined || !Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
-  if (!validCropAgeRange(age, maximumAge)) return { _tag: 'InvalidInput' }
-  if (age >= maximumAge) return { _tag: 'NoChange', reason: 'mature' }
-  return roll < probability
-    ? { _tag: 'Grew', age: Schema.decodeUnknownSync(BlockStateAgeSchema)(age + 1) }
+  if (age > maximumAge) return { _tag: 'InvalidInput' }
+  if (age === maximumAge) return { _tag: 'NoChange', reason: 'mature' }
+  return roll < cropGrowthProbability(speedLevel)
+    ? { _tag: 'Grew', age: advancedCropAge(age + 1) }
     : { _tag: 'NoChange', reason: 'growthMiss' }
 }
 
 export const netherWartAgeAfterRandomTick = (
-  age: number,
-  roll: number,
+  age: BlockStateAge,
+  roll: BlockStateRandomRoll,
 ): Readonly<{
   _tag: 'Grew'
   age: BlockStateAge
@@ -242,23 +270,21 @@ export const netherWartAgeAfterRandomTick = (
 } | {
   _tag: 'InvalidInput'
 }> => {
-  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
-  if (!validCropAgeRange(age, NETHER_WART_MAX_AGE)) return { _tag: 'InvalidInput' }
-  if (age >= NETHER_WART_MAX_AGE) return { _tag: 'NoChange', reason: 'mature' }
+  if (age > NETHER_WART_MAX_AGE) return { _tag: 'InvalidInput' }
+  if (age === NETHER_WART_MAX_AGE) return { _tag: 'NoChange', reason: 'mature' }
   return roll < NETHER_WART_RANDOM_TICK_CHANCE
-    ? { _tag: 'Grew', age: Schema.decodeUnknownSync(BlockStateAgeSchema)(age + 1) }
+    ? { _tag: 'Grew', age: advancedCropAge(age + 1) }
     : { _tag: 'NoChange', reason: 'growthMiss' }
 }
 
 export const cropAgeAfterBoneMeal = (
-  age: number,
-  maximumAge: number,
-  stages: number,
+  age: BlockStateAge,
+  maximumAge: BlockStateAge,
+  stages: BoneMealCropStages,
 ): Readonly<{ _tag: 'Grew'; age: BlockStateAge } | { _tag: 'NoChange'; reason: 'mature' } | { _tag: 'InvalidInput' }> => {
-  if (!Number.isInteger(stages) || stages < 2 || stages > 5) return { _tag: 'InvalidInput' }
-  if (!validCropAgeRange(age, maximumAge)) return { _tag: 'InvalidInput' }
-  if (age >= maximumAge) return { _tag: 'NoChange', reason: 'mature' }
-  return { _tag: 'Grew', age: Schema.decodeUnknownSync(BlockStateAgeSchema)(Math.min(maximumAge, age + stages)) }
+  if (age > maximumAge) return { _tag: 'InvalidInput' }
+  if (age === maximumAge) return { _tag: 'NoChange', reason: 'mature' }
+  return { _tag: 'Grew', age: advancedCropAge(Math.min(maximumAge, age + stages)) }
 }
 
 export const doorOpenAfterToggle = (open: boolean): boolean => !open
@@ -272,9 +298,8 @@ export const doorPlacementState = (
 export const stairPlacementState = (
   facing: HorizontalBlockStateFacing,
   hitFace: BlockFace,
-  hitY: number,
-): Readonly<{ facing: HorizontalBlockStateFacing; half: Extract<BlockStateHalf, 'top' | 'bottom'> }> | undefined => {
-  if (!Number.isFinite(hitY) || hitY < 0 || hitY > 1) return undefined
+  hitY: StairHitHeight,
+): Readonly<{ facing: HorizontalBlockStateFacing; half: Extract<BlockStateHalf, 'top' | 'bottom'> }> => {
   const half = hitFace === 'down'
     ? 'top'
     : hitFace === 'up'
@@ -454,28 +479,13 @@ type SaplingStageTransition = Readonly<
   | { _tag: 'Advanced'; stage: BlockStateStage }
   | { _tag: 'TreeRequired' }
   | { _tag: 'NoChange'; reason: 'growthMiss' | 'blocked' | 'outOfWorld' | 'chunkNotLoaded' }
-  | { _tag: 'InvalidInput' }
-  | { _tag: 'InvalidState' }
 >
-type SaplingTransitionAfterValidatedStage = Exclude<SaplingStageTransition, { _tag: 'InvalidState' }>
 
-export function saplingStageAfterGrowthAttempt(
+export const saplingStageAfterGrowthAttempt = (
   stage: BlockStateStage,
-  roll: number,
+  roll: BlockStateRandomRoll,
   treeSpace: SaplingTreeSpaceStatus,
-): SaplingTransitionAfterValidatedStage
-export function saplingStageAfterGrowthAttempt(
-  stage: number,
-  roll: number,
-  treeSpace: SaplingTreeSpaceStatus,
-): SaplingStageTransition
-export function saplingStageAfterGrowthAttempt(
-  stage: number,
-  roll: number,
-  treeSpace: SaplingTreeSpaceStatus,
-): SaplingStageTransition {
-  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
-  if (stage !== 0 && stage !== 1) return { _tag: 'InvalidState' }
+): SaplingStageTransition => {
   if (treeSpace._tag === 'OutOfWorld') return { _tag: 'NoChange', reason: 'outOfWorld' }
   if (treeSpace._tag === 'ChunkNotLoaded') return { _tag: 'NoChange', reason: 'chunkNotLoaded' }
   if (roll >= 1 / 7) return { _tag: 'NoChange', reason: 'growthMiss' }
@@ -484,23 +494,11 @@ export function saplingStageAfterGrowthAttempt(
   return { _tag: 'NoChange', reason: 'blocked' }
 }
 
-export function saplingStageAfterBoneMeal(
+export const saplingStageAfterBoneMeal = (
   stage: BlockStateStage,
-  roll: number,
+  roll: BlockStateRandomRoll,
   treeSpaceAvailable: boolean,
-): SaplingTransitionAfterValidatedStage
-export function saplingStageAfterBoneMeal(
-  stage: number,
-  roll: number,
-  treeSpaceAvailable: boolean,
-): SaplingStageTransition
-export function saplingStageAfterBoneMeal(
-  stage: number,
-  roll: number,
-  treeSpaceAvailable: boolean,
-): SaplingStageTransition {
-  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
-  if (stage !== 0 && stage !== 1) return { _tag: 'InvalidState' }
+): SaplingStageTransition => {
   if (roll >= 0.45) return { _tag: 'NoChange', reason: 'growthMiss' }
   if (stage === 0) return { _tag: 'Advanced', stage: SAPLING_STAGE_ONE }
   return treeSpaceAvailable ? { _tag: 'TreeRequired' } : { _tag: 'NoChange', reason: 'blocked' }
@@ -510,7 +508,7 @@ const outcomeForSapling = (
   port: BlockStateWorldPort,
   position: BlockPosition,
   cell: BlockStateCell,
-  transition: SaplingTransitionAfterValidatedStage,
+  transition: SaplingStageTransition,
 ): Effect.Effect<BlockStateRuleOutcome> => {
   if (transition._tag === 'Advanced') {
     return writeEdits(port, [{ position, block: cell.block, state: { ...cell.state, stage: transition.stage } }], position)
@@ -518,8 +516,7 @@ const outcomeForSapling = (
   if (transition._tag === 'TreeRequired') {
     return Effect.succeed({ _tag: 'Unsupported', operation: 'treePlacement', position })
   }
-  if (transition._tag === 'NoChange') return Effect.succeed({ _tag: 'NoChange', reason: transition.reason })
-  return Effect.succeed({ _tag: 'InvalidInput', reason: 'randomRoll' })
+  return Effect.succeed({ _tag: 'NoChange', reason: transition.reason })
 }
 
 const toggleDoor = (
@@ -607,7 +604,6 @@ const placeStairs = (
   operation: PlaceStairsOperation,
 ): Effect.Effect<BlockStateRuleOutcome> => Effect.gen(function* () {
   const placement = stairPlacementState(operation.facing, operation.hitFace, operation.hitY)
-  if (placement === undefined) return { _tag: 'InvalidInput', reason: 'stairPlacement' }
   const block = Option.getOrThrow(blockIdOf(operation.block))
   const defaults = Result.getOrThrow(defaultBlockState(block))
 
@@ -652,8 +648,8 @@ const refreshStairShapes = (
 const growCrop = (
   port: BlockStateWorldPort,
   position: BlockPosition,
-  speedLevel: number | undefined,
-  roll: number,
+  speedLevel: CropGrowthSpeedLevel | undefined,
+  roll: BlockStateRandomRoll,
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
     const reading = yield* port.read(position)
@@ -672,12 +668,7 @@ const growCrop = (
         ? { _tag: 'InvalidInput' as const }
         : cropAgeAfterRandomTick(age, maximumAge, speedLevel, roll)
     if (transition._tag === 'InvalidInput') {
-      const reason = !isNetherWart && (speedLevel === undefined || cropGrowthProbability(speedLevel) === undefined)
-        ? 'cropSpeedLevel'
-        : !Number.isFinite(roll) || roll < 0 || roll >= 1
-          ? 'randomRoll'
-          : 'cropAge'
-      return { _tag: 'InvalidInput', reason }
+      return { _tag: 'InvalidInput', reason: !isNetherWart && speedLevel === undefined ? 'cropSpeedLevel' : 'cropAge' }
     }
     if (transition._tag === 'NoChange') return { _tag: 'NoChange', reason: transition.reason }
     return yield* writeEdits(port, [{
@@ -694,12 +685,6 @@ const applyBoneMeal = (
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
     const { cropStages, saplingRoll, treeSpaceAvailable } = operation
-    if (!Number.isInteger(cropStages) || cropStages < 2 || cropStages > 5) {
-      return { _tag: 'InvalidInput', reason: 'boneMealGrowth' }
-    }
-    if (!Number.isFinite(saplingRoll) || saplingRoll < 0 || saplingRoll >= 1) {
-      return { _tag: 'InvalidInput', reason: 'randomRoll' }
-    }
     const reading = yield* port.read(position)
     const access = readAccess(position, reading)
     if (access._tag === 'Failed') return access.failure

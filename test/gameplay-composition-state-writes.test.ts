@@ -29,7 +29,12 @@ import {
   type ReplicatedOwnerCandidate,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import type { BlockStateCell, BlockStateEdit, BlockStateWorldPort } from '../src/domain/interactions/block-state-rules.js'
+import {
+  StairHitHeightSchema,
+  type BlockStateCell,
+  type BlockStateEdit,
+  type BlockStateWorldPort,
+} from '../src/domain/interactions/block-state-rules.js'
 import { GameplayBlockStateWorld } from '../src/stages/gameplay-block-state-world.js'
 import type { GameplayBlockStateWorldApi } from '../src/stages/gameplay-block-state-world.js'
 import { makeGameplayComposition } from '../src/stages/gameplay-composition.js'
@@ -329,7 +334,7 @@ describe('the registered production composition reaches the C7 state writer', ()
         positionKey: blockPositionKeyOf(lower),
         heldItem: 'door',
         mode: 'creative',
-        targeting: { facing: 'north', hitFace: 'south', hitY: 0.62 },
+        targeting: { facing: 'north', hitFace: 'south', hitY: Schema.decodeUnknownSync(StairHitHeightSchema)(0.62) },
       })
       yield* runFrames(composition.stages, 1, FRAME_DELTA)
 

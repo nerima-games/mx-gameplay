@@ -182,6 +182,7 @@ import type {
   GameplayTargetingSnapshotContext,
 } from '../src/stages/registration-core'
 import { GameplayBlockStateWorld } from '../src/stages/gameplay-block-state-world.js'
+import { StairHitHeightSchema } from '../src/domain/interactions/block-state-rules.js'
 import {
   BREWING_ADVANCE_STAGE_ID,
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -4148,7 +4149,7 @@ describe('the targeted-block family resolves through the same raycast as placeme
           pose: { feetPosition: fixturePosition(8.5, 4, 8.5), yawRadians: 0, pitchRadians: -Math.PI / 2 },
           hitFace: 'up',
           facing: 'north',
-          hitY: 1,
+          hitY: 0,
         },
         {
           name: 'bottom face',
@@ -4212,7 +4213,11 @@ describe('the targeted-block family resolves through the same raycast as placeme
       const targetedPlacement = {
         positionKey: positionKey('0,1,1'),
         heldItem: 'door' as const,
-        targeting: { facing: 'north' as const, hitFace: 'south' as const, hitY: 0.62 },
+        targeting: {
+          facing: 'north' as const,
+          hitFace: 'south' as const,
+          hitY: Schema.decodeUnknownSync(StairHitHeightSchema)(0.62),
+        },
       }
       yield* requestBlockPlacement(missingPort.state, targetedPlacement)
       const interactionsWithoutPort = missingPort.stages.find(

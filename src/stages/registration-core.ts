@@ -394,11 +394,13 @@ import {
   type BlockLootFailure,
 } from '../domain/interactions/block-loot.js'
 import type { PlaceOutcome } from '../domain/interactions/place-block.js'
-import type {
-  BlockStateRuleRequest,
-  BlockStateRuleResult,
-  BlockStateRuleOutcome,
-  HorizontalBlockStateFacing,
+import {
+  StairHitHeightSchema,
+  type BlockStateRuleRequest,
+  type BlockStateRuleResult,
+  type BlockStateRuleOutcome,
+  type HorizontalBlockStateFacing,
+  type StairHitHeight,
 } from '../domain/interactions/block-state-rules.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
@@ -1470,7 +1472,7 @@ export type PlacementRequest = {
   readonly targeting?: Readonly<{
     facing: HorizontalBlockStateFacing
     hitFace: BlockFace
-    hitY: number
+    hitY: StairHitHeight
   }>
 }
 
@@ -4724,7 +4726,13 @@ const targetingForPlacement = (
   const dy = target.adjacentPosition.y - target.position.y
   const dz = target.adjacentPosition.z - target.position.z
   const hitFace = Option.getOrThrow(Option.fromNullishOr(BLOCK_FACE_BY_TARGET_OFFSET[`${dx},${dy},${dz}`]))
-  const hitY = pose.feetPosition.y + EYE_LEVEL_OFFSET + direction.y * target.distance - target.position.y
+  // The fractional part of the hit's world Y is its height inside the clicked
+  // cell. For finite values x - floor(x) lies in [0, 1]; it reaches 1 only when
+  // rounding a value just below an integer, which is the top of the cell.
+  const hitWorldY = pose.feetPosition.y + EYE_LEVEL_OFFSET + direction.y * target.distance
+  const hitY = Schema.decodeUnknownSync(StairHitHeightSchema)(
+    hitWorldY - Math.floor(hitWorldY),
+  )
 
   const sinYaw = Math.sin(pose.yawRadians)
   const cosYaw = Math.cos(pose.yawRadians)

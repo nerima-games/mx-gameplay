@@ -187,6 +187,8 @@ import {
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
 import {
+  BlockStateRandomRollSchema,
+  CropGrowthSpeedLevelSchema,
   applyBlockStateRule,
   blockStateWorldPortForChunkStore,
   type BlockStateRuleRequest,
@@ -336,6 +338,14 @@ const applyGameplayBlockStateRule = (
     return outcome
   })
 
+// Projecting CropOwner progress advances one age per request, so each request
+// uses the fastest speed level and a roll that always grows.
+const CROP_PROJECTION_TICK: BlockStateRuleRequest['operation'] = {
+  _tag: 'CropRandomTick',
+  speedLevel: Schema.decodeUnknownSync(CropGrowthSpeedLevelSchema)(10),
+  roll: Schema.decodeUnknownSync(BlockStateRandomRollSchema)(0),
+}
+
 const cropTargetAge = (crop: CropState): number => {
   const maximumAge = crop.crop === 'nether_wart_crop' ? 3 : 7
   return Math.min(maximumAge, Math.floor((crop.growthSecs / maturitySecsFor(crop.crop)) * maximumAge))
@@ -359,7 +369,7 @@ const projectCropAge = (
       yield* applyGameplayBlockStateRule(state, world, crop.dimension, {
         requestId,
         position: crop.position,
-        operation: { _tag: 'CropRandomTick', speedLevel: 10, roll: 0 },
+        operation: CROP_PROJECTION_TICK,
       })
       return
     }
@@ -369,7 +379,7 @@ const projectCropAge = (
       const outcome = yield* applyGameplayBlockStateRule(state, world, crop.dimension, {
         requestId,
         position: crop.position,
-        operation: { _tag: 'CropRandomTick', speedLevel: 10, roll: 0 },
+        operation: CROP_PROJECTION_TICK,
       }, ownerChanges, expectedWorldRevision)
       if (outcome._tag === 'Applied') onOwnerApplied()
       return
@@ -383,7 +393,7 @@ const projectCropAge = (
       const outcome = yield* applyGameplayBlockStateRule(state, world, crop.dimension, {
         requestId,
         position: crop.position,
-        operation: { _tag: 'CropRandomTick', speedLevel: 10, roll: 0 },
+        operation: CROP_PROJECTION_TICK,
       }, ownerWritePending, ownerWritePending === undefined ? undefined : expectedWorldRevision)
       if (outcome._tag !== 'Applied') return
       if (ownerWritePending !== undefined) {
@@ -539,8 +549,9 @@ const makeSaplingGrowthTick = (
             position,
             operation: {
               _tag: 'SaplingGrowthAttempt',
-              // index enumerates saplings, which is the batch length.
-              roll: Result.getOrThrow(rollAt(batch, index)),
+              // index enumerates saplings, which is the batch length, and frame
+              // rolls lie in [0, 1).
+              roll: Schema.decodeUnknownSync(BlockStateRandomRollSchema)(Result.getOrThrow(rollAt(batch, index))),
               treeSpace,
             },
           })

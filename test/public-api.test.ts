@@ -313,6 +313,37 @@ describe('public API surface', () => {
     }),
   )
 
+  // A host implements the block-state port and builds requests for
+  // `requestBlockStateRule`, so it needs the brand schemas those requests carry.
+  // The rule functions behind the registered stage are not part of that contract.
+  it.effect('exports the block-state request brands but not the block-state rule functions', () =>
+    Effect.sync(() => {
+      for (const name of [
+        'BlockStateRandomRollSchema',
+        'BoneMealCropStagesSchema',
+        'CropGrowthSpeedLevelSchema',
+        'StairHitHeightSchema',
+      ]) {
+        expect(Object.keys(gameplay)).toContain(name)
+      }
+      for (const name of [
+        'applyBlockStateRule',
+        'blockStateWorldPortForChunkStore',
+        'cropGrowthProbability',
+        'cropAgeAfterRandomTick',
+        'netherWartAgeAfterRandomTick',
+        'cropAgeAfterBoneMeal',
+        'doorOpenAfterToggle',
+        'doorPlacementState',
+        'stairPlacementState',
+        'saplingStageAfterGrowthAttempt',
+        'saplingStageAfterBoneMeal',
+      ]) {
+        expect(Object.keys(gameplay)).not.toContain(name)
+      }
+    }),
+  )
+
   it.effect('re-exports the rule domain, which the previews and scenario tests drive directly', () =>
     Effect.sync(() => {
       const internal = [
@@ -331,17 +362,6 @@ describe('public API surface', () => {
         'BUCKET_ITEM_TYPES',
         'isBucketItem',
         'useBucket',
-        // block state — pure transitions against a state-aware world port
-        'applyBlockStateRule',
-        'blockStateWorldPortForChunkStore',
-        'cropGrowthProbability',
-        'cropAgeAfterRandomTick',
-        'cropAgeAfterBoneMeal',
-        'doorOpenAfterToggle',
-        'doorPlacementState',
-        'stairPlacementState',
-        'saplingStageAfterGrowthAttempt',
-        'saplingStageAfterBoneMeal',
         // death — the cause travels to the message
         'DEATH_MESSAGES',
         'describeDeath',
