@@ -52,6 +52,7 @@ type ScenarioRunInput = {
   readonly actionIds: ReadonlyArray<ActionId>
   readonly setNight: boolean
   readonly setRain: boolean
+  readonly advanceFramesAfterAction?: Readonly<Partial<Record<ActionId, number>>>
 }
 
 let devServer: ViteDevServer | undefined
@@ -175,7 +176,7 @@ const capture = (mount) => {
   }
 }
 
-const runScenario = async ({ setupId, actionIds, setNight, setRain }) => {
+const runScenario = async ({ setupId, actionIds, setNight, setRain, advanceFramesAfterAction = {} }) => {
   const context = {
     root: document.createElement('div'),
     scenarioId: 'cross-area-test-' + setupId,
@@ -192,6 +193,8 @@ const runScenario = async ({ setupId, actionIds, setNight, setRain }) => {
       const action = mount.actions.find((candidate) => candidate.id === actionId)
       if (action === undefined) throw new Error('missing Browser Debug action ' + actionId)
       action.perform(mount.site)
+      const additionalFrames = advanceFramesAfterAction[actionId] ?? 0
+      for (let frame = 0; frame < additionalFrames; frame += 1) mount.advance()
       steps.push(capture(mount))
     }
     return steps
@@ -240,12 +243,17 @@ const invokeBrowserRunner = async (mode: 'scenario' | 'control', input: unknown)
 const runScenario = async (
   setupId: ScenarioId,
   actionIds: ReadonlyArray<ActionId>,
-  adjustments: Readonly<{ setNight?: boolean; setRain?: boolean }> = {},
+  adjustments: Readonly<{
+    setNight?: boolean
+    setRain?: boolean
+    advanceFramesAfterAction?: Readonly<Partial<Record<ActionId, number>>>
+  }> = {},
 ): Promise<ReadonlyArray<ScenarioStep>> => decodeScenarioSteps(await invokeBrowserRunner('scenario', {
   setupId,
   actionIds,
   setNight: adjustments.setNight ?? false,
   setRain: adjustments.setRain ?? false,
+  advanceFramesAfterAction: adjustments.advanceFramesAfterAction ?? {},
 } satisfies ScenarioRunInput))
 
 const runNoWaterControl = async (): Promise<ScenarioStep> =>
@@ -417,7 +425,13 @@ describe('cross-area Browser Debug scenarios', () => {
 
   // Catches food that fails to restore hunger or poison that stops reducing health.
   it('X-08 consumes cod, raises hunger, and observes a later poison pulse', async () => {
-    const steps = await runScenario('x08', ['x08-apply-poison', 'x08-eat-cod', 'x08-observe-poison-pulse'])
+    // The two setup actions advance two frames, and the observation advances
+    // 60; add 13 frames so the real path reaches Poison I's 25-tick boundary.
+    const steps = await runScenario(
+      'x08',
+      ['x08-apply-poison', 'x08-eat-cod', 'x08-observe-poison-pulse'],
+      { advanceFramesAfterAction: { 'x08-eat-cod': 13 } },
+    )
     expect(steps).toHaveLength(4)
     expect(itemCount(steps[2]?.inventory ?? [], 'cod')).toBe(0)
     const foodHunger = readProperty(steps[2]?.equipment, 'foodHunger')

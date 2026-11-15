@@ -169,6 +169,7 @@ import {
   type EnderPearlThrowRequest,
   type GameplayFrameState,
 } from '../src/stages/registration'
+import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
@@ -217,7 +218,7 @@ import {
   makeTransactionalChunkStoreDouble,
 } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
-import { FRAME_DELTA, runFrames } from './support/frame-runner'
+import { FRAME_DELTA, runFrame, runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
 import {
   GAMEPLAY_CROPS_OWNER_ID,
@@ -233,6 +234,7 @@ import {
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   GameplayEntityRosterSchema,
+  GameplayFishingEnchantmentsSnapshotSchema,
   GameplayTntSourcesSnapshotSchema,
   gameplayOwnerRegistrations,
   type GameplayOwnerInitialState,
@@ -244,6 +246,11 @@ const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStat
 
 const itemStack = (item: Parameters<typeof makeItemStack>[0], count: Parameters<typeof makeItemStack>[1]) =>
   Result.getOrThrow(makeItemStack(item, count))
+const bowSlots = () => {
+  const slots = [...emptySlots()]
+  slots[0] = itemStack('bow', 1)
+  return slots
+}
 const equipmentItem = (...args: Parameters<typeof makeEquipmentItem>) =>
   Result.getOrThrow(makeEquipmentItem(...args))
 const durability = (...args: Parameters<typeof makeDurability>) =>
@@ -269,6 +276,11 @@ const fixtureFishingLaunch = {
 const fishingStateFor = (phase: 'cast' | 'bite'): FishingState =>
   Schema.decodeUnknownSync(FishingStateSchema)({
     rods: [{ actor: fixtureFishingActor, bobber: fixtureFishingBobber, phase }],
+  })
+// The cast-time record a cast with an unenchanted rod in open water would have written.
+const unenchantedOpenWaterRecordFor = (): NonNullable<GameplayOwnerInitialState['fishingEnchantments']> =>
+  Schema.decodeUnknownSync(GameplayFishingEnchantmentsSnapshotSchema)({
+    records: [{ actor: fixtureFishingActor, lureLevel: 0, luckOfTheSeaLevel: 0, openWater: true }],
   })
 const projectileStateFor = (bobber = fixtureFishingBobber): ProjectileServiceSnapshot =>
   Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
@@ -424,6 +436,7 @@ const builtStagesInWorld = (
     readonly tntOwnerId?: GameplayStageCommitServices['tntOwnerId'] | undefined
   } = {},
   includeCommit = true,
+  fishingEnchantments: GameplayOwnerInitialState['fishingEnchantments'] = undefined,
 ) =>
   Effect.gen(function* () {
     const store = yield* makeTransactionalChunkStoreDouble(initial, loadedChunks)
@@ -442,6 +455,7 @@ const builtStagesInWorld = (
         villagerTrades,
         entities: entities as unknown as GameplayEntitiesInput,
         fishing,
+        ...(fishingEnchantments === undefined ? {} : { fishingEnchantments }),
         projectiles,
         ...(tnt === undefined ? {} : { tnt }),
       })),
@@ -1559,6 +1573,9 @@ describe('stage behaviour', () => {
       // LENGTH, which is the half of the original failure that has no stand-in
       // and never will, because nothing in this repository needs to know how long
       // a day is.
+      // Mining's pending attempt/progress, experience pickup throttle, melee
+      // knockback outcome, and status-effect modifier projection are package-
+      // owned transition state; none duplicates host-owned authority.
       expect(Object.keys(state).sort()).toStrictEqual([
         'blockUseResults',
         'bowKnockbacks',
@@ -1579,16 +1596,20 @@ describe('stage behaviour', () => {
         'heldTool',
         'hostileContactCooldowns',
         'itemUseResults',
+        'lastExperienceOrbPickupTick',
         'lastHostileSpawnTick',
         'lastPassiveSpawnTick',
         'meleeAttackResults',
+        'meleeKnockbacks',
         'meleeLastAttackTick',
         'meleeTargetDamageStates',
+        'miningProgress',
         'mobDrops',
         'mobExperience',
         'nextTargetedMeleeRequestId',
         'operationFailures',
         'passiveInitialSpawnPending',
+        'pendingBlockMiningAttempt',
         'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
@@ -1604,6 +1625,7 @@ describe('stage behaviour', () => {
         'playerDamages',
         'playerHeals',
         'playerMovementSpeedMultiplier',
+        'playerStatusEffectModifiers',
         'portalCandidates',
         'portalDwell',
         'portalTravels',
@@ -1647,7 +1669,7 @@ describe('stage behaviour', () => {
 
   it.effect('bow results correlate successful and refused requests and drain exactly once', () =>
     Effect.gen(function* () {
-      const { state, inventory, stages } = yield* builtStages
+      const { state, inventory, stages } = yield* builtStagesInWorld(world([]), ['0,0'], undefined, bowSlots())
       const shot = {
         origin: fixturePosition(0, 64, 0 ),
         dirX: 0,
@@ -2028,7 +2050,7 @@ describe('stage behaviour', () => {
       const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
       expect(entityOwner.state.entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([
-        { source: target.id, kind: CREEPER_KIND, at: feetPosition, amount: 5 },
+        { source: target.id, kind: CREEPER_KIND, at: feetPosition, dimension: 'overworld', amount: 5 },
       ])
       expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
@@ -2057,7 +2079,7 @@ describe('stage behaviour', () => {
         1,
       )).toBeDefined()
       const { state, commit, stages } = yield* builtStagesInWorld(
-        world([[fixtureBlockPosition(0, 64, 5), STONE]]), ['0,0'], undefined, undefined, undefined, target,
+        world([[fixtureBlockPosition(0, 64, 5), STONE]]), ['0,0'], undefined, bowSlots(), undefined, target,
       )
 
       yield* requestBowShot(state, 'wall-shot', {
@@ -2095,7 +2117,7 @@ describe('stage behaviour', () => {
       const cell = fixtureBlockPosition(0, 64, 5)
       const unknownBlock = BlockId(65_535)
       const harness = yield* builtStagesInWorld(
-        world([]), ['0,0'], undefined, undefined, undefined, target,
+        world([]), ['0,0'], undefined, bowSlots(), undefined, target,
       )
       yield* injectRawBlockId(harness.store.api, cell, unknownBlock)
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
@@ -2149,7 +2171,7 @@ describe('stage behaviour', () => {
       // terrain window can see the start of the ray but must treat the missing
       // portion as blocked rather than as air.
       const { state, commit, stages } = yield* builtStagesInWorld(
-        world([]), ['0,0'], undefined, undefined, undefined, target,
+        world([]), ['0,0'], undefined, bowSlots(), undefined, target,
       )
 
       yield* requestBowShot(state, 'unreadable-shot', {
@@ -2169,6 +2191,48 @@ describe('stage behaviour', () => {
       const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
       expect(entityOwner.state.entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('applies Power V damage through the staged bow shot commit', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('bow-overflow-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(20),
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, bowSlots(), undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      const revision = yield* harness.commit.coordinator.revision
+
+      yield* requestBowShot(harness.state, 'power-v', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+        powerLevel: 5,
+      })
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.commit.coordinator.revision).toBe(revision + 1)
+      const after = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(after.state.entities).toStrictEqual([])
+      expect(yield* Ref.get(harness.publishedEvents)).toMatchObject([{
+        _tag: 'EntityDamaged', entity: target.id, amount: 23, cause: 'projectile',
+      }])
+      expect(yield* drainMobExperience(harness.state)).toMatchObject([{ source: target.id, amount: 5 }])
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toStrictEqual([])
+      expect(yield* drainBowShotResults(harness.state)).toStrictEqual([
+        { requestId: 'power-v', success: true, outcome: 'Fired' },
+      ])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
     }),
   )
 
@@ -2660,21 +2724,32 @@ describe('the module contract has caught up with this file’s shape', () => {
       const { state, stages, commit } = yield* builtStagesInWorld(world([]))
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
-      yield* requestStatusEffect(state, { type: 'poison', durationSecs: 1 })
-      yield* requestStatusEffect(state, { type: 'regeneration', durationSecs: 2.5 })
-      yield* requestStatusEffect(state, { type: 'speed', durationSecs: 2 })
-      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+      // Java Edition poison I's first pulse is at 25 ticks (1.25 seconds).
+      // https://minecraft.wiki/w/Poison
+      yield* requestStatusEffect(state, { type: 'poison', durationSecs: 2, amplifier: 0 })
+      yield* requestStatusEffect(state, { type: 'regeneration', durationSecs: 2.5, amplifier: 0 })
+      yield* requestStatusEffect(state, { type: 'speed', durationSecs: 2, amplifier: 0 })
+      yield* interactions.run(DeltaTimeSecs(1.2)).pipe(Effect.provide(FrameServicesLayer))
 
       expect(yield* drainPlayerDamages(state)).toStrictEqual([])
-      const vitalsAfterPoison = yield* commit.coordinator.snapshot(
+      const vitalsBeforePoison = yield* commit.coordinator.snapshot(
         GAMEPLAY_VITALS_OWNER_ID,
         ExperienceOrbVitalsOwnerSnapshotSchema,
       )
-      expect(vitalsAfterPoison.state.vitals.healthPoints).toBe(19)
+      expect(vitalsBeforePoison.state.vitals.healthPoints).toBe(20)
       expect(yield* drainPlayerHeals(state)).toStrictEqual([])
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
 
-      yield* interactions.run(DeltaTimeSecs(1.5)).pipe(Effect.provide(FrameServicesLayer))
+      yield* interactions.run(DeltaTimeSecs(1 / 20)).pipe(Effect.provide(FrameServicesLayer))
+      const vitalsAtPoisonPulse = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(vitalsAtPoisonPulse.state.vitals.healthPoints).toBe(19)
+      expect(yield* drainPlayerHeals(state)).toStrictEqual([])
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
+
+      yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
       expect(yield* drainPlayerHeals(state)).toStrictEqual([
         {
           _tag: 'StatusEffect',
@@ -2684,6 +2759,141 @@ describe('the module contract has caught up with this file’s shape', () => {
         },
       ])
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
+    }),
+  )
+
+  it.effect('production composition commits pufferfish effects to the registered status owner and ticks poison', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      const [storageBefore, vitalsBefore] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      const foodSlots = [...storageBefore.state.inventory.slots]
+      foodSlots[0] = itemStack('pufferfish', 1)
+      const storageCandidate = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
+        ...storageBefore.state,
+        inventory: { ...storageBefore.state.inventory, slots: foodSlots },
+      })
+      const lowVitals = { ...vitalsBefore.state.vitals, hungerPoints: HungerPoints(10) }
+      const vitalsCandidate = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)({
+        vitals: lowVitals,
+      })
+      yield* coordinator.commit({
+        expectedRevision: storageBefore.revision,
+        expectedDimensions: [],
+        changes: [
+          { ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageCandidate },
+          { ownerId: GAMEPLAY_VITALS_OWNER_ID, state: vitalsCandidate },
+        ],
+      })
+
+      const stages = yield* makeGameplayStagesWithState(state)
+      expect(stages).toHaveLength(9)
+      yield* requestFoodUse(state, 'production-eat-pufferfish', 'pufferfish', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
+        action: 'EatFood',
+        requestId: 'production-eat-pufferfish',
+        success: true,
+        consumedCount: 1,
+      }])
+      const storageAfterFood = yield* coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const statusAfterFood = yield* coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(countStoredItem(storageAfterFood.state, 'pufferfish')).toBe(0)
+      expect(statusAfterFood.state.effects).toHaveLength(3)
+      expect(statusAfterFood.state.effects.find(({ type }) => type === 'poison')).toMatchObject({
+        remainingSecs: 60,
+        amplifier: 1,
+      })
+      expect(statusAfterFood.state.effects.find(({ type }) => type === 'nausea')).toMatchObject({
+        remainingSecs: 15,
+        amplifier: 0,
+      })
+      expect(statusAfterFood.state.effects.find(({ type }) => type === 'hunger')).toMatchObject({
+        remainingSecs: 15,
+        amplifier: 2,
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.6))
+
+      const vitalsAfterPulse = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const statusAfterPulse = yield* coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(vitalsAfterPulse.state.vitals.healthPoints).toBe(lowVitals.healthPoints - 1)
+      expect(statusAfterPulse.state.effects.find(({ type }) => type === 'poison')?.remainingSecs).toBeCloseTo(59.4)
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(emptyWorld))),
+  )
+
+  it.effect('applies the registered Wither I pulse at 40 ticks', () =>
+    Effect.gen(function* () {
+      const { state, stages, commit } = yield* builtStagesInWorld(world([]))
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      // Java Edition Wither I deals one health point every 40 ticks.
+      // https://minecraft.wiki/w/Wither_(effect)
+      yield* requestStatusEffect(state, { type: 'wither', durationSecs: 3, amplifier: 0 })
+      yield* interactions.run(DeltaTimeSecs(2)).pipe(Effect.provide(FrameServicesLayer))
+
+      const vitals = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const status = yield* commit.coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(vitals.state.vitals.healthPoints).toBe(19)
+      expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['wither'])
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('keeps poison status progression when Resistance V reduces pulse damage to zero', () =>
+    Effect.gen(function* () {
+      const { state, stages, commit } = yield* builtStagesInWorld(world([]))
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      // Resistance V removes all damage: max(0, 1 - 0.2 × 5) = 0.
+      yield* requestStatusEffect(state, { type: 'resistance', durationSecs: 2, amplifier: 4 })
+      yield* requestStatusEffect(state, { type: 'poison', durationSecs: 2, amplifier: 0 })
+      yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
+
+      const vitals = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const status = yield* commit.coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(vitals.state.vitals.healthPoints).toBe(20)
+      expect(status.state.effects.map(({ type }) => type)).toEqual(expect.arrayContaining(['poison', 'resistance']))
+      expect(status.state.effects).toHaveLength(2)
+      expect(status.state.effects.find(({ type }) => type === 'poison')?.remainingSecs).toBeCloseTo(0.75)
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
     }),
   )
 
@@ -2697,12 +2907,12 @@ describe('the module contract has caught up with this file’s shape', () => {
         ExperienceOrbVitalsOwnerSnapshotSchema,
       )
       const revisionBefore = yield* baseCoordinator.revision
-      let injected = false
+      let injections = 0
       const coordinator: WorldCommitCoordinatorApi = {
         ...baseCoordinator,
         observe: (ownerId, schema, reads) => Effect.gen(function* () {
-          if (ownerId === GAMEPLAY_VITALS_OWNER_ID && !injected) {
-            injected = true
+          if (ownerId === GAMEPLAY_VITALS_OWNER_ID && injections < 2) {
+            injections += 1
             const player = yield* baseCoordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
             const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
               pose: {
@@ -2710,11 +2920,12 @@ describe('the module contract has caught up with this file’s shape', () => {
                 feetPosition: { ...player.state.pose.feetPosition, x: player.state.pose.feetPosition.x + 1 },
               },
             })
-            yield* baseCoordinator.commit({
+            const committed = yield* Effect.result(baseCoordinator.commit({
               expectedRevision: player.revision,
               expectedDimensions: [],
               changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
-            }).pipe(Effect.orDie)
+            }))
+            if (Result.isFailure(committed)) return yield* baseCoordinator.observe(ownerId, schema, reads)
           }
           return yield* baseCoordinator.observe(ownerId, schema, reads)
         }),
@@ -2734,23 +2945,28 @@ describe('the module contract has caught up with this file’s shape', () => {
       )
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
-      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 1 })
-      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+      // Reach poison I's first Java Edition pulse at tick 25, so the path
+      // observes vitals and exercises the concurrent-revision failure branch.
+      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 2, amplifier: 0 })
+      yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
+      yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(injected).toBe(true)
-      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
-      expect(yield* coordinator.revision).toBe(revisionBefore + 1)
+      expect(injections).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(2)
+      expect(yield* coordinator.revision).toBe(revisionBefore + 2)
       expect((yield* coordinator.snapshot(GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema)).state)
         .toStrictEqual(statusBefore.state)
       expect((yield* coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema)).state)
         .toStrictEqual(vitalsBefore.state)
       expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
-      expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
+      // Each frame's injection advances the revision by one, so frame n sees revisionBefore + n - 1 against + n.
+      const conflictAfter = (frame: number) => ({
         _tag: 'Failed',
         operation: 'OwnerSnapshot',
         subject: 'Vitals',
-        error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
+        error: { _tag: 'WorldRevisionConflict', expected: revisionBefore + frame - 1, actual: revisionBefore + frame },
       })
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([conflictAfter(1), conflictAfter(2)])
     }),
   )
 
@@ -2774,7 +2990,7 @@ describe('the module contract has caught up with this file’s shape', () => {
     Effect.gen(function* () {
       const source = yield* builtStagesInWorld(world([]))
       yield* restoreStatusEffects(source.state, {
-        effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0 }],
+        effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0, amplifier: 0 }],
       }, source.commit)
       const snapshot = yield* snapshotStatusEffects(source.state, source.commit)
       const restored = yield* builtStagesInWorld(world([]))
@@ -2795,11 +3011,11 @@ describe('the module contract has caught up with this file’s shape', () => {
       expect(initial.effects).toStrictEqual([])
 
       yield* restoreStatusEffects(harness.state, {
-        effects: [{ type: 'speed', remainingSecs: 2, pulseClockSecs: 0 }],
+        effects: [{ type: 'speed', remainingSecs: 2, pulseClockSecs: 0, amplifier: 0 }],
       }, commitWithoutStatusOwnerId)
 
       expect((yield* snapshotStatusEffects(harness.state, commitWithoutStatusOwnerId)).effects).toStrictEqual([
-        { type: 'speed', remainingSecs: 2, pulseClockSecs: 0 },
+        { type: 'speed', remainingSecs: 2, pulseClockSecs: 0, amplifier: 0 },
       ])
       expect(yield* getPlayerMovementSpeedMultiplier(harness.state)).toBe(1.2)
     }),
@@ -4386,6 +4602,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         source: entity.id,
         kind: COW_KIND,
         at: positionOfBlock(position),
+        dimension: 'overworld',
         amount: 1,
       }])
     }),
@@ -5462,6 +5679,11 @@ describe('Fishing plan requests commit every gameplay owner change once', () => 
       undefined,
       action === 'CastFishing' ? emptyFishingState() : fishingStateFor(action === 'ReelFishing' ? 'bite' : 'cast'),
       action === 'CastFishing' ? { projectiles: [] } : projectileStateFor(),
+      undefined,
+      {},
+      {},
+      true,
+      action === 'CastFishing' ? undefined : unenchantedOpenWaterRecordFor(),
     ))
 
   const runInteractions = (stages: ReadonlyArray<StageRegistration>) => {
@@ -6145,12 +6367,12 @@ describe('restoreStatusEffects resets movement speed when the restored snapshot 
       const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
 
       yield* restoreStatusEffects(state, {
-        effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0 }],
+        effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0, amplifier: 0 }],
       }, commit)
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
 
       yield* restoreStatusEffects(state, {
-        effects: [{ type: 'regeneration', remainingSecs: 2, pulseClockSecs: 0 }],
+        effects: [{ type: 'regeneration', remainingSecs: 2, pulseClockSecs: 0, amplifier: 0 }],
       }, commit)
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
 
@@ -6159,7 +6381,7 @@ describe('restoreStatusEffects resets movement speed when the restored snapshot 
         StatusEffectStateSchema,
       )
       expect(ownerSnapshot.state.effects).toStrictEqual([
-        { type: 'regeneration', remainingSecs: 2, pulseClockSecs: 0 },
+        { type: 'regeneration', remainingSecs: 2, pulseClockSecs: 0, amplifier: 0 },
       ])
     }),
   )
@@ -8306,7 +8528,7 @@ describe('interaction requests retain typed failures when no commit coordinator 
         tick,
         slotIndex: 0,
       })
-      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2 })
+      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2, amplifier: 0 })
 
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
@@ -8423,7 +8645,7 @@ describe('interaction requests retain typed failures when their owner is not reg
         slotIndex: 0,
       })
       yield* requestItemUse(harness.state, 'tnt-no-owner', target, 'fire_charge')
-      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2 })
+      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2, amplifier: 0 })
 
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 

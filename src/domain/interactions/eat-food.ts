@@ -1,14 +1,20 @@
 import {
   ITEM_TYPES,
+  EffectAmplifier,
   foodDefinitionOf,
   VANILLA_FOOD_DEFINITIONS,
+  type EffectAmplifier as EffectAmplifierValue,
   type FoodDefinition,
   type FoodStatusEffectName,
   type ItemType,
 } from '@nerima-games/mc-kernel'
 import { Brand, Result } from 'effect'
 import type { PlayerVitals } from '../in-memory-vitals.js'
-import type { StatusEffectApplication, StatusEffectType } from '../status-effect.js'
+import {
+  persistentStatusEffectApplicationFromValidatedFields,
+  type PersistentStatusEffectType,
+  type ValidatedPersistentStatusEffectApplication,
+} from '../status-effect.js'
 
 /** Nutrition passed to the vitals service after an item has been consumed. */
 export type FoodProperties = {
@@ -28,19 +34,19 @@ for (const definition of VANILLA_FOOD_DEFINITIONS) {
 }
 export const FOOD_PROPERTIES: Readonly<Partial<Record<ItemType, FoodProperties>>> = foodProperties
 
-const STATUS_EFFECT_TYPE_BY_FOOD_NAME: Readonly<Partial<Record<FoodStatusEffectName, StatusEffectType>>> = {
+const STATUS_EFFECT_TYPE_BY_FOOD_NAME: Readonly<Partial<Record<FoodStatusEffectName, PersistentStatusEffectType>>> = {
   hunger: 'hunger',
   nausea: 'nausea',
   poison: 'poison',
   regeneration: 'regeneration',
 }
 
-const statusEffectTypeOf = (name: FoodStatusEffectName): StatusEffectType | undefined =>
+const statusEffectTypeOf = (name: FoodStatusEffectName): PersistentStatusEffectType | undefined =>
   STATUS_EFFECT_TYPE_BY_FOOD_NAME[name]
 
 type FoodKernel014Override = {
   readonly alwaysEdible?: true
-  readonly effectAmplifiers?: Partial<Record<FoodStatusEffectName, number>>
+  readonly effectAmplifiers?: Partial<Record<FoodStatusEffectName, EffectAmplifierValue>>
 }
 
 // mc-kernel #95 (https://github.com/nerima-games/mc-kernel/pull/95) fixes these
@@ -49,25 +55,25 @@ type FoodKernel014Override = {
 // amplifier 1 (which means Nausea II); honey_bottle is marked not always edible,
 // though vanilla allows it at full hunger.
 const FOOD_KERNEL_014_OVERRIDES: Readonly<Partial<Record<ItemType, FoodKernel014Override>>> = {
-  pufferfish: { effectAmplifiers: { nausea: 0 } },
+  pufferfish: { effectAmplifiers: { nausea: EffectAmplifier(0) } },
   honey_bottle: { alwaysEdible: true },
 }
 
 const foodEffectAmplifierOf = (
   food: FoodDefinition,
   effect: Extract<FoodDefinition['effects'][number], { readonly kind: 'status' }>,
-): number => FOOD_KERNEL_014_OVERRIDES[food.item]?.effectAmplifiers?.[effect.name] ?? effect.amplifier
+): EffectAmplifierValue => FOOD_KERNEL_014_OVERRIDES[food.item]?.effectAmplifiers?.[effect.name] ?? effect.amplifier
 
 const effectsOfFood = (
   food: FoodDefinition,
   effectRoll: number,
-): ReadonlyArray<StatusEffectApplication> => food.effects.flatMap<StatusEffectApplication>((effect) => {
+): ReadonlyArray<ValidatedPersistentStatusEffectApplication> => food.effects.flatMap<ValidatedPersistentStatusEffectApplication>((effect) => {
   if (effect.chance < 1 && !(effectRoll < effect.chance)) {
     return []
   }
 
   if (effect.kind === 'remove') {
-    return [{ type: effect.name, durationSecs: 0 }]
+    return [persistentStatusEffectApplicationFromValidatedFields({ type: effect.name, durationSecs: 0 })]
   }
   if (effect.kind === 'teleport') {
     return []
@@ -77,11 +83,11 @@ const effectsOfFood = (
   const type = statusEffectTypeOf(effect.name)
   return type === undefined
     ? []
-    : [{
+    : [persistentStatusEffectApplicationFromValidatedFields({
         type,
         amplifier,
         durationSecs: effect.durationSecs,
-      }]
+      })]
 })
 
 export type FoodUseRequest = {
@@ -95,7 +101,7 @@ export type FoodUseOutcome =
   | ({
       readonly _tag: 'consume'
       readonly count: 1
-      readonly effects: ReadonlyArray<StatusEffectApplication>
+      readonly effects: ReadonlyArray<ValidatedPersistentStatusEffectApplication>
     } & FoodProperties)
   | { readonly _tag: 'notFood' }
   | { readonly _tag: 'full' }

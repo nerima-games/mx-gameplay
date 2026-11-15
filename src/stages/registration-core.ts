@@ -82,6 +82,7 @@ import {
   BlockAxis,
   BlockAddressSchema,
   BlockId,
+  EnchantmentLevel,
   BlockPositionSchema,
   DimensionIdSchema,
   EntityIdSchema,
@@ -103,6 +104,7 @@ import {
   type BlockAddress,
   type DeltaTimeSecs,
   type GameModule,
+  FoodNutrition,
   type ItemType,
   type PlaceableItemType,
   type Position,
@@ -149,6 +151,8 @@ import {
   type FishingServiceError,
   type WorldCommitPlanConflict,
   type BrewingServiceError,
+  type EnchantmentTableBookshelfFailure,
+  type EnchantmentTableFailure,
   type PotionDrinkOutcome,
   type PrimedTntValidationFailure,
   DamageAmount,
@@ -158,7 +162,9 @@ import {
   WorldRevisionConflict,
   addExhaustion as addVitalsExhaustion,
   applyDamage as applyVitalsDamage,
+  eat as eatVitals,
   heal as healVitals,
+  SaturationModifier,
   type TimeServiceApi,
   type VehicleServiceApi,
   type VehicleOperationError,
@@ -184,6 +190,7 @@ import {
   type ReplicatedSnapshot,
   type WorldCommitCoordinatorApi,
   type WorldCommitCoordinatorError,
+  type Vitals,
 } from '@nerima-games/mc-sim'
 export {
   GAMEPLAY_BREWING_OWNER_ID,
@@ -197,16 +204,26 @@ export {
 } from './gameplay-owner-registrations.js'
 import { GAMEPLAY_STATUS_EFFECTS_OWNER_ID } from './gameplay-owner-registrations.js'
 import { useVillagerOffer } from '../domain/villager-trade.js'
+import type { KnockbackStrength } from '../domain/enchantment.js'
 import {
   PLAYER_MAXIMUM_HEALTH_POINTS,
   POISON_DAMAGE_POINTS,
   REGENERATION_HEAL_POINTS,
   SPEED_MOVEMENT_MULTIPLIER,
-  applyStatusEffect,
+  applyStatusEffectToValidatedState,
+  statusEffectModifiers,
+  validateStatusEffectApplication,
   StatusEffectStateSchema,
+  ValidatedStatusEffectStateSchema,
   tickStatusEffects,
+  type StatusEffectInstantEffect,
+  type StatusEffectModifiers,
+  type DamageTakenMultiplier,
   type PlayerHealingEvent,
   type StatusEffectApplication,
+  type ValidatedStatusEffectApplication,
+  type StatusEffectApplicationError,
+  type InvalidStatusEffectTick,
   type StatusEffectState,
 } from '../domain/status-effect.js'
 import type {
@@ -360,6 +377,11 @@ import {
 } from '../domain/end-portal-travel.js'
 import { breakBlock } from '../domain/interactions/break-block.js'
 import type { BreakTransactionFailure } from '../domain/interactions/break-block.js'
+import {
+  miningProgressFraction,
+  type MiningProgressFraction,
+  type MiningProgressState,
+} from '../domain/interactions/mining-progress.js'
 import { doorUpperBreakCell } from '../domain/interactions/place-door-upper.js'
 import {
   BLOCK_LOOT_ROLLS,
@@ -466,7 +488,7 @@ import type { VehicleMotionFailure } from '../domain/vehicle/vehicle-motion.js'
 
 const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
 const NO_MOB_EXPERIENCE: ReadonlyArray<never> = []
-const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: EnchantmentLevel(0) }
 
 const hasRecentPlayerCredit = (casualty: MobCasualty): boolean =>
   casualty.killCredit === 'player-triggered-tnt' ||
@@ -566,7 +588,13 @@ const rollCasualtyExperience = (
       experienceContextOfCasualty(rolledCasualty),
     )
     if (amount > 0) {
-      experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
+      experience.push({
+        source: casualty.id,
+        kind: casualty.kind,
+        at: casualty.at,
+        ...(casualty.dimension === undefined ? {} : { dimension: casualty.dimension }),
+        amount,
+      })
     }
   }
   return issues.length === 0
@@ -627,6 +655,7 @@ const prepareFirePlayerDamage = (
   ownerId: ReplicatedOwnerId,
   expectedRevision: WorldWriteBatch['expectedWorldRevision'],
   damages: ReadonlyArray<PlayerDamageEvent>,
+  damageMultiplier: number,
 ): Effect.Effect<Result.Result<PreparedFirePlayerDamage, FirePlayerDamagePreparationFailure>> => Effect.gen(function* () {
   const observed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
   if (Result.isFailure(observed)) {
@@ -643,8 +672,9 @@ const prepareFirePlayerDamage = (
   let storage = observed.success.state
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
-    // Fire produces fixed positive damage; the owner snapshot validates equipment.
-    const resolved = Result.getOrThrow(prepareArmorHit(storage.equipment, event.damage))
+    // Fire produces fixed positive damage, callers skip a zero damage multiplier, and the owner
+    // snapshot validates equipment.
+    const resolved = Result.getOrThrow(prepareArmorHit(storage.equipment, event.damage, damageMultiplier))
     resolvedDamages.push({ ...event, damage: resolved.damage })
 
     for (const slot of resolved.wornSlots) {
@@ -849,6 +879,12 @@ export type BlockBreakRequestContext = Readonly<{
   readonly dimension: Dimension
   /** Exact storage slot captured when the mining action is requested. */
   readonly toolLocation: StorageLocation | undefined
+}>
+
+export type BlockMiningAttempt = Readonly<{
+  readonly position: BlockPosition
+  readonly dimension: Dimension
+  readonly toolLocation?: StorageLocation
 }>
 
 type PendingBlockBreakRequest = {
@@ -1265,6 +1301,8 @@ export type GameplayFrameState = {
     seen: ReadonlySet<GameplayEntityStageFaultKey>
   }>>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
+  readonly pendingBlockMiningAttempt: Ref.Ref<BlockMiningAttempt | null>
+  readonly miningProgress: Ref.Ref<MiningProgressState | null>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
@@ -1276,9 +1314,10 @@ export type GameplayFrameState = {
   readonly droppedItemPickupExecutions: Ref.Ref<ReadonlyArray<DroppedItemPickupExecution>>
   readonly pendingExperienceOrbAbsorptions: Ref.Ref<ReadonlyArray<ExperienceOrbAbsorptionContext>>
   readonly experienceOrbAbsorptionExecutions: Ref.Ref<ReadonlyArray<ExperienceOrbAbsorptionExecution>>
+  readonly lastExperienceOrbPickupTick: Ref.Ref<SimulationTick | null>
   readonly unsupportedOperations: Ref.Ref<ReadonlyArray<GameplayUnsupportedOperation>>
   readonly pendingVillagerTrades: Ref.Ref<ReadonlyArray<VillagerTradeRequest>>
-  readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<StatusEffectApplication>>
+  readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<ValidatedStatusEffectApplication>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
@@ -1287,6 +1326,7 @@ export type GameplayFrameState = {
   readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
+  readonly meleeKnockbacks: Ref.Ref<ReadonlyArray<MeleeKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
   readonly pendingShieldBlocking: Ref.Ref<ReadonlyArray<ShieldBlockingIntent>>
@@ -1294,6 +1334,7 @@ export type GameplayFrameState = {
   readonly damageImmunity: Ref.Ref<DamageImmunityState | null>
   readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
   readonly playerMovementSpeedMultiplier: Ref.Ref<number>
+  readonly playerStatusEffectModifiers: Ref.Ref<StatusEffectModifiers>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, SimulationTick>>
   readonly meleeLastAttackTick: Ref.Ref<SimulationTick | null>
@@ -2069,7 +2110,14 @@ export const EnderPearlThrowRequestSchema: Schema.ConstraintDecoder<EnderPearlTh
 export type BowKnockback = {
   readonly id: EntityId
   readonly direction: KnockbackDirection
+  readonly strength?: KnockbackStrength
 }
+
+export type MeleeKnockback = Readonly<{
+  id: EntityId
+  direction: KnockbackDirection
+  strength: KnockbackStrength
+}>
 
 /**
  * What one ender pearl throw did to the thrower.
@@ -2195,9 +2243,31 @@ const entitiesStageFailureTag = Brand.nominal<EntitiesStageFailureTag>()
 
 export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
-  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish' | 'EntityExecution' | 'WeatherTransition'
-  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing' | 'Entities'
-    | 'Vehicle' | 'Weather'
+  operation:
+    | 'OwnerSnapshot'
+    | 'WorldCommit'
+    | 'VitalsOperation'
+    | 'CandidateBuild'
+    | 'PlanBuild'
+    | 'EventPublish'
+    | 'EntityExecution'
+    | 'WeatherTransition'
+  subject:
+    | 'Player'
+    | 'Vitals'
+    | 'Mining'
+    | 'ItemUse'
+    | 'DroppedItem'
+    | 'Fire'
+    | 'Fishing'
+    | 'Brewing'
+    | 'ExperienceOrb'
+    | 'Tnt'
+    | 'EntityRoster'
+    | 'Entities'
+    | 'Vehicle'
+    | 'Weather'
+  requestId?: string
   error:
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
@@ -2209,9 +2279,15 @@ export type GameplayStageOperationFailure = Readonly<{
     | FirePlayerDamagePreparationFailure
     | FishingServiceError
     | BrewingServiceError
+    | EnchantmentTableFailure
+    | EnchantmentTableBookshelfFailure
     | VehicleOperationError
     | VehicleMotionFailure
     | PrimedTntValidationFailure
+    | DroppedItemPickupFailure
+    | ExperienceOrbAbsorptionError
+    | StatusEffectApplicationError
+    | InvalidStatusEffectTick
     | DamageAtResult
     | FrameRollFailure
     | DayNightInputFailure
@@ -2248,6 +2324,8 @@ export type EntityWorldDataFaultSource =
   | 'Portal'
   | 'Fluid'
   | 'Fire'
+  | 'Fishing'
+  | 'EnchantmentTable'
 
 export type EntityStageFault =
   | Readonly<{
@@ -2282,6 +2360,12 @@ export type EntityStageFault =
         | 'InvalidVehicleControlShape'
         | 'InvalidVehicleThrottle'
         | 'InvalidVehicleSteering'
+        | 'FishingRodNotHeld'
+    }>
+  | Readonly<{
+      _tag: 'FishingBobberUnavailable'
+      actor: EntityId
+      bobber: ProjectileId
     }>
   | Readonly<{
       _tag: 'FluidNeighbourPositionFault'
@@ -2373,6 +2457,8 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
       }
       return gameplayEntityStageFaultKey(`request:${fault.source}:key-only:${fault.reason}`)
     }
+    case 'FishingBobberUnavailable':
+      return gameplayEntityStageFaultKey(`fishing-bobber:${String(fault.actor)}:${String(fault.bobber)}`)
     case 'FluidNeighbourPositionFault':
       return gameplayEntityStageFaultKey(`fluid:${fault.cell.x}:${fault.cell.y}:${fault.cell.z}:${fault.reason}`)
     case 'MobBehaviourRepairFault': {
@@ -2481,6 +2567,8 @@ const makeGameplayFrameStateWithOptions = (
     seen: ReadonlySet<GameplayEntityStageFaultKey>
   }>>({ pending: [], seen: new Set<GameplayEntityStageFaultKey>() })
   const pendingBreaks = yield* Ref.make<ReadonlyArray<BlockPositionKey>>([])
+  const pendingBlockMiningAttempt = yield* Ref.make<BlockMiningAttempt | null>(null)
+  const miningProgress = yield* Ref.make<MiningProgressState | null>(null)
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
     requests: [],
@@ -2497,9 +2585,10 @@ const makeGameplayFrameStateWithOptions = (
   const droppedItemPickupExecutions = yield* Ref.make<ReadonlyArray<DroppedItemPickupExecution>>([])
   const pendingExperienceOrbAbsorptions = yield* Ref.make<ReadonlyArray<ExperienceOrbAbsorptionContext>>([])
   const experienceOrbAbsorptionExecutions = yield* Ref.make<ReadonlyArray<ExperienceOrbAbsorptionExecution>>([])
+  const lastExperienceOrbPickupTick = yield* Ref.make<SimulationTick | null>(null)
   const unsupportedOperations = yield* Ref.make<ReadonlyArray<GameplayUnsupportedOperation>>([])
   const pendingVillagerTrades = yield* Ref.make<ReadonlyArray<VillagerTradeRequest>>([])
-  const pendingStatusEffects = yield* Ref.make<ReadonlyArray<StatusEffectApplication>>([])
+  const pendingStatusEffects = yield* Ref.make<ReadonlyArray<ValidatedStatusEffectApplication>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
@@ -2511,6 +2600,7 @@ const makeGameplayFrameStateWithOptions = (
   // that this repository computed and cannot itself deliver.
   // computed and cannot itself deliver. See the two types.
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
+  const meleeKnockbacks = yield* Ref.make<ReadonlyArray<MeleeKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
   const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
   const pendingShieldBlocking = yield* Ref.make<ReadonlyArray<ShieldBlockingIntent>>([])
@@ -2518,6 +2608,7 @@ const makeGameplayFrameStateWithOptions = (
   const damageImmunity = yield* Ref.make<DamageImmunityState | null>(null)
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
+  const playerStatusEffectModifiers = yield* Ref.make(statusEffectModifiers({ effects: [] }))
   const fireLifecycle = yield* Ref.make<FireLifecycleState>({ fires: [], seed: DEFAULT_ROLL_SEED })
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
@@ -2583,6 +2674,8 @@ const makeGameplayFrameStateWithOptions = (
     operationFailures,
     entityStageFaults,
     pendingBreaks,
+    pendingBlockMiningAttempt,
+    miningProgress,
     pendingPlacements,
     pendingBlockUses,
     pendingItemUses,
@@ -2594,6 +2687,7 @@ const makeGameplayFrameStateWithOptions = (
     droppedItemPickupExecutions,
     pendingExperienceOrbAbsorptions,
     experienceOrbAbsorptionExecutions,
+    lastExperienceOrbPickupTick,
     unsupportedOperations,
     pendingVillagerTrades,
     pendingStatusEffects,
@@ -2605,6 +2699,7 @@ const makeGameplayFrameStateWithOptions = (
     meleeAttackResults,
     handledBowShotRequestIds,
     bowKnockbacks,
+    meleeKnockbacks,
     enderPearlOutcomes,
     playerDamages,
     pendingShieldBlocking,
@@ -2612,6 +2707,7 @@ const makeGameplayFrameStateWithOptions = (
     damageImmunity,
     playerHeals,
     playerMovementSpeedMultiplier,
+    playerStatusEffectModifiers,
     fireLifecycle,
     hostileContactCooldowns,
     meleeLastAttackTick,
@@ -2965,6 +3061,19 @@ export const requestBlockBreak = (
       ),
     )
   })
+
+/** Submit the aimed block once per simulation frame while the player is mining. */
+export const requestBlockMining = (
+  state: GameplayFrameState,
+  attempt: BlockMiningAttempt | null,
+): Effect.Effect<void> => Ref.set(state.pendingBlockMiningAttempt, attempt)
+
+export const getMiningProgressFraction = (
+  state: GameplayFrameState,
+): Effect.Effect<MiningProgressFraction> => Effect.map(
+  Ref.get(state.miningProgress),
+  miningProgressFraction,
+)
 
 /** Put a drained break back without changing its request identity or inputs. */
 const requeueBlockBreak = (
@@ -3411,6 +3520,10 @@ export const drainBowKnockbacks = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<BowKnockback>> => Ref.getAndSet(state.bowKnockbacks, [])
 
+export const drainMeleeKnockbacks = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<MeleeKnockback>> => Ref.getAndSet(state.meleeKnockbacks, [])
+
 /** Atomically drain completed correlated melee attacks exactly once, preserving request order. */
 export const drainMeleeAttackResults = (
   state: GameplayFrameState,
@@ -3572,8 +3685,11 @@ export const drainPlayerDamages = (
 export const requestStatusEffect = (
   state: GameplayFrameState,
   application: StatusEffectApplication,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingStatusEffects, (pending) => [...pending, application])
+): Effect.Effect<void, StatusEffectApplicationError> =>
+  Effect.gen(function* () {
+    const validated = yield* Effect.fromResult(validateStatusEffectApplication(application))
+    yield* Ref.update(state.pendingStatusEffects, (pending) => [...pending, validated])
+  })
 
 export const drainPlayerHeals = (
   state: GameplayFrameState,
@@ -3582,6 +3698,44 @@ export const drainPlayerHeals = (
 export const getPlayerMovementSpeedMultiplier = (
   state: GameplayFrameState,
 ): Effect.Effect<number> => Ref.get(state.playerMovementSpeedMultiplier)
+
+export const getPlayerStatusEffectModifiers = (
+  state: GameplayFrameState,
+): Effect.Effect<StatusEffectModifiers> => Ref.get(state.playerStatusEffectModifiers)
+
+export const applyStatusEffectInstantEffects = (
+  vitals: Vitals,
+  effects: ReadonlyArray<StatusEffectInstantEffect>,
+  damageMultiplier: DamageTakenMultiplier = statusEffectModifiers({ effects: [] }).damageTakenMultiplier,
+): Result.Result<Vitals, never> => {
+  // Bounded amplifiers keep these quantities finite. The damage multiplier is
+  // in [0, 1] and reaches 0 at Resistance V, which absorbs Instant Damage
+  // entirely; DamageAmount accepts only positive values, so that case applies
+  // no damage instead of constructing a zero amount.
+  let next = vitals
+  for (const effect of effects) {
+    const level = effect.amplifier + 1
+    if (effect.type === 'instant_health') {
+      const amount = HealthAmount.result(4 * 2 ** effect.amplifier)
+      next = healVitals(next, Result.getOrThrow(amount))
+    } else if (effect.type === 'instant_damage') {
+      const damage = 6 * 2 ** effect.amplifier * damageMultiplier
+      if (damage > 0) {
+        const amount = DamageAmount.result(damage)
+        const cause = DamageCause.result('generic')
+        next = applyVitalsDamage(next, {
+          amount: Result.getOrThrow(amount),
+          cause: Result.getOrThrow(cause),
+        })
+      }
+    } else {
+      const nutrition = FoodNutrition.result(2 * level)
+      const saturation = SaturationModifier.result(1)
+      next = eatVitals(next, Result.getOrThrow(nutrition), Result.getOrThrow(saturation))
+    }
+  }
+  return Result.succeed(next)
+}
 
 export const snapshotStatusEffects = (
   _state: GameplayFrameState,
@@ -3609,6 +3763,7 @@ export const restoreStatusEffects = (
     yield* Ref.set(state.playerMovementSpeedMultiplier, decoded.effects.some((effect) => effect.type === 'speed')
       ? SPEED_MOVEMENT_MULTIPLIER
       : 1)
+    yield* Ref.set(state.playerStatusEffectModifiers, statusEffectModifiers(decoded))
   })
 
 const enqueueBrewingRequest = (
@@ -3674,8 +3829,7 @@ const stepStatusEffects = (
   state: GameplayFrameState,
   commit: GameplayStageCommitServices | undefined,
   dt: DeltaTimeSecs,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
+): Effect.Effect<void> => Effect.gen(function* () {
     const applications = yield* Ref.get(state.pendingStatusEffects)
     if (commit === undefined || commit.statusEffectsOwnerId === undefined) {
       if (applications.length > 0) {
@@ -3687,7 +3841,7 @@ const stepStatusEffects = (
     }
     const observed = yield* Effect.result(commit.coordinator.observe(
       commit.statusEffectsOwnerId,
-      StatusEffectStateSchema,
+      ValidatedStatusEffectStateSchema,
       [],
     ))
     if (Result.isFailure(observed)) {
@@ -3699,30 +3853,34 @@ const stepStatusEffects = (
     const current = observed.success.state
     if (applications.length === 0 && current.effects.length === 0) {
       yield* Ref.set(state.playerMovementSpeedMultiplier, 1)
+      yield* Ref.set(state.playerStatusEffectModifiers, statusEffectModifiers({ effects: [] }))
       return
     }
-    const applied = applications.reduce(applyStatusEffect, current)
-    const tickResult = tickStatusEffects(applied, dt)
-    if (Result.isFailure(tickResult)) {
+    let applied = current
+    const instantEffects: Array<StatusEffectInstantEffect> = []
+    for (const application of applications) {
+      const outcome = applyStatusEffectToValidatedState(applied, application)
+      applied = outcome.state
+      instantEffects.push(...outcome.instantEffects)
+    }
+    const ticked = tickStatusEffects(applied, dt)
+    if (Result.isFailure(ticked)) {
       yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: tickResult.failure,
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: ticked.failure,
       })
       return
     }
-    const tick = tickResult.success
-    const status = Schema.decodeUnknownResult(StatusEffectStateSchema)(tick.state)
-    if (Result.isFailure(status)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: status.failure,
-      })
-      return
-    }
+    const tick = ticked.success
+    const status = tick.state
     const changes: Array<ReplicatedOwnerCandidate> = [{
       ownerId: commit.statusEffectsOwnerId,
-      state: status.success,
+      state: status,
     }]
     let heals: ReadonlyArray<PlayerHealingEvent> = []
-    if (tick.poisonPulses > 0 || tick.regenerationPulses > 0 || tick.hungerExhaustion > 0) {
+    if (
+      instantEffects.length > 0 || tick.poisonPulses > 0 || tick.regenerationPulses > 0 ||
+      tick.witherPulses > 0 || tick.hungerExhaustion > 0
+    ) {
       if (commit.vitalsOwnerId === undefined) {
         yield* recordGameplayUnsupportedOperation(state, {
           _tag: 'Unsupported', action: 'PlayerDamage', reason: 'OwnerRegistrationUnavailable',
@@ -3751,10 +3909,21 @@ const stepStatusEffects = (
         return
       }
       let vitals = vitalsObserved.success.state.vitals
-      for (let index = 0; index < tick.poisonPulses; index += 1) {
-        const amount = Result.getOrThrow(DamageAmount.result(POISON_DAMAGE_POINTS))
-        const cause = Result.getOrThrow(DamageCause.result('poison'))
-        vitals = applyVitalsDamage(vitals, { amount, cause })
+      vitals = Result.getOrThrow(applyStatusEffectInstantEffects(
+        vitals,
+        instantEffects,
+        tick.modifiers.damageTakenMultiplier,
+      ))
+      const damagePulses = tick.poisonPulses + tick.witherPulses
+      if (tick.modifiers.damageTakenMultiplier > 0) {
+        for (let index = 0; index < damagePulses; index += 1) {
+          const amount = Result.getOrThrow(DamageAmount.result(
+            POISON_DAMAGE_POINTS * tick.modifiers.damageTakenMultiplier,
+          ))
+          const causeValue = index < tick.poisonPulses ? 'poison' : 'generic'
+          const cause = Result.getOrThrow(DamageCause.result(causeValue))
+          vitals = applyVitalsDamage(vitals, { amount, cause })
+        }
       }
       for (let index = 0; index < tick.regenerationPulses; index += 1) {
         const amount = Result.getOrThrow(HealthAmount.result(REGENERATION_HEAL_POINTS))
@@ -3770,8 +3939,7 @@ const stepStatusEffects = (
         }
         vitals = addVitalsExhaustion(vitals, amount.success)
       }
-      const vitalsCandidate = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)({ vitals })
-      changes.push({ ownerId: commit.vitalsOwnerId, state: vitalsCandidate })
+      changes.push({ ownerId: commit.vitalsOwnerId, state: { vitals } })
       heals = Array.from({ length: tick.regenerationPulses }, () => ({
         _tag: 'StatusEffect' as const,
         effect: 'regeneration' as const,
@@ -3794,6 +3962,7 @@ const stepStatusEffects = (
       yield* Ref.update(state.pendingStatusEffects, (pending) => pending.slice(applications.length))
     }
     yield* Ref.set(state.playerMovementSpeedMultiplier, tick.movementSpeedMultiplier)
+    yield* Ref.set(state.playerStatusEffectModifiers, tick.modifiers)
     if (heals.length > 0) yield* Ref.update(state.playerHeals, (pending) => [...pending, ...heals])
   })
 
@@ -4263,7 +4432,9 @@ const stepFireTick = (
     /* v8 ignore stop */
     const airBlock = air.value
     const fireBlock = fire.value
+    const statusModifiers = yield* Ref.get(state.playerStatusEffectModifiers)
     const playerDamages: ReadonlyArray<PlayerDamageEvent> = step.damages
+      .filter(() => !statusModifiers.fireResistance)
       .map((damage) => ({
         ...damage,
         at: kernelPosition(
@@ -4272,13 +4443,17 @@ const stepFireTick = (
           PositionAxis(damage.at.z),
         ),
       }))
-    const fireDamageResult = playerDamages.length === 0
-      ? Result.succeed({ damages: playerDamages, changes: [] } satisfies PreparedFirePlayerDamage)
+    const fireDamageResult = playerDamages.length === 0 || statusModifiers.damageTakenMultiplier === 0
+      ? Result.succeed({
+        damages: statusModifiers.damageTakenMultiplier === 0 ? [] : playerDamages,
+        changes: [],
+      } satisfies PreparedFirePlayerDamage)
       : yield* prepareFirePlayerDamage(
         context.coordinator,
         context.playerStorageOwnerId,
         expectedRevision,
         playerDamages,
+        statusModifiers.damageTakenMultiplier,
       )
     if (Result.isFailure(fireDamageResult)) {
       yield* recordGameplayStageFailure(state, {
@@ -4748,6 +4923,7 @@ export type GameplayStageCommitServices = Readonly<{
   readonly villagerTradesOwnerId?: ReplicatedOwnerId
   readonly brewingOwnerId?: ReplicatedOwnerId
   readonly fishingOwnerId?: ReplicatedOwnerId
+  readonly fishingEnchantmentsOwnerId?: ReplicatedOwnerId
   readonly entitiesOwnerId?: ReplicatedOwnerId
   readonly projectileOwnerId?: ReplicatedOwnerId
   readonly tntOwnerId?: ReplicatedOwnerId

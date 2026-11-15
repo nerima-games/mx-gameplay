@@ -183,7 +183,8 @@
       // documented no-bitwise exception. Every flagged operator in these
       // files is uint32 wrapping arithmetic (`>>> 0`, `^`, `Math.imul`) that
       // defines a deterministic hash or PRNG mix: villager-trade.ts's FNV-1a
-      // offer hash, enchantment.ts's seed mixer, weather-gameplay.ts's LCG
+      // offer hash, enchantment-seed.ts's seed mixer and enchantment.ts's
+      // per-slot seed, weather-gameplay.ts's LCG
       // tick, and registration-core.ts's restore of a persisted weather seed.
       // Rewriting these with non-bitwise arithmetic would change the
       // seed -> value mapping, which is the specification, not an
@@ -191,6 +192,7 @@
       "files": [
         "src/domain/villager-trade.ts",
         "src/domain/enchantment.ts",
+        "src/domain/enchantment-seed.ts",
         "src/domain/weather-gameplay.ts",
         "src/stages/registration-core.ts"
       ],

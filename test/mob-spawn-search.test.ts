@@ -1335,6 +1335,40 @@ describe('the search inside the frame', () => {
     }),
   )
 
+  it.effect('does not retry failed cells discovered by the cadence search', () =>
+    Effect.gen(function* () {
+      const exhaustedRoster: EntityRoster<MobBehaviour> = {
+        entities: [],
+        nextSerial: EntitySerial(Number.MAX_SAFE_INTEGER),
+      }
+      const { time, state, commit, stages } = yield* makeStageHarness(
+        CAVE_FLOORED_WORLD,
+        BRIGHT_SURFACE_LIGHT,
+        PLAYER,
+        exhaustedRoster,
+      )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS - 1)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, ownerAfter] = yield* Effect.all([
+        Ref.get(state.operationFailures),
+        commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'Entities',
+        error: { _tag: 'EntitySerialExhausted' },
+      }))
+      expect(ownerAfter.state.entities).toStrictEqual([])
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+    }),
+  )
+
   it.effect('does not search or spawn hostiles in Peaceful after the due interval', () =>
     Effect.gen(function* () {
       const { store, time, state, commit, stages } = yield* makeStageHarness(

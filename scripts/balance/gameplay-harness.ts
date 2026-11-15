@@ -445,6 +445,7 @@ const harnessStagesFor = (
           }
           if (fault._tag === 'MobBehaviourRepairFault') return `${fault._tag}@${fault.entityId}:${fault.failure._tag}`
           if (fault._tag === 'MobMovementExecutionFault') return `${fault._tag}@${fault.entityId}:${fault.reason}`
+          if (fault._tag === 'FishingBobberUnavailable') return `${fault._tag}@${fault.actor}:${fault.bobber}`
           return `${fault._tag}@${fault.entityId}:${fault.failure._tag}:${fault.failure.field}`
         }).join('; ')
         yield* Ref.update(runtime.measurementFailure, (current) => current ?? `gameplay stage faults: ${summary}`)

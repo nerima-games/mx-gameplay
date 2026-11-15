@@ -33,6 +33,7 @@ import {
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
+  GameplayFishingEnchantmentsSnapshotSchema,
 } from '../src/stages/gameplay-owner-registrations'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
@@ -110,8 +111,13 @@ const scene = (
         projectile: launchProjectile({ ...FISHING_LAUNCH, shooterId: FISHER }),
       }],
     })
+    // The record an unenchanted cast in open water writes; wear does not depend on it.
+    const fishingEnchantments = Schema.decodeUnknownSync(GameplayFishingEnchantmentsSnapshotSchema)({
+      records: [{ actor: FISHER, lureLevel: 0, luckOfTheSeaLevel: 0, openWater: true }],
+    })
     const baseCommit = yield* makeGameplayCommitServices(store.api, inventory.api, {
       fishing,
+      fishingEnchantments,
       playerStorage,
       projectiles,
     })

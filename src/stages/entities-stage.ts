@@ -15,10 +15,13 @@ import {
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollCasualtyExperience,
+  rollAt,
   searchSpawnCandidates,
   settled,
   takeBatch,
+  drawRolls,
 } from './registration-core.js'
+import type { FrameRollFailure } from '../domain/frame-rolls.js'
 import { Brand, Equal, Option, Result, Schema } from 'effect'
 import { COLLISION_SHAPE_AABBS } from '@nerima-games/mc-physics'
 import type { LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
@@ -27,6 +30,7 @@ import {
   AngleRadians,
   BlockAxis,
   BlockBlastResistance,
+  InterpolationFraction,
   DeltaTimeSecs,
   DimensionIdSchema,
   CHUNK_SIZE_XZ,
@@ -42,6 +46,7 @@ import {
   position,
   resistsExplosion,
   type BlockPosition,
+  type InterpolationFraction as InterpolationFractionValue,
   type BlockPositionKey,
   type Dimension,
   type Position,
@@ -54,12 +59,15 @@ import {
   EntityId,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
+  ExperienceDelta,
   ProjectileServiceSnapshotSchema,
   stepProjectile,
   TntServiceSnapshotSchema,
   WorldRevisionConflict,
+  addExperience,
   applyDamage as applyVitalsDamage,
   damageAt,
+  emptyPlayerStorage,
   ARROW_PROFILE,
   raycastArrowBlock,
   type ReplicatedOwnerCandidate,
@@ -73,8 +81,9 @@ import type { ExplosionBlock, ExplosionBlockPosition, ExplosionBlockReader } fro
 import { craterCells } from '../domain/interactions/explosion-crater.js'
 import {
   appendDroppedItemSpawns,
+  appendPlayerDeathDropSpawns,
+  deathDropsFromPlayerStorage,
   DroppedItemOwnerSnapshotSchema,
-  droppedItemPickupResultAfterCommit,
   planDroppedItemPickup,
   type DroppedItemSpawn,
   type DroppedItemOwnerSnapshot,
@@ -82,9 +91,29 @@ import {
 import {
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
+  canCollectExperienceOrbAtValidatedTick,
   experienceOrbAbsorptionResultAfterCommit,
+  hasExperienceOrbExpiredAtValidatedTick,
+  mergeSameValueExperienceOrbStacks,
   planExperienceOrbAbsorption,
+  splitExperienceOrbReward,
+  type ExperienceOrbAbsorptionContext,
+  type ExperienceOrbValue,
+  type ExperienceOrbRecord,
+  type ExperienceOrbVitalsOwnerSnapshot,
 } from '../domain/entities/xp-orb.js'
+import {
+  isExperienceOrbWithinAttractionRangeForPositions,
+  pullExperienceOrbTowardPlayerForPositions,
+} from '../domain/entities/xp-orb-position.js'
+import {
+  durabilityWearWithEnchantments,
+  enchantmentLevel,
+  mendOneItemFromValidatedExperience,
+  thornsRetaliationChance,
+  type MendingExperiencePoints,
+  type EnchantmentSource,
+} from '../domain/enchantment.js'
 import {
   planEndermanTeleportRoster,
   planMobBlastRoster,
@@ -95,8 +124,8 @@ import {
   planMobRosterSweep,
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
-  type MobExplosionHit,
   type MobDamageHit,
+  type MobExplosionHit,
   type MobAttackEvent,
   type MobMovementRosterFault,
   type MobProjectilePendingImpact,
@@ -152,6 +181,15 @@ import type {
 } from './registration-core.js'
 
 type PlayerServiceSnapshot = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
+type ExperienceOrbEncodedPosition = Readonly<{
+  dimension: NonNullable<ExperienceOrbRecord['position']>['dimension']
+  x: number
+  y: number
+  z: number
+}>
+type ExperienceOrbRecordForCommit = Omit<ExperienceOrbRecord, 'position'> & Readonly<{
+  position?: ExperienceOrbRecord['position'] | ExperienceOrbEncodedPosition | undefined
+}>
 type EntityWorldFaultTarget = Extract<EntityStageFault, { _tag: 'EntityWorldDataFault' }>['target']
 const mobSpawnPlanFailures = new WeakMap<
   GameplayStageContext['state'],
@@ -169,6 +207,49 @@ const unsupportedMobSimulation = (
   _tag: 'Unsupported',
   action: 'MobSimulation',
   reason,
+})
+
+const damageEquipmentWithUnbreaking = (
+  storage: PlayerStorage,
+  slot: keyof PlayerStorage['equipment']['slots'],
+  requestedWear: number,
+  seed: number,
+  itemKind: 'tool' | 'armor',
+): Result.Result<Readonly<{ storage: PlayerStorage; seed: number }>, FrameRollFailure> => Result.gen(function* () {
+  const equipped = storage.equipment.slots[slot]
+  // Thorns snapshots the triggering piece before ordinary armor wear can break it.
+  if (equipped === null) return { storage, seed }
+  const enchantments: EnchantmentSource = equipped.components?.enchantments ?? {}
+  const unbreaking = enchantmentLevel(enchantments, 'unbreaking')
+  const rolls = unbreaking > 0 ? yield* drawRolls(seed, requestedWear) : undefined
+  const wear = durabilityWearWithEnchantments(
+    requestedWear,
+    enchantments,
+    rolls?.rolls ?? [],
+    itemKind,
+  )
+  return {
+    storage: wear === 0
+      ? storage
+      : damageAt(storage, { _tag: 'Equipment', slot }, wear).storage,
+    seed: rolls?.seed ?? seed,
+  }
+})
+
+const damageArmorWithUnbreaking = (
+  storage: PlayerStorage,
+  slots: ReadonlyArray<'head' | 'chest' | 'legs' | 'feet'>,
+  requestedWear: number,
+  seed: number,
+): Result.Result<Readonly<{ storage: PlayerStorage; seed: number }>, FrameRollFailure> => Result.gen(function* () {
+  let nextStorage = storage
+  let nextSeed = seed
+  for (const slot of slots) {
+    const result = yield* damageEquipmentWithUnbreaking(nextStorage, slot, requestedWear, nextSeed, 'armor')
+    nextStorage = result.storage
+    nextSeed = result.seed
+  }
+  return { storage: nextStorage, seed: nextSeed }
 })
 
 const entityWorldFaultTarget = (
@@ -1384,7 +1465,7 @@ const runTntSimulation = (
     const mobBlastRoster = mobBlast.roster
     const loot = Result.getOrThrow(rollCasualtyDrops(mobBlast.casualties, seed))
     const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(mobBlast.casualties, loot.seed))
-    const nextTntRewardSeed = casualtyExperience.seed
+    let nextRollSeed = casualtyExperience.seed
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
@@ -1426,13 +1507,21 @@ const runTntSimulation = (
       }
       let storage = storageSnapshot.state
       let vitals = vitalsSnapshot.state.vitals
-      const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, damageEvent.damage))
-      const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
-      const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
-      vitals = applyVitalsDamage(vitals, { amount, cause })
-      for (const slot of armor.wornSlots) {
-        const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
-        storage = worn.storage
+      const modifiers = yield* Ref.get(state.playerStatusEffectModifiers)
+      if (modifiers.damageTakenMultiplier > 0) {
+        const armor = yield* Effect.fromResult(prepareArmorHit(
+          storage.equipment,
+          damageEvent.damage,
+          modifiers.damageTakenMultiplier,
+        ))
+        const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+        const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+        vitals = applyVitalsDamage(vitals, { amount, cause })
+        const wear = yield* Effect.fromResult(
+          damageArmorWithUnbreaking(storage, armor.wornSlots, armor.durabilityWear, nextRollSeed),
+        )
+        storage = wear.storage
+        nextRollSeed = wear.seed
       }
       if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
       if (!Equal.equals(vitalsSnapshot.state.vitals, vitals)) vitalsCandidate = { vitals }
@@ -1512,7 +1601,7 @@ const runTntSimulation = (
     if (casualtyExperience._tag === 'Unsupported') {
       yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
     }
-    yield* Ref.set(state.rollSeed, nextTntRewardSeed)
+    yield* Ref.set(state.rollSeed, nextRollSeed)
     if (loot.drops.length > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot.drops])
     if (casualtyExperience.experience.length > 0) {
       yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
@@ -1815,13 +1904,15 @@ const runMobSimulation = (
   const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
   // Survival validates difficulty, and the tick above is decoded. Cooldowns start
   // empty, store only current ticks, and have no restore path; the counter only advances.
-  const contact = Result.getOrThrow(resolveHostileContacts(
+  const contactResolution = Result.getOrThrow(resolveHostileContacts(
     spawnedRoster.entities,
     playerPosition,
     damageTick,
     yield* Ref.get(state.hostileContactCooldowns),
     difficulty,
   ))
+  // A contact whose damage attempt fails below drops its cooldown so it can retry.
+  const contact = { damages: contactResolution.damages, cooldowns: new Map(contactResolution.cooldowns) }
   const playerBlasts = Result.getOrThrow(resolvePlayerBlastDamage(activeBlastEvents, playerPosition, difficulty))
   type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
   type HostileDamageInput = Readonly<{
@@ -1872,6 +1963,7 @@ const runMobSimulation = (
   let storageCandidate: PlayerStorage | undefined
   let vitalsCandidate: { readonly vitals: import('@nerima-games/mc-sim').Vitals } | undefined
   let resolvedDamages: ReadonlyArray<PlayerDamageEvent> = []
+  const thornsDamageHits: MobDamageHit[] = []
   if (damages.length > 0 || pendingShieldBlocking.length > 0) {
     if (
       commit.playerStorageOwnerId === undefined ||
@@ -1898,6 +1990,7 @@ const runMobSimulation = (
       if (intent.actor !== PLAYER_BLAST_ENTITY_ID) {
         yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player',
+          requestId: String(intent.actor),
           error: { _tag: 'ShieldBlockingPreparation', reason: 'invalid-authoritative-state' },
         })
         continue
@@ -1912,6 +2005,7 @@ const runMobSimulation = (
       if (Result.isFailure(prepared)) {
         yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player',
+          requestId: String(intent.actor),
           error: { _tag: 'ShieldBlockingPreparation', reason: prepared.failure },
         })
         continue
@@ -1936,60 +2030,151 @@ const runMobSimulation = (
     let vitals = vitalsSnapshot?.state.vitals
     const applied: PlayerDamageEvent[] = []
     if (storage !== undefined) {
-      for (const { event, attackKind, difficulty: attackDifficulty } of damageInputs) {
-        const hasEquippedShield = hasShield()
-        if (!hasEquippedShield) shieldState = null
-        const intent = {
-          _tag: 'SetShieldBlocking' as const,
-          actor: PLAYER_BLAST_ENTITY_ID,
-          blocking: shieldState !== null,
-        }
-        const hostileAttackInput = {
-          tick: damageTick,
-          dimension: playerSnapshot.state.pose.feetPosition.dimension,
-          pose: combatPose,
-          hasShield: hasEquippedShield,
-          currentShield: shieldState,
-          incoming: {
-            attacker: event.source,
-            attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
-              dimension: playerSnapshot.state.pose.feetPosition.dimension,
-              ...event.at,
-            }),
-            kind: attackKind,
-            amount: event.damage.amount,
-          },
-          difficulty: attackDifficulty,
-          damageState: damageImmunityState,
-        }
-        const prepared = yield* Effect.fromResult(prepareHostileAttack(intent, hostileAttackInput))
-        shieldState = prepared.shield.blocking && prepared.shield.raisedAt !== null
-          ? { actor: prepared.shield.actor, raisedAt: prepared.shield.raisedAt }
-          : null
-        damageImmunityState = prepared.damageState
+      const modifiers = yield* Ref.get(state.playerStatusEffectModifiers)
+      const attemptDamage = (input: HostileDamageInput) => Effect.gen(function* () {
+          const { event, attackKind, difficulty: attackDifficulty } = input
+          let eventStorage = storage!
+          let eventSeed = nextRollSeed
+          let eventShieldState = shieldState
+          let eventDamageImmunityState = damageImmunityState
+          let eventVitals = vitals!
+          const eventThornsDamageHits: MobDamageHit[] = []
+          let appliedEvent: PlayerDamageEvent | undefined
+          const hasEventShield = () => eventStorage.equipment.slots.offhand?.item === 'shield'
+          const hasEquippedShield = hasEventShield()
+          if (!hasEquippedShield) eventShieldState = null
+          const intent = {
+            _tag: 'SetShieldBlocking' as const,
+            actor: PLAYER_BLAST_ENTITY_ID,
+            blocking: eventShieldState !== null,
+          }
+          const attackerPosition = yield* Effect.fromResult(Schema.decodeUnknownResult(WorldPositionSchema)({
+            dimension: playerSnapshot.state.pose.feetPosition.dimension,
+            ...event.at,
+          }))
+          const hostileAttackInput = {
+            tick: damageTick,
+            dimension: playerSnapshot.state.pose.feetPosition.dimension,
+            pose: combatPose,
+            hasShield: hasEquippedShield,
+            currentShield: eventShieldState,
+            incoming: {
+              attacker: event.source,
+              attackerPosition,
+              kind: attackKind,
+              amount: event.damage.amount,
+            },
+            difficulty: attackDifficulty,
+            damageState: eventDamageImmunityState,
+          }
+          const prepared = yield* Effect.fromResult(prepareHostileAttack(intent, hostileAttackInput))
+          eventShieldState = prepared.shield.blocking && prepared.shield.raisedAt !== null
+            ? { actor: prepared.shield.actor, raisedAt: prepared.shield.raisedAt }
+            : null
+          eventDamageImmunityState = prepared.damageState
 
-        if (prepared.shield.durabilityDamage > 0) {
-          storage = damageAt(
-            storage,
-            { _tag: 'Equipment', slot: 'offhand' },
-            prepared.shield.durabilityDamage,
-          ).storage
-          if (!hasShield()) shieldState = null
-        }
-        if (prepared.appliedAmount === 0) continue
+          if (prepared.shield.durabilityDamage > 0) {
+            const wear = yield* Effect.fromResult(damageEquipmentWithUnbreaking(
+              eventStorage,
+              'offhand',
+              prepared.shield.durabilityDamage,
+              eventSeed,
+              'tool',
+            ))
+            eventSeed = wear.seed
+            eventStorage = wear.storage
+            if (!hasEventShield()) eventShieldState = null
+          }
+          if (prepared.appliedAmount === 0 || modifiers.damageTakenMultiplier === 0) {
+            return {
+              storage: eventStorage,
+              seed: eventSeed,
+              shieldState: eventShieldState,
+              damageImmunityState: eventDamageImmunityState,
+              vitals: eventVitals,
+              appliedEvent,
+              thornsDamageHits: eventThornsDamageHits,
+            }
+          }
 
-        const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, {
-          ...event.damage,
-          amount: prepared.appliedAmount,
-        }))
-        const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
-        const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
-        vitals = applyVitalsDamage(vitals!, { amount, cause })
-        for (const slot of armor.wornSlots) {
-          const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
-          storage = worn.storage
+          const storageBeforeHit = eventStorage
+          const thornsPieces = event._tag === 'HostileContact' &&
+            spawnedRoster.entities.some(({ id }) => id === event.source)
+            ? (['head', 'chest', 'legs', 'feet'] as const).flatMap((slot) => {
+                const equipped = storageBeforeHit.equipment.slots[slot]
+                if (equipped === null) return []
+                const enchantments: EnchantmentSource = equipped.components?.enchantments ?? {}
+                const chance = thornsRetaliationChance(enchantments)
+                return chance > 0 ? [{ slot, chance }] : []
+              })
+            : []
+          const armor = yield* Effect.fromResult(prepareArmorHit(eventStorage.equipment, {
+            ...event.damage,
+            amount: prepared.appliedAmount,
+          }, modifiers.damageTakenMultiplier))
+          const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+          const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+          eventVitals = applyVitalsDamage(eventVitals, { amount, cause })
+          const wear = yield* Effect.fromResult(
+            damageArmorWithUnbreaking(eventStorage, armor.wornSlots, armor.durabilityWear, eventSeed),
+          )
+          eventStorage = wear.storage
+          eventSeed = wear.seed
+          appliedEvent = { ...event, damage: armor.damage }
+
+          if (thornsPieces.length > 0) {
+            let retaliationDamage: number | undefined
+            const triggeredSlots: Array<'head' | 'chest' | 'legs' | 'feet'> = []
+            for (const piece of thornsPieces) {
+              const chance = yield* Effect.fromResult(drawRolls(eventSeed, 1))
+              eventSeed = chance.seed
+              if ((yield* Effect.fromResult(rollAt(chance, 0))) >= piece.chance) continue
+              const damage = yield* Effect.fromResult(drawRolls(eventSeed, 1))
+              eventSeed = damage.seed
+              retaliationDamage = Math.max(retaliationDamage ?? 0, 1 + (yield* Effect.fromResult(rollAt(damage, 0))) * 4)
+              triggeredSlots.push(piece.slot)
+            }
+            for (const slot of triggeredSlots) {
+              const wearResult = yield* Effect.fromResult(
+                damageEquipmentWithUnbreaking(eventStorage, slot, 2, eventSeed, 'armor'),
+              )
+              eventStorage = wearResult.storage
+              eventSeed = wearResult.seed
+            }
+            if (retaliationDamage !== undefined) {
+              eventThornsDamageHits.push({
+                id: event.source,
+                damage: { amount: retaliationDamage, cause: 'generic' },
+                killCredit: 'player',
+                lastHitTick: damageTick,
+              })
+            }
+          }
+          return {
+            storage: eventStorage,
+            seed: eventSeed,
+            shieldState: eventShieldState,
+            damageImmunityState: eventDamageImmunityState,
+            vitals: eventVitals,
+            appliedEvent,
+            thornsDamageHits: eventThornsDamageHits,
+          }
+        })
+      for (const input of damageInputs) {
+        const { event } = input
+        const attempted = yield* Effect.result(attemptDamage(input))
+        if (Result.isFailure(attempted)) {
+          if (event._tag === 'HostileContact') contact.cooldowns.delete(event.source)
+          yield* recordGameplayEntityStageExecutionFailure(state, attempted.failure)
+          continue
         }
-        applied.push({ ...event, damage: armor.damage })
+        storage = attempted.success.storage
+        nextRollSeed = attempted.success.seed
+        shieldState = attempted.success.shieldState
+        damageImmunityState = attempted.success.damageImmunityState
+        vitals = attempted.success.vitals
+        if (attempted.success.appliedEvent !== undefined) applied.push(attempted.success.appliedEvent)
+        thornsDamageHits.push(...attempted.success.thornsDamageHits)
       }
     }
     resolvedDamages = applied
@@ -2001,8 +2186,18 @@ const runMobSimulation = (
     }
   }
 
+  // Thorns hits are finite 'generic' damage in [1, 5) on schema-decoded mobs, so the plan has no
+  // faults to record; undead burning relies on the same invariant.
+  const thornsRetaliations = planMobDamageRoster(spawnedRoster, thornsDamageHits, damageTick)
+  const thornsDrops = Result.getOrThrow(rollCasualtyDrops(thornsRetaliations.casualties, nextRollSeed))
+  const thornsExperience = Result.getOrThrow(rollCasualtyExperience(thornsRetaliations.casualties, thornsDrops.seed))
+  nextRollSeed = thornsExperience.seed
+  const allMobDrops = [...casualtyDrops.drops, ...thornsDrops.drops]
+  const committedMobDrops: Array<(typeof allMobDrops)[number]> = []
+  const allMobExperience = [...casualtyExperience.experience, ...thornsExperience.experience]
+
   let droppedCandidate: DroppedItemOwnerSnapshot | undefined
-  if (casualtyDrops.drops.length > 0) {
+  if (allMobDrops.length > 0) {
     if (commit.droppedItemsOwnerId === undefined) {
       yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
       return
@@ -2017,10 +2212,27 @@ const runMobSimulation = (
         actual: droppedSnapshot.revision,
       }))
     }
-    const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at }))
-    droppedCandidate = yield* Effect.fromResult(
-      appendDroppedItemSpawns(droppedSnapshot.state, drops, expectedRevision),
-    )
+    let candidate = droppedSnapshot.state
+    for (const drop of allMobDrops) {
+      const appended = appendDroppedItemSpawns(candidate, [{
+        item: drop.item,
+        count: drop.count,
+        at: drop.at,
+      }], expectedRevision)
+      if (Result.isFailure(appended)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation: 'CandidateBuild',
+          subject: 'DroppedItem',
+          requestId: String(drop.source),
+          error: appended.failure,
+        })
+        continue
+      }
+      candidate = appended.success
+      committedMobDrops.push(drop)
+    }
+    if (!Equal.equals(candidate, droppedSnapshot.state)) droppedCandidate = candidate
   }
 
   const blockEdits = new Map<string, { readonly position: ReturnType<typeof blockPosition>; readonly block: typeof AIR_BLOCK_ID }>()
@@ -2065,9 +2277,9 @@ const runMobSimulation = (
     : [{ dimension, expectedRevision: dimensionRevision }]
   const entityCandidate = Result.getOrThrow(restoreGameplayEntityMetadata(
     {
-      ...spawnedRoster,
+      ...thornsRetaliations.roster,
       entities: [
-        ...spawnedRoster.entities.filter(({ id }) => !faultedEntities.has(id)),
+        ...thornsRetaliations.roster.entities.filter(({ id }) => !faultedEntities.has(id)),
         ...faultedEntities.values(),
         ...otherDimensionEntities,
       ],
@@ -2168,6 +2380,7 @@ const runMobSimulation = (
   if (casualtyExperience._tag === 'Unsupported') {
     yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
   }
+  if (thornsDrops._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', thornsDrops.issues)
 
   // Local cursors and output queues move only after the replicated candidate
   // has committed. Ref updates are synchronous and append to any newly queued work.
@@ -2187,16 +2400,16 @@ const runMobSimulation = (
     (Result.isSuccess(spawned) || spawned.failure._tag !== 'EntitySerialExhausted')) {
     yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(offeredAttempts.length))
   }
-  if (casualtyDrops.drops.length > 0) {
-    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
+  if (committedMobDrops.length > 0) {
+    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...committedMobDrops])
   }
   if (projectileResolution.drops.length > 0) {
     yield* Ref.update(state.mobDrops, (pending) => [...pending, ...projectileResolution.drops])
   }
-  if (casualtyExperience.experience.length > 0 || projectileResolution.experience.length > 0) {
+  if (allMobExperience.length > 0 || projectileResolution.experience.length > 0) {
     yield* Ref.update(state.mobExperience, (pending) => [
       ...pending,
-      ...casualtyExperience.experience,
+      ...allMobExperience,
       ...projectileResolution.experience,
     ])
   }
@@ -2207,6 +2420,473 @@ const runMobSimulation = (
     yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbedKeys))
   }
 })
+
+type PlannedMendingRepair = Readonly<{
+  storage: PlayerStorage
+  experienceRemaining: ExperienceOrbValue | MendingExperiencePoints
+}>
+
+const mendingCandidatesForStorage = (
+  storage: PlayerStorage,
+): ReadonlyArray<Parameters<typeof mendOneItemFromValidatedExperience>[0][number]> => {
+  const candidates: Array<Parameters<typeof mendOneItemFromValidatedExperience>[0][number]> = []
+  const mainHand = storage.inventory.slots[0]
+  if (mainHand !== undefined) {
+    candidates.push({
+      slot: 'inventory:0',
+      durability: storage.inventoryDurability[0] ?? null,
+      enchantments: mainHand.components?.enchantments ?? {},
+    })
+  }
+  for (const slot of ['head', 'chest', 'legs', 'feet', 'offhand'] as const) {
+    const equipped = storage.equipment.slots[slot]
+    if (equipped !== null) {
+      candidates.push({
+        slot: `equipment:${slot}`,
+        durability: equipped.durability,
+        enchantments: equipped.components?.enchantments ?? {},
+      })
+    }
+  }
+  return candidates
+}
+
+const storageAfterMendingRepair = (
+  storage: PlayerStorage,
+  selectedSlot: string,
+  repairedDurability: NonNullable<Parameters<typeof mendOneItemFromValidatedExperience>[0][number]['durability']>,
+): PlayerStorage => {
+  if (selectedSlot === 'inventory:0') {
+    const inventoryDurability = [...storage.inventoryDurability]
+    inventoryDurability[0] = repairedDurability
+    return { ...storage, inventoryDurability }
+  }
+  const equipmentSlot = selectedSlot.slice('equipment:'.length)
+  const slot = equipmentSlot as keyof PlayerStorage['equipment']['slots']
+  const equipped = storage.equipment.slots[slot]!
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: {
+        ...storage.equipment.slots,
+        [slot]: { ...equipped, durability: repairedDurability },
+      },
+    },
+  }
+}
+
+const planMendingRepair = (
+  storage: PlayerStorage,
+  orbExperience: ExperienceOrbValue,
+  roll: InterpolationFractionValue,
+): PlannedMendingRepair => {
+  const repair = mendOneItemFromValidatedExperience(
+    mendingCandidatesForStorage(storage),
+    orbExperience,
+    roll,
+  )
+  // The caller enters only after finding a damaged Mending candidate in a
+  // schema-validated storage snapshot, and its roll comes from drawRolls.
+  const repairedCandidate = repair.repairedCandidate!
+  const repairedDurability = repairedCandidate.durability!
+  return {
+    storage: storageAfterMendingRepair(storage, repairedCandidate.slot, repairedDurability),
+    experienceRemaining: repair.xpRemaining,
+  }
+}
+
+const experienceOrbRecordsForReward = (
+  existing: ReadonlyArray<ExperienceOrbRecord>,
+  source: string,
+  eventIndex: number,
+  values: ReadonlyArray<ExperienceOrbValue>,
+  at: Schema.Schema.Type<typeof WorldPositionSchema>,
+  tick: Schema.Schema.Type<typeof SimulationTickSchema>,
+): Result.Result<Readonly<{ records: ReadonlyArray<ExperienceOrbRecord>; changed: boolean }>, Schema.SchemaError> => {
+  const next = [...existing]
+  const ids = new Set(existing.map(({ id }) => id))
+  let changed = false
+  for (const [valueIndex, value] of values.entries()) {
+    const nearbyIndex = next.findIndex((orb) =>
+      orb.value === value && orb.position !== undefined &&
+      orb.position.dimension === at.dimension && orb.position.x === at.x &&
+      orb.position.y === at.y && orb.position.z === at.z,
+    )
+    if (nearbyIndex >= 0) {
+      const existingOrb = next[nearbyIndex]!
+      const merged = mergeSameValueExperienceOrbStacks(
+        { value: existingOrb.value, count: existingOrb.count },
+        { value },
+      )
+      if (Result.isFailure(merged)) return Result.fail(merged.failure)
+      next[nearbyIndex] = { ...existingOrb, count: merged.success!.count }
+      changed = true
+      continue
+    }
+    const id = EntityId(`mx-gameplay:experience-orb/${source}/${tick}/${eventIndex}/${valueIndex}`)
+    if (ids.has(id)) continue
+    ids.add(id)
+    next.push({ id, value, position: at, spawnedAt: tick })
+    changed = true
+  }
+  // Existing records were decoded at the owner boundary; additions and merged counts are branded above.
+  return Result.succeed({ records: next, changed })
+}
+
+const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const { state, commit } = context
+    const experiences = yield* Ref.get(state.mobExperience)
+    if (experiences.length === 0) return
+    if (commit === undefined || commit.experienceOrbsOwnerId === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'ExperienceOrbCreation', reason: 'OwnerRegistrationUnavailable',
+      })
+      return
+    }
+    const snapshots = yield* Effect.result(Effect.all([
+      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
+      commit.coordinator.snapshot(commit.experienceOrbsOwnerId, ExperienceOrbOwnerSnapshotSchema),
+    ]))
+    if (Result.isFailure(snapshots)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
+        requestId: String(commit.experienceOrbsOwnerId), error: snapshots.failure,
+      })
+      return
+    }
+    const [playerSnapshot, orbSnapshot] = snapshots.success
+    if (playerSnapshot.revision !== orbSnapshot.revision) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
+        requestId: String(commit.experienceOrbsOwnerId),
+        error: new WorldRevisionConflict({ expected: playerSnapshot.revision, actual: orbSnapshot.revision }),
+      })
+      return
+    }
+    const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+    if (Result.isFailure(tick)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
+        requestId: String(commit.experienceOrbsOwnerId), error: tick.failure,
+      })
+      return
+    }
+    let nextOrbs = orbSnapshot.state.orbs
+    let orbRecordsChanged = false
+    const failedRewards: Array<(typeof experiences)[number]> = []
+    for (const [eventIndex, event] of experiences.entries()) {
+      const values = splitExperienceOrbReward(event.amount)
+      if (Result.isFailure(values)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
+          requestId: String(event.source), error: values.failure,
+        })
+        failedRewards.push(event)
+        continue
+      }
+      const at = Schema.decodeUnknownResult(WorldPositionSchema)({
+        dimension: event.dimension ?? playerSnapshot.state.pose.feetPosition.dimension,
+        x: event.at.x,
+        y: event.at.y,
+        z: event.at.z,
+      })
+      if (Result.isFailure(at)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
+          requestId: String(event.source), error: at.failure,
+        })
+        failedRewards.push(event)
+        continue
+      }
+      const spawned = experienceOrbRecordsForReward(
+        nextOrbs,
+        String(event.source),
+        eventIndex,
+        values.success,
+        at.success,
+        tick.success,
+      )
+      if (Result.isFailure(spawned)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
+          requestId: String(event.source), error: spawned.failure,
+        })
+        failedRewards.push(event)
+        continue
+      }
+      nextOrbs = spawned.success.records
+      orbRecordsChanged ||= spawned.success.changed
+    }
+    if (orbRecordsChanged) {
+      const committed = yield* Effect.result(commit.coordinator.commit({
+        expectedRevision: orbSnapshot.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.experienceOrbsOwnerId, state: { orbs: nextOrbs } }],
+      }))
+      if (Result.isFailure(committed)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'WorldCommit', subject: 'ExperienceOrb',
+          requestId: String(commit.experienceOrbsOwnerId), error: committed.failure,
+        })
+        return
+      }
+    }
+    yield* Ref.update(state.mobExperience, (pending) => [
+      ...failedRewards,
+      ...pending.slice(experiences.length),
+    ])
+  })
+
+const attractExperienceOrbsAndQueuePickup = (
+  state: GameplayStageContext['state'],
+  commit: GameplayStageContext['commit'],
+  dt: DeltaTimeSecs,
+): Effect.Effect<ReadonlyArray<ExperienceOrbAbsorptionContext>> => Effect.gen(function* () {
+  if (commit === undefined || commit.experienceOrbsOwnerId === undefined) return []
+  const orbSnapshotResult = yield* Effect.result(commit.coordinator.snapshot(
+    commit.experienceOrbsOwnerId,
+    ExperienceOrbOwnerSnapshotSchema,
+  ))
+  if (Result.isFailure(orbSnapshotResult)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
+      requestId: String(commit.experienceOrbsOwnerId), error: orbSnapshotResult.failure,
+    })
+    return []
+  }
+  const orbSnapshot = orbSnapshotResult.success
+  const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+  if (Result.isFailure(tick)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb',
+      requestId: String(commit.experienceOrbsOwnerId), error: tick.failure,
+    })
+    return []
+  }
+  let changed = false
+  const liveOrbs: ExperienceOrbRecord[] = []
+  for (const orb of orbSnapshot.state.orbs) {
+    const expired = hasExperienceOrbExpiredAtValidatedTick(orb.spawnedAt, tick.success)
+    if (expired) changed = true
+    else liveOrbs.push(orb)
+  }
+  if (!liveOrbs.some(({ position: orbPosition }) => orbPosition !== undefined)) {
+    if (changed) {
+      const committed = yield* Effect.result(commit.coordinator.commit({
+        expectedRevision: orbSnapshot.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.experienceOrbsOwnerId, state: { orbs: liveOrbs } }],
+      }))
+      if (Result.isFailure(committed)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'WorldCommit', subject: 'ExperienceOrb',
+          requestId: String(commit.experienceOrbsOwnerId), error: committed.failure,
+        })
+      }
+    }
+    return []
+  }
+  const playerSnapshotResult = yield* Effect.result(commit.coordinator.snapshot(
+    commit.playerOwnerId,
+    PlayerServiceSnapshotSchema,
+  ))
+  if (Result.isFailure(playerSnapshotResult)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
+      requestId: String(commit.playerOwnerId), error: playerSnapshotResult.failure,
+    })
+    return []
+  }
+  const playerSnapshot = playerSnapshotResult.success
+  if (playerSnapshot.revision !== orbSnapshot.revision) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ExperienceOrb',
+      requestId: String(commit.experienceOrbsOwnerId),
+      error: new WorldRevisionConflict({ expected: playerSnapshot.revision, actual: orbSnapshot.revision }),
+    })
+    return []
+  }
+  const playerPosition = playerSnapshot.state.pose.feetPosition
+  const lastCollectedTick = yield* Ref.get(state.lastExperienceOrbPickupTick)
+  const mayCollect = canCollectExperienceOrbAtValidatedTick(tick.success, lastCollectedTick ?? undefined)
+  let closest: Readonly<{ orb: ExperienceOrbRecord; distanceSquared: number }> | undefined
+  const nextOrbs: ExperienceOrbRecordForCommit[] = []
+  for (const orb of liveOrbs) {
+    if (orb.position === undefined) {
+      nextOrbs.push(orb)
+      continue
+    }
+    const inRange = isExperienceOrbWithinAttractionRangeForPositions(orb.position, playerPosition)
+    if (!inRange) {
+      nextOrbs.push(orb)
+      continue
+    }
+    const pulled = pullExperienceOrbTowardPlayerForPositions(orb.position, playerPosition, dt)
+    const moved = pulled.position.x !== orb.position.x || pulled.position.y !== orb.position.y ||
+      pulled.position.z !== orb.position.z
+    if (moved) changed = true
+    const nextPosition = moved ? pulled.position : orb.position
+    const nextOrb = moved ? { ...orb, position: nextPosition } : orb
+    nextOrbs.push(nextOrb)
+    if (pulled.withinPickupRange) {
+      const distanceSquared = pulled.distanceSquared
+      if (closest === undefined || distanceSquared < closest.distanceSquared) {
+        closest = { orb, distanceSquared }
+      }
+    }
+  }
+  if (changed) {
+    const committed = yield* Effect.result(commit.coordinator.commit({
+      expectedRevision: orbSnapshot.revision,
+      expectedDimensions: [],
+      changes: [{ ownerId: commit.experienceOrbsOwnerId, state: { orbs: nextOrbs } }],
+    }))
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'WorldCommit', subject: 'ExperienceOrb',
+        requestId: String(commit.experienceOrbsOwnerId), error: committed.failure,
+      })
+      return []
+    }
+  }
+  if (!mayCollect || closest === undefined) return []
+  return [{
+    actor: EntityId('mx-gameplay:player-avatar'),
+    orb: closest.orb.id,
+    tick: tick.success,
+    position: playerPosition,
+  }]
+})
+
+const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const { state, commit } = context
+    if (commit === undefined || commit.vitalsOwnerId === undefined) return
+
+    let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+    const observed = yield* Effect.result(Effect.all([
+      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
+      commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
+      commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
+    ]))
+    if (Result.isFailure(observed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation,
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: observed.failure,
+      })
+      return
+    }
+
+    const [playerSnapshot, vitalsSnapshot, storageSnapshot] = observed.success
+    if (
+      playerSnapshot.revision !== vitalsSnapshot.revision ||
+      playerSnapshot.revision !== storageSnapshot.revision
+    ) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation,
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: new WorldRevisionConflict({
+          expected: playerSnapshot.revision,
+          actual: playerSnapshot.revision !== vitalsSnapshot.revision
+            ? vitalsSnapshot.revision
+            : storageSnapshot.revision,
+        }),
+      })
+      return
+    }
+
+    if (vitalsSnapshot.state.vitals.healthPoints > 0) return
+    const storage = storageSnapshot.state
+    const hasInventory = storage.inventory.slots.some((stack) => stack !== undefined)
+    const hasEquipment = Object.values(storage.equipment.slots).some((stack) => stack !== null)
+    if (!hasInventory && !hasEquipment) return
+
+    const feetPosition = playerSnapshot.state.pose.feetPosition
+    const at = position(
+      PositionAxis(feetPosition.x),
+      PositionAxis(feetPosition.y),
+      PositionAxis(feetPosition.z),
+    )
+    const deathDrops = deathDropsFromPlayerStorage(storage, at)
+    if (Result.isFailure(deathDrops)) {
+      yield* recordGameplayEntityStageExecutionFailure(state, deathDrops.failure)
+      return
+    }
+    const drops = deathDrops.success
+    const changes: ReplicatedOwnerCandidate[] = [{
+      ownerId: commit.playerStorageOwnerId,
+      state: emptyPlayerStorage(),
+    }]
+    if (drops.length > 0) {
+      if (commit.droppedItemsOwnerId === undefined) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported',
+          action: 'MobSimulation',
+          reason: 'OwnerRegistrationUnavailable',
+        })
+        return
+      }
+      operation = 'OwnerSnapshot'
+      const droppedSnapshot = yield* Effect.result(commit.coordinator.snapshot(
+        commit.droppedItemsOwnerId,
+        DroppedItemOwnerSnapshotSchema,
+      ))
+      if (Result.isFailure(droppedSnapshot)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation,
+          subject: 'DroppedItem',
+          requestId: 'player-death-drops',
+          error: droppedSnapshot.failure,
+        })
+        return
+      }
+      if (droppedSnapshot.success.revision !== playerSnapshot.revision) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation,
+          subject: 'DroppedItem',
+          requestId: 'player-death-drops',
+          error: new WorldRevisionConflict({
+            expected: playerSnapshot.revision,
+            actual: droppedSnapshot.success.revision,
+          }),
+        })
+        return
+      }
+      // Death drops without slot metadata carry no custom name or frame field, their enchantments were
+      // decoded by the same schema, and their durability comes from the decoded player storage snapshot.
+      const appended = Result.getOrThrow(appendPlayerDeathDropSpawns(
+        droppedSnapshot.success.state,
+        drops,
+        playerSnapshot.revision,
+      ))
+      changes.push({ ownerId: commit.droppedItemsOwnerId, state: appended })
+    }
+
+    operation = 'WorldCommit'
+    const committed = yield* Effect.result(commit.coordinator.commit({
+      expectedRevision: playerSnapshot.revision,
+      expectedDimensions: [],
+      changes,
+    }))
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation,
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: committed.failure,
+      })
+    }
+  })
 
 export const makeEntitiesStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
@@ -2244,6 +2924,13 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             commit.coordinator.snapshot(owners.droppedItems, DroppedItemOwnerSnapshotSchema),
           ]))
           if (Result.isFailure(snapshots)) {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed',
+              operation: 'OwnerSnapshot',
+              subject: 'DroppedItem',
+              requestId: String(request.actor),
+              error: snapshots.failure,
+            })
             pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: snapshots.failure } as const })
             continue
           }
@@ -2252,11 +2939,23 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
-          const planned = yield* planDroppedItemPickup(
+          const plannedResult = yield* Effect.result(planDroppedItemPickup(
             request,
             storageSnapshot.state,
             droppedItemsSnapshot.state,
-          )
+          ))
+          if (Result.isFailure(plannedResult)) {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed',
+              operation: 'PlanBuild',
+              subject: 'DroppedItem',
+              requestId: String(request.actor),
+              error: plannedResult.failure,
+            })
+            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: plannedResult.failure } as const })
+            continue
+          }
+          const planned = plannedResult.success
           if (planned.planned.length === 0) {
             pickupExecutions.push({
               request,
@@ -2276,8 +2975,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
-          const result = yield* droppedItemPickupResultAfterCommit(planned, planned.droppedItems)
-          pickupExecutions.push({ request, outcome: { _tag: 'Completed', result } as const })
+          pickupExecutions.push({ request, outcome: { _tag: 'Completed', result: planned.result } as const })
         }
         if (retryPickups.length > 0) {
           yield* Ref.update(state.pendingDroppedItemPickups, (pending) => [
@@ -2292,7 +2990,16 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           ])
         }
 
-        const absorptionRequests = yield* Ref.getAndSet(state.pendingExperienceOrbAbsorptions, [])
+        const queuedAbsorptions = yield* Ref.getAndSet(state.pendingExperienceOrbAbsorptions, [])
+        const automaticAbsorptions = queuedAbsorptions.length === 0
+          ? yield* attractExperienceOrbsAndQueuePickup(state, commit, dt)
+          : []
+        const queuedOrbIds = new Set(queuedAbsorptions.map(({ orb }) => orb))
+        const absorptionRequests = [
+          ...queuedAbsorptions,
+          ...automaticAbsorptions.filter(({ orb }) => !queuedOrbIds.has(orb)),
+        ]
+        const automaticOrbIds = new Set(automaticAbsorptions.map(({ orb }) => orb))
         const absorptionExecutions: Array<ExperienceOrbAbsorptionExecution> = []
         const retryAbsorptions: Array<(typeof absorptionRequests)[number]> = []
         for (const request of absorptionRequests) {
@@ -2303,7 +3010,10 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             } as const)
             continue
           }
-          if (commit.vitalsOwnerId === undefined || commit.experienceOrbsOwnerId === undefined) {
+          if (
+            commit.vitalsOwnerId === undefined ||
+            commit.experienceOrbsOwnerId === undefined
+          ) {
             absorptionExecutions.push({
               request,
               outcome: { _tag: 'Unsupported', reason: 'OwnerRegistrationUnavailable' },
@@ -2314,47 +3024,97 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             vitals: commit.vitalsOwnerId,
             orbs: commit.experienceOrbsOwnerId,
           }
-          const snapshots = yield* Effect.result(Effect.all([
-            commit.coordinator.snapshot(owners.vitals, ExperienceOrbVitalsOwnerSnapshotSchema),
-            commit.coordinator.snapshot(owners.orbs, ExperienceOrbOwnerSnapshotSchema),
-          ]))
-          if (Result.isFailure(snapshots)) {
-            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: snapshots.failure } as const })
-            continue
-          }
-          const [vitalsSnapshot, orbsSnapshot] = snapshots.success
-          if (vitalsSnapshot.revision !== orbsSnapshot.revision) {
-            retryAbsorptions.push(request)
-            continue
-          }
-          const planned = yield* Effect.result(planExperienceOrbAbsorption(
-            request,
-            vitalsSnapshot.state,
-            orbsSnapshot.state,
-          ))
-          if (Result.isFailure(planned)) {
-            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: planned.failure } as const })
-            continue
-          }
-          const committed = yield* Effect.result(commit.coordinator.commit({
-            expectedRevision: vitalsSnapshot.revision,
-            expectedDimensions: [],
-            changes: [
-              { ownerId: owners.vitals, state: planned.success.vitals },
-              { ownerId: owners.orbs, state: planned.success.orbs },
-            ],
+          let operation: 'OwnerSnapshot' | 'PlanBuild' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+          const attempted = yield* Effect.result(Effect.gen(function* () {
+            const [vitalsSnapshot, orbsSnapshot] = yield* Effect.all([
+              commit.coordinator.snapshot(owners.vitals, ExperienceOrbVitalsOwnerSnapshotSchema),
+              commit.coordinator.snapshot(owners.orbs, ExperienceOrbOwnerSnapshotSchema),
+            ])
+            if (vitalsSnapshot.revision !== orbsSnapshot.revision) return { _tag: 'Retry' } as const
+
+            const storageSnapshot = yield* commit.coordinator.snapshot(
+              commit.playerStorageOwnerId,
+              PlayerStorageSnapshotSchema,
+            )
+            if (storageSnapshot.revision !== vitalsSnapshot.revision) return { _tag: 'Retry' } as const
+
+            operation = 'PlanBuild'
+            const planned = yield* planExperienceOrbAbsorption(
+              request,
+              vitalsSnapshot.state,
+              orbsSnapshot.state,
+            )
+            let experienceRemaining: ExperienceOrbValue | MendingExperiencePoints = planned.experience
+            let repairedStorage: PlayerStorage | undefined
+            let rollSeed: number | undefined
+            const candidates = mendingCandidatesForStorage(storageSnapshot.state)
+            const eligibleMending = candidates.some(({ durability, enchantments }) =>
+              durability !== null &&
+              durability.max > durability.current &&
+              enchantmentLevel(enchantments, 'mending') > 0,
+            )
+            if (eligibleMending) {
+              const currentSeed = yield* Ref.get(state.rollSeed)
+              // The internal frame seed and fixed one-roll batch guarantee an existing sample.
+              const rolls = Result.getOrThrow(drawRolls(currentSeed, 1))
+              const roll = InterpolationFraction(Result.getOrThrow(rollAt(rolls, 0)))
+              operation = 'CandidateBuild'
+              const repair = planMendingRepair(storageSnapshot.state, planned.experience, roll)
+              experienceRemaining = repair.experienceRemaining
+              repairedStorage = repair.storage
+              rollSeed = rolls.seed
+            }
+            const experienceDelta = ExperienceDelta(experienceRemaining)
+            const vitalsCandidate: ExperienceOrbVitalsOwnerSnapshot = {
+              vitals: addExperience(vitalsSnapshot.state.vitals, experienceDelta),
+            }
+            const changes = [
+              { ownerId: owners.vitals, state: vitalsCandidate },
+              { ownerId: owners.orbs, state: planned.orbs },
+              ...(repairedStorage === undefined || commit.playerStorageOwnerId === undefined
+                ? []
+                : [{ ownerId: commit.playerStorageOwnerId, state: repairedStorage }]),
+            ]
+            operation = 'WorldCommit'
+            const committed = yield* Effect.result(commit.coordinator.commit({
+              expectedRevision: vitalsSnapshot.revision,
+              expectedDimensions: [],
+              changes,
+            }))
+            if (Result.isFailure(committed)) return { _tag: 'Retry' } as const
+
+            if (rollSeed !== undefined) yield* Ref.set(state.rollSeed, rollSeed)
+            operation = 'CandidateBuild'
+            const result = yield* experienceOrbAbsorptionResultAfterCommit(
+              planned,
+              vitalsCandidate,
+              planned.orbs,
+              owners,
+            )
+            if (automaticOrbIds.has(request.orb)) {
+              yield* Ref.set(state.lastExperienceOrbPickupTick, planned.context.tick)
+            }
+            return { _tag: 'Completed', result } as const
           }))
-          if (Result.isFailure(committed)) {
+          if (Result.isFailure(attempted)) {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed',
+              operation,
+              subject: 'ExperienceOrb',
+              requestId: String(request.orb),
+              error: attempted.failure,
+            })
+            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: attempted.failure } as const })
+            continue
+          }
+          if (attempted.success._tag === 'Retry') {
             retryAbsorptions.push(request)
             continue
           }
-          const result = yield* experienceOrbAbsorptionResultAfterCommit(
-            planned.success,
-            planned.success.vitals,
-            planned.success.orbs,
-            owners,
-          )
-          absorptionExecutions.push({ request, outcome: { _tag: 'Completed', result } as const })
+          absorptionExecutions.push({
+            request,
+            outcome: { _tag: 'Completed', result: attempted.success.result } as const,
+          })
         }
         if (retryAbsorptions.length > 0) {
           yield* Ref.update(state.pendingExperienceOrbAbsorptions, (pending) => [
@@ -2371,6 +3131,8 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
 
         yield* runTntSimulation(context, dt)
         yield* runMobSimulation(context, dt)
+        yield* runPlayerDeathDrops(context)
+        yield* spawnQueuedExperienceOrbs(context)
 
         // ---- falling blocks ------------------------------------------------
         //

@@ -529,7 +529,9 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
       expect((yield* snapshotStatusEffects(rig.state, { ...rig.commit, statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID })).effects)
         .toMatchObject([{ type: 'poison' }])
 
-      yield* runFrame(rig.stages, DeltaTimeSecs(1))
+      // Java Edition poison I first pulses at 25 ticks (1.25 seconds).
+      // https://minecraft.wiki/w/Poison
+      yield* runFrame(rig.stages, DeltaTimeSecs(1.25))
       const vitalsAfterPulse = yield* rig.commit.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, Schema.Unknown)
       expect(vitalsAfterPulse.state).toMatchObject({ vitals: { hungerPoints: 12 } })
       expect(Number((vitalsAfterPulse.state as { vitals: PlayerVitals }).vitals.healthPoints))

@@ -266,7 +266,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | stage 登録時に `ChunkStore`、`EntityManager`、`TimeService`、`WorldCommitCoordinator`、`DomainEventBus` を要求する（§2-2） |
 | `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` は `Layer.empty` |
 | `EntityStageFault` / `drainGameplayEntityStageFaults` | **契約** | `GameplayFrameState.entityStageFaults` に記録した fault を回収する。`WorldDataFailure` は source、operation、位置、型付きの理由で重複を除き、drain 後も同じ記録を繰り返さない |
-| `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` | **契約** | world fault の理由の pure 型。`BlockStateCodecFailure`、`LightQueueUnderflowError`、`UnregisteredBlockId`、`MissingBlockReadResult` の情報を保持する |
+| `GameplayStageWorldFaultReason` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageUnavailableBlockReadFailure` | **契約** | world fault の理由の pure 型。`BlockStateCodecFailure`、`LightQueueUnderflowError`、`UnregisteredBlockId`、`MissingBlockReadResult`、`ChunkNotLoaded`、`OutOfWorld` の情報を保持する |
 | `GameplayStageItemUseWorldFailure` | **契約** | `WorldDataFailed` のみ。理由は `GameplayStageBlockTypeDecodeFailure` または `GameplayStageMissingBlockReadFailure` |
 | `gameplayStages(state, store, entities, inventory, player, time, …, commit)` | **契約（state handle の保持用途）** | ホストが保持する state と既存サービス、commit から stage を構築する。fault を回収するホストは同じ state を drain に渡す。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameStateForOwner` | **契約（state handle の生成用途）** | `{ coordinator, vitalsOwnerId }` から state を作る。ホストはこの handle を stage 構築と fault 回収に保持する |
@@ -278,8 +278,10 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
+| `requestBlockMining` / `BlockMiningAttempt` / `getMiningProgressFraction` | **契約** | block を掘り続ける間、ホストは各 simulation frame で位置・次元・選択スロットを送る。呼び出しが無い frame で進捗は解除される。stage はスロットのツールと Efficiency、状態効果の採掘倍率を読み、バニラの 1/20 秒 tick 境界で破壊する。progress fraction は HUD に使える |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union。相関付き配置結果は `WorldDataFailed` を、farming item-use 結果は `GameplayStageItemUseWorldFailure` を返す。旧 `requestBlockPlacement` は相関結果を作らず、fault を同じ `entityStageFaults` に記録する |
-| `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
+| `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。cast 時の Lure・Luck of the Sea と open water の判定は `GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID` の owner に cast と同じ commit で記録し、reel や cancel の commit で消す。記録の無い進行中 cast は、要求の `toolLocation` にあるロッドと浮きの周囲 5x4x5 のブロックから復元する。復元できない要求は stage fault を記録して処理しない。Advance 要求は `toolLocation` を持たないので、記録の無い cast では毎回 `FishingRodNotHeld` の fault になる。host はその cast を `toolLocation` 付きの Reel か Cancel で終える。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
+| `requestEnchantmentTableOffers` / `requestEnchantmentTableApply` / `drainEnchantmentTableResults` と各 request/result `Schema` | **契約** | 相関 ID 付きで offers を要求し、選択した offer の適用結果を受け取る。要求には台の位置を含み、本棚数は含まない。mx-gameplay は stage request と offer session を管理し、mc-sim の `EnchantmentTableService` が台の周囲のブロックから本棚数を数えて offers を生成し、選択した offer を inventory・vitals へ原子的に適用する。結果の `OffersGenerated` は数えた本棚数（0〜15）を `bookshelfCount` に持つ。offers 要求時または適用時に要求位置のブロックがエンチャントテーブルでなければ、結果は `table-missing` の `Rejected` になる。本棚数の計数に使う周囲の位置が chunk 未ロードかワールド外で読めなければ、offers を生成せず `table-area-unloaded` の `Rejected` を返し、読めなかった位置を `EnchantmentTable` source の `WorldDataFailure` として記録する |
 | `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、非レバーなら通常の配置へフォールバックする |
 | `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
@@ -300,6 +302,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `fluidFrontier` | 流体のフロンティア | 同上 |
 | `tickCount` | 溶岩の tick を刻む | 同上 |
 | `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
+| `pendingBlockMiningAttempt` / `miningProgress` | **受信箱 / 作業中 progress**。ホストが毎 frame 提出する対象と、1/20 秒単位の破壊進捗 | 要らない。ボタン入力と途中 progress はセーブせず、対象が変わるか入力が途切れると破棄する |
 | `pendingItemUses` / `itemUseResults` | **受信箱 / 送信箱**。今フレームの点火・耕作・ジャガイモ・炉進行要求と相関結果 | 要らない。`pendingBreaks` と同じ理由。作物の経過時間と炉状態は mc-sim / host が所有し、gameplay は判定済み入力から plan だけを返す |
 | `fishingSession` | 進行中の釣り cast | 要らない。ロッドと釣果の inventory 反映は host が所有し、ここには次フレームまでの純粋な相互作用状態だけを置く |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
@@ -692,7 +695,7 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `generateEnchantmentTableOffersForItem` / `enchantmentTableResultItemOf` | 内部(可視) | item 固有の table offer と出力 item の対応を mc-sim に委譲する。Enchantment Table の apply 操作を行う service adapter は公開されていない |
+| `generateEnchantmentTableOffersForItem` / `enchantmentTableResultItemOf` | 内部(可視) | 渡された本棚数での item 固有の offer 生成と出力 item の対応を mc-sim に委譲する。Interactions stage はこの adapter を使わず、`EnchantmentTableService` で offers を生成し適用する |
 
 ### domain/interactions/advance-furnace.ts
 

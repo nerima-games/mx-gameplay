@@ -18,13 +18,15 @@ import {
   RandomSeed,
   SimulationTick,
   StackCount,
+  WorldPositionSchema,
   WorldRevisionSchema,
   WorldIdSchema,
-  WorldPositionSchema,
   BlockId,
   blockIdOf,
   blockPosition,
   blockPositionKeyOf,
+  enchantmentsComponent,
+  itemComponents,
   position,
   type DeltaTimeSecs,
 } from '@nerima-games/mc-kernel'
@@ -84,6 +86,7 @@ import {
 import {
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
+  ExperienceOrbCountSchema,
   createExperienceOrbValue,
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
@@ -201,6 +204,93 @@ const nearlyBrokenIronHelmetStorage = (): PlayerStorage => {
   const helmet = Result.getOrThrow(equipmentItem(
     Result.getOrThrow(itemStack('iron_helmet', StackCount(1))),
     Result.getOrThrow(durability(1, 165)),
+  ))
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: { ...storage.equipment.slots, head: helmet },
+    },
+  }
+}
+
+const mendingIronHelmetStorage = (currentDurability = 163): PlayerStorage => {
+  const storage = emptyPlayerStorage()
+  const components = Result.getOrThrow(itemComponents('iron_helmet', {
+    enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 })),
+  }))
+  const helmet = Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
+    Result.getOrThrow(durability(currentDurability, 165)),
+  ))
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: { ...storage.equipment.slots, head: helmet },
+    },
+  }
+}
+
+const mendingIronPickaxeStorage = (currentDurability = 244): PlayerStorage => {
+  const storage = emptyPlayerStorage()
+  const components = Result.getOrThrow(itemComponents('iron_pickaxe', {
+    enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 })),
+  }))
+  const pickaxe = Result.getOrThrow(itemStack('iron_pickaxe', StackCount(1), { components }))
+  const inventoryDurability = [...storage.inventoryDurability]
+  inventoryDurability[0] = Result.getOrThrow(durability(currentDurability, 250))
+  return {
+    ...storage,
+    inventory: {
+      ...storage.inventory,
+      slots: [pickaxe, ...storage.inventory.slots.slice(1)],
+    },
+    inventoryDurability,
+  }
+}
+
+const thornsIronHelmetStorage = (): PlayerStorage => {
+  const storage = emptyPlayerStorage()
+  const components = Result.getOrThrow(itemComponents('iron_helmet', {
+    enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:thorns': 1 })),
+  }))
+  const helmet = Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
+    Result.getOrThrow(durability(100, 165)),
+  ))
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: { ...storage.equipment.slots, head: helmet },
+    },
+  }
+}
+
+const nearlyBrokenThornsIronHelmetStorage = (): PlayerStorage => {
+  const storage = emptyPlayerStorage()
+  const components = Result.getOrThrow(itemComponents('iron_helmet', {
+    enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:thorns': 1 })),
+  }))
+  const helmet = Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
+    Result.getOrThrow(durability(1, 165)),
+  ))
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: { ...storage.equipment.slots, head: helmet },
+    },
+  }
+}
+
+const plainDurableIronHelmetStorage = (): PlayerStorage => {
+  const storage = emptyPlayerStorage()
+  const helmet = Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('iron_helmet', StackCount(1))),
+    Result.getOrThrow(durability(100, 165)),
   ))
   return {
     ...storage,
@@ -954,6 +1044,104 @@ describe('entities stage owner-backed MobSimulation', () => {
     }])
   })
 
+  it('retaliates with Thorns across the 15 percent boundary without changing player damage', async () => {
+    // Java Edition 26.3 gives Thorns I a 15% chance per armor piece and 1–5 damage.
+    // https://minecraft.wiki/w/Thorns
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const run = async (seed: number, playerStorage: PlayerStorage) => {
+      const harness = await Effect.runPromise(makeHarness({
+        entity: zombieAt(1, 64),
+        playerPose,
+        playerStorage,
+      }))
+      await Effect.runPromise(Ref.set(harness.state.rollSeed, seed))
+      await harness.run(makeDeltaTimeSecs(0.25))
+      const [roster, vitals, storage, playerDamages] = await Effect.runPromise(Effect.all([
+        strictRoster(harness.coordinator),
+        harness.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        harness.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        Ref.get(harness.state.playerDamages),
+      ]))
+      return {
+        harness,
+        zombieHealth: Number(roster.state.entities.find(({ id }) => id === EntityId('test:zombie'))?.healthPoints),
+        playerHealth: Number(vitals.state.vitals.healthPoints),
+        helmetDurability: storage.state.equipment.slots.head?.durability?.current,
+        playerDamages,
+      }
+    }
+
+    const successSeed = 146_939
+    const failureSeed = 785_805
+    const successRoll = nextRoll(successSeed)
+    const failureRoll = nextRoll(failureSeed)
+    expect(successRoll.roll).toBe(0.14999887214507854)
+    expect(failureRoll.roll).toBe(0.15000009543728088)
+    const expectedRetaliationDamage = 1.1242078729552254
+
+    const retaliating = await run(successSeed, thornsIronHelmetStorage())
+    const noThorns = await run(successSeed, plainDurableIronHelmetStorage())
+    const outsideChance = await run(failureSeed, thornsIronHelmetStorage())
+
+    expect(retaliating.zombieHealth).toBeCloseTo(20 - expectedRetaliationDamage, 10)
+    expect(noThorns.zombieHealth).toBe(20)
+    expect(outsideChance.zombieHealth).toBe(20)
+    expect(retaliating.playerDamages).toStrictEqual(noThorns.playerDamages)
+    expect(outsideChance.playerDamages).toStrictEqual(noThorns.playerDamages)
+    expect(retaliating.playerHealth).toBe(noThorns.playerHealth)
+    expect(outsideChance.playerHealth).toBe(noThorns.playerHealth)
+    expect(retaliating.helmetDurability).toBe((noThorns.helmetDurability ?? 0) - 2)
+    expect(outsideChance.helmetDurability).toBe(noThorns.helmetDurability)
+    expect(retaliating.harness.commits()).toBe(1)
+    expect(retaliating.harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toEqual(
+      expect.arrayContaining([GAMEPLAY_ENTITIES_OWNER_ID, GAMEPLAY_PLAYER_STORAGE_OWNER_ID, GAMEPLAY_VITALS_OWNER_ID]),
+    )
+  })
+
+  it('does not reuse a Thorns helmet after an earlier contact breaks it in the same frame', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const spider = ecosystemMobAt('test:spider-before-zombie', SPIDER_KIND, 1, 64)
+    const zombie = zombieAt(1.4, 64)
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [spider, zombie],
+      playerPose,
+      playerStorage: nearlyBrokenThornsIronHelmetStorage(),
+    }))
+    const seed = 19_166
+    const firstThornsRoll = nextRoll(seed)
+    const staleSnapshotSecondRoll = nextRoll(firstThornsRoll.seed)
+    expect(firstThornsRoll.roll).toBeGreaterThanOrEqual(0.15)
+    expect(staleSnapshotSecondRoll.roll).toBeLessThan(0.15)
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, seed))
+
+    await harness.run(makeDeltaTimeSecs(0.25))
+
+    const [roster, storage, playerDamages] = await Effect.runPromise(Effect.all([
+      strictRoster(harness.coordinator),
+      harness.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+      Ref.get(harness.state.playerDamages),
+    ]))
+    const spiderAfter = roster.state.entities.find(({ id }) => id === spider.id)
+    const zombieAfter = roster.state.entities.find(({ id }) => id === zombie.id)
+
+    expect(playerDamages).toMatchObject([
+      { _tag: 'HostileContact', source: spider.id },
+      { _tag: 'HostileContact', source: zombie.id },
+    ])
+    expect(playerDamages.map(({ damage }) => damage.amount)).toStrictEqual([1.92, 1])
+    expect(Number(spiderAfter?.healthPoints)).toBe(20)
+    expect(Number(zombieAfter?.healthPoints)).toBe(20)
+    expect(storage.state.equipment.slots.head).toBeNull()
+    expect(harness.commits()).toBe(1)
+  })
+
   it('routes AI attacks, contact, and explosions through Peaceful damage resolution', async () => {
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
@@ -1439,7 +1627,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([])
   })
 
-  it('queues XP after a successful mob blast commit when the casualty has recent player credit', async () => {
+  it('commits a mob blast casualty and stacks its XP reward in the registered owner', async () => {
     const creeper: MobEntity = {
       ...creeperAt(0, 64),
       behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
@@ -1455,18 +1643,38 @@ describe('entities stage owner-backed MobSimulation', () => {
       entities: [creeper, zombie],
       playerPose: {
         ...INITIAL_PLAYER_POSE,
-        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+        feetPosition: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+      },
+      experienceOrbs: {
+        orbs: [{
+          id: EntityId('test:existing-experience-orb-stack'),
+          value: Result.getOrThrow(createExperienceOrbValue(3)),
+          position: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: INITIAL_DIMENSION,
+            ...position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+          }),
+          spawnedAt: SimulationTick(0),
+        }],
       },
     }))
+    await Effect.runPromise(Ref.set(harness.state.lastExperienceOrbPickupTick, SimulationTick(0)))
     await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
 
     await harness.run(makeDeltaTimeSecs(0.02))
 
     const roster = await Effect.runPromise(strictRoster(harness.coordinator))
-    const experience = await Effect.runPromise(Ref.get(harness.state.mobExperience))
-    expect(harness.commits()).toBe(1)
+    const experienceOrbs = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    expect(harness.commits()).toBe(2)
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID)
     expect(roster.state.entities).toStrictEqual([])
-    expect(experience).toMatchObject([{ source: zombie.id, amount: 5 }])
+    // Java Edition 26.3 splits 5 XP as 3+1+1; same-value orbs at one position stack by count.
+    // https://minecraft.wiki/w/Experience#Experience_orbs
+    expect(experienceOrbs.state.orbs.map(({ value, count }) => [Number(value), count ?? 1]))
+      .toStrictEqual([[3, 2], [1, 2]])
+    expect(experienceOrbs.state.orbs[0]?.position).toMatchObject({ x: zombie.feetPosition.x, y: zombie.feetPosition.y, z: zombie.feetPosition.z })
   })
 
   it('does not commit mob blast casualties when the dropped-item owner revision differs', async () => {
@@ -2574,7 +2782,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
-  it('leaves registered mob owners and frame outputs unchanged when the owner commit is rejected', async () => {
+  it('records a rejected owner commit without advancing frame outputs', async () => {
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -2749,7 +2957,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.lastPassiveSpawnTick))).toBe(1)
   })
 
-  it('commits casualty drops and XP with a passive spawn in the same simulation tick', async () => {
+  it('commits casualty drops, XP orbs, and a passive spawn in the same simulation tick', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const creeper: MobEntity = {
       ...creeperAt(0, 64),
@@ -2791,19 +2999,23 @@ describe('entities stage owner-backed MobSimulation', () => {
     await harness.run(makeDeltaTimeSecs(0.02))
 
     const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const experienceOrbs = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
     const outputs = await Effect.runPromise(Effect.all({
       drops: Ref.get(harness.state.mobDrops),
-      experience: Ref.get(harness.state.mobExperience),
       lastPassiveSpawnTick: Ref.get(harness.state.lastPassiveSpawnTick),
       passiveInitialSpawnPending: Ref.get(harness.state.passiveInitialSpawnPending),
     }))
-    expect(harness.commits()).toBe(1)
+    expect(harness.commits()).toBe(2)
     expect(roster.state.entities.some(({ kind }) =>
       kind === 'cow' || kind === 'pig' || kind === 'sheep' || kind === 'chicken',
     )).toBe(true)
     expect(roster.state.entities.some(({ id }) => id === zombie.id)).toBe(false)
     expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
-    expect(outputs.experience).toMatchObject([{ source: zombie.id, amount: 5 }])
+    expect(experienceOrbs.state.orbs.map(({ value, count }) => [Number(value), count ?? 1]))
+      .toStrictEqual([[3, 1], [1, 2]])
     expect(outputs.lastPassiveSpawnTick).toBe(1)
     expect(outputs.passiveInitialSpawnPending).toBe(false)
   })
@@ -2906,9 +3118,15 @@ describe('entities stage owner-backed MobSimulation', () => {
 
     const deadRoster = await Effect.runPromise(strictRoster(creditedDeath.coordinator))
     const livingRoster = await Effect.runPromise(strictRoster(survivingBee.coordinator))
+    const deadOrbs = await Effect.runPromise(creditedDeath.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    const livingOrbs = await Effect.runPromise(survivingBee.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
     const outputs = await Effect.runPromise(Effect.all({
-      deadExperience: Ref.get(creditedDeath.state.mobExperience),
-      livingExperience: Ref.get(survivingBee.state.mobExperience),
       deadSeed: Ref.get(creditedDeath.state.rollSeed),
       livingSeed: Ref.get(survivingBee.state.rollSeed),
       deadHostileTick: Ref.get(creditedDeath.state.lastHostileSpawnTick),
@@ -2917,13 +3135,10 @@ describe('entities stage owner-backed MobSimulation', () => {
     const deadSearchCalls = await Effect.runPromise(creditedDeath.store.calls)
     const livingSearchCalls = await Effect.runPromise(survivingBee.store.calls)
 
-    expect(outputs.deadExperience).toStrictEqual([{
-      source: bee.id,
-      kind: EntityKind('bee'),
-      amount: 1 + Math.floor(expectedExperienceRoll.roll * 3),
-      at: bee.feetPosition,
-    }])
-    expect(outputs.livingExperience).toStrictEqual([])
+    expect(deadOrbs.state.orbs.reduce((total, { value, count }) => total + Number(value) * (count ?? 1), 0)).toBe(
+      1 + Math.floor(expectedExperienceRoll.roll * 3),
+    )
+    expect(livingOrbs.state.orbs).toStrictEqual([])
     expect(outputs.deadSeed).toBe(nextRoll(outputs.livingSeed).seed)
     expect(outputs.deadHostileTick).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
     expect(outputs.livingHostileTick).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
@@ -2988,7 +3203,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(harness.commits()).toBe(1)
   })
 
-  it('keeps an offered spawn queued when the valid owner serial is exhausted', async () => {
+  it('records an exhausted offered spawn and keeps it queued for retry', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null }))
     const rosterBefore = await Effect.runPromise(strictRoster(harness.coordinator))
     await Effect.runPromise(harness.coordinator.commit({
@@ -3191,7 +3406,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       }),
     )
   })
-  it('keeps entity, block, revision, and output state unchanged when a combined blast commit fails', async () => {
+  it('records a rejected combined blast commit without advancing entity, block, revision, or output state', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const harness = await Effect.runPromise(makeHarness({
       entity: { ...creeperAt(0, 64), behaviour: { _tag: 'Lit', burnedSecs: 1.49 } },
@@ -3318,7 +3533,7 @@ describe('entities stage owner-backed MobSimulation', () => {
         tnt: {
           tnts: [{
             id: tntId,
-            dimension: INITIAL_DIMENSION,
+          dimension: INITIAL_DIMENSION,
             center: { x: 0, y: 64, z: 0 },
             state: { kind: 'primed', remainingFuseSecs: 0.01 },
           }],
@@ -3326,11 +3541,15 @@ describe('entities stage owner-backed MobSimulation', () => {
       }))
       await Effect.runPromise(Ref.set(harness.state.rollSeed, 133))
       await harness.run(0.05 as DeltaTimeSecs)
-      return Effect.runPromise(Effect.all({
+      const { drops, experienceOrbs, seed } = await Effect.runPromise(Effect.all({
         drops: Ref.get(harness.state.mobDrops),
-        experience: Ref.get(harness.state.mobExperience),
+        experienceOrbs: harness.coordinator.snapshot(
+          GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+          ExperienceOrbOwnerSnapshotSchema,
+        ),
         seed: Ref.get(harness.state.rollSeed),
       }))
+      return { drops, experience: experienceOrbs.state.orbs.map(({ value }) => Number(value)), seed }
     }
 
     const first = await run()
@@ -3340,9 +3559,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       kind: COW_KIND,
       item: 'beef',
     }))
-    expect(first.experience).toStrictEqual([
-      expect.objectContaining({ source: cowId, kind: COW_KIND, amount: 3 }),
-    ])
+    expect(first.experience).toStrictEqual([3])
     expect(replay).toStrictEqual(first)
     expect(first.seed).not.toBe(133)
   })
@@ -3696,7 +3913,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBe(bedrock)
   })
 
-  it('fails TNT detonation before planning when the owner snapshots have different revisions', async () => {
+  it('records TNT owner snapshot revision faults before planning', async () => {
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
       tnt: {
@@ -4088,12 +4305,16 @@ describe('entities stage owner-backed MobSimulation', () => {
 
     await harness.run(makeDeltaTimeSecs(0.05))
 
-    const outputs = await Effect.runPromise(Ref.get(harness.state.mobExperience))
+    const experienceOrbs = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
     const sources = await Effect.runPromise(harness.coordinator.snapshot(
       GAMEPLAY_TNT_SOURCES_OWNER_ID,
       GameplayTntSourcesSnapshotSchema,
     ))
-    expect(outputs).toMatchObject([{ source: zombie.id, amount: 5 }])
+    expect(experienceOrbs.state.orbs.reduce((total, { value, count }) => total + Number(value) * (count ?? 1), 0))
+      .toBe(5)
     expect(sources.state.sources).toStrictEqual([])
     expect(harness.tntCommits()).toBe(1)
   })
@@ -4280,7 +4501,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
-  it('propagates a schema mismatch when the registered TNT owner id names another owner', async () => {
+  it('records a schema mismatch when the registered TNT owner id names another owner', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null, provideTntService: false }))
     const { tntService: _tntService, ...commitWithoutService } = harness.context.commit!
     void _tntService
@@ -4302,7 +4523,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toStrictEqual([])
   })
 
-  it('propagates a schema mismatch from a TNT service bound to another registered owner', async () => {
+  it('records a schema mismatch from a TNT service bound to another registered owner', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null }))
     const tntService = await Effect.runPromise(makeTntService(
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -4973,6 +5194,356 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.droppedItemPickupExecutions))).toStrictEqual([])
   })
 
+  it('removes an expired XP orb through the registered entities stage', async () => {
+    const orbId = EntityId('test:expired-unpositioned-xp-orb')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: {
+        orbs: [{
+          id: orbId,
+          value: Result.getOrThrow(createExperienceOrbValue(2)),
+          spawnedAt: SimulationTick(0),
+        }],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(6001)))
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    expect(harness.commits()).toBe(1)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).state.orbs).toStrictEqual([])
+  })
+
+  it('keeps an in-range XP orb stationary and uncollected during its pickup cooldown', async () => {
+    const orbId = EntityId('test:cooldown-stationary-xp-orb')
+    const orb = {
+      id: orbId,
+      value: Result.getOrThrow(createExperienceOrbValue(2)),
+      position: Schema.decodeUnknownSync(WorldPositionSchema)({
+        dimension: INITIAL_DIMENSION,
+        ...position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0)),
+      }),
+      spawnedAt: SimulationTick(0),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      experienceOrbs: { orbs: [orb] },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+    await Effect.runPromise(Ref.set(harness.state.lastExperienceOrbPickupTick, SimulationTick(1)))
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    expect(harness.commits()).toBe(0)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).state.orbs).toStrictEqual([orb])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+  })
+
+  it('leaves a positioned XP orb outside the attraction radius untouched', async () => {
+    const orb = {
+      id: EntityId('test:out-of-range-xp-orb'),
+      value: Result.getOrThrow(createExperienceOrbValue(2)),
+      position: Schema.decodeUnknownSync(WorldPositionSchema)({
+        dimension: INITIAL_DIMENSION,
+        ...position(PositionAxis(12), PositionAxis(64), PositionAxis(0)),
+      }),
+      spawnedAt: SimulationTick(0),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      experienceOrbs: { orbs: [orb] },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    expect(harness.commits()).toBe(0)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).state.orbs).toStrictEqual([orb])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+  })
+
+  it('records a rejected owner commit when moving an attracted XP orb', async () => {
+    const orb = {
+      id: EntityId('test:xp-orb-movement-commit-rejected'),
+      value: Result.getOrThrow(createExperienceOrbValue(2)),
+      position: Schema.decodeUnknownSync(WorldPositionSchema)({
+        dimension: INITIAL_DIMENSION,
+        ...position(PositionAxis(5), PositionAxis(64), PositionAxis(0)),
+      }),
+      spawnedAt: SimulationTick(0),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      rejectCommit: true,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      experienceOrbs: { orbs: [orb] },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    expect(harness.commits()).toBe(1)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).state.orbs).toStrictEqual([orb])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed',
+      operation: 'WorldCommit',
+      subject: 'ExperienceOrb',
+      error: { _tag: 'WorldRevisionConflict' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+  })
+
+  it('attracts and automatically picks up an XP orb, mending an equipped helmet before crediting leftover XP', async () => {
+    // Java Edition 26.3 Mending repairs 2 durability per XP: https://minecraft.wiki/w/Mending
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const orbId = EntityId('test:mending-xp-orb')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose,
+      playerStorage: mendingIronHelmetStorage(),
+      vitals: SPAWN_VITALS,
+      experienceOrbs: {
+        orbs: [{
+          id: EntityId('test:legacy-unpositioned-experience-orb'),
+          value: Result.getOrThrow(createExperienceOrbValue(1)),
+        }, {
+          id: orbId,
+          value: orbValue,
+          position: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: INITIAL_DIMENSION,
+            ...position(PositionAxis(1.02), PositionAxis(64), PositionAxis(0)),
+          }),
+          spawnedAt: SimulationTick(0),
+        }],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const storageAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    const executions = await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))
+    const helmet = storageAfter.state.equipment.slots.head
+
+    expect(harness.commits()).toBe(2)
+    expect(storageAfter.revision).toBe(revisionBefore + 2)
+    expect(vitalsAfter.revision).toBe(revisionBefore + 2)
+    expect(orbsAfter.revision).toBe(revisionBefore + 2)
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_VITALS_OWNER_ID)
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID)
+    expect(helmet?.durability).toStrictEqual({ current: 165, max: 165 })
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(4)
+    expect(orbsAfter.state.orbs).toStrictEqual([{
+      id: EntityId('test:legacy-unpositioned-experience-orb'),
+      value: Result.getOrThrow(createExperienceOrbValue(1)),
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.lastExperienceOrbPickupTick))).toBe(SimulationTick(1))
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+    expect(executions).toMatchObject([{
+      request: {
+        actor: EntityId('mx-gameplay:player-avatar'),
+        orb: orbId,
+        tick: SimulationTick(1),
+      },
+      outcome: { _tag: 'Completed' },
+    }])
+  })
+
+  it('consumes an XP orb completely when Mending repairs exactly its full durability value', async () => {
+    // Java Edition 26.3 Mending repairs 2 durability per XP; a 5-XP orb repairs
+    // this helmet's 10 missing durability and leaves no XP to credit.
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const orbId = EntityId('test:mending-full-consumption-orb')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose,
+      playerStorage: mendingIronHelmetStorage(155),
+      vitals: SPAWN_VITALS,
+      experienceOrbs: {
+        orbs: [{
+          id: orbId,
+          value: Result.getOrThrow(createExperienceOrbValue(5)),
+          position: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: INITIAL_DIMENSION,
+            ...position(PositionAxis(1.02), PositionAxis(64), PositionAxis(0)),
+          }),
+          spawnedAt: SimulationTick(0),
+        }],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const storageAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+
+    expect(storageAfter.state.equipment.slots.head?.durability).toStrictEqual({ current: 165, max: 165 })
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(0)
+    expect(orbsAfter.state.orbs).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request: { orb: orbId },
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 5, orb: orbId }] },
+    }])
+  })
+
+  it('automatically absorbs the nearest XP orb among multiple nearby orbs', async () => {
+    const firstOrbId = EntityId('test:nearest-owner-pickup-first')
+    const secondOrbId = EntityId('test:nearest-owner-pickup-second')
+    const nearestOrbId = EntityId('test:nearest-owner-pickup-last')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(2))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      vitals: SPAWN_VITALS,
+      experienceOrbs: {
+        orbs: [
+          {
+            id: firstOrbId,
+            value: orbValue,
+            position: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: INITIAL_DIMENSION,
+              ...position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0)),
+            }),
+          },
+          {
+            id: secondOrbId,
+            value: orbValue,
+            position: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: INITIAL_DIMENSION,
+              ...position(PositionAxis(0.8), PositionAxis(64), PositionAxis(0)),
+            }),
+          },
+          {
+            id: nearestOrbId,
+            value: orbValue,
+            position: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: INITIAL_DIMENSION,
+              ...position(PositionAxis(0.2), PositionAxis(64), PositionAxis(0)),
+            }),
+          },
+        ],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(8)))
+
+    await Effect.runPromise(makeEntitiesStage(harness.context).run(makeDeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    expect(harness.commits()).toBe(1)
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(2)
+    expect(orbsAfter.state.orbs.map(({ id }) => id)).toStrictEqual([firstOrbId, secondOrbId])
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
+      GAMEPLAY_VITALS_OWNER_ID,
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.lastExperienceOrbPickupTick)))
+      .toBe(SimulationTick(8))
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request: { orb: nearestOrbId, tick: SimulationTick(8) },
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 2, orb: nearestOrbId }] },
+    }])
+  })
+
+  it('absorbs one orb from a stacked XP orb and keeps the remaining count', async () => {
+    const orbId = EntityId('test:stacked-xp-orb')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
+    const orbCount = Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: { orbs: [{ id: orbId, value: orbValue, count: orbCount }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 4,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    expect(orbsAfter.state.orbs).toStrictEqual([{ id: orbId, value: orbValue, count: 1 }])
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(5)
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request,
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 5, orb: orbId }] },
+    }])
+  })
+
   it('commits registered XP-orb absorption once and requeues after an atomic rejection', async () => {
     const orbId = EntityId('test:xp-orb')
     const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
@@ -5080,6 +5651,51 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toStrictEqual([])
   })
 
+  it('requeues XP-orb absorption when the player-storage snapshot races, then retries successfully', async () => {
+    const orbId = EntityId('test:xp-orb-storage-revision-mismatch')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(4))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: { orbs: [{ id: orbId, value: orbValue }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 10,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    harness.mismatchNextSnapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    expect(harness.mismatchedSnapshots()).toBe(1)
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([request])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toStrictEqual([])
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    expect(harness.commits()).toBe(1)
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(4)
+    expect(orbsAfter.state.orbs).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request,
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 4, orb: orbId }] },
+    }])
+  })
+
   it('keeps XP-orb absorption typed when its owner is not registered', async () => {
     const orbId = EntityId('test:xp-orb-unregistered')
     const harness = await Effect.runPromise(makeHarness({
@@ -5107,6 +5723,55 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([
       { request, outcome: { _tag: 'Unsupported', reason: 'OwnerRegistrationUnavailable' } },
     ])
+  })
+
+  it('uses Mending on a damaged main-hand pickaxe before crediting the remaining XP', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const orbId = EntityId('test:mending-main-hand-xp-orb')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose,
+      playerStorage: mendingIronPickaxeStorage(),
+      vitals: SPAWN_VITALS,
+      experienceOrbs: {
+        orbs: [{
+          id: orbId,
+          value: Result.getOrThrow(createExperienceOrbValue(3)),
+          position: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: INITIAL_DIMENSION,
+            ...position(PositionAxis(1.02), PositionAxis(64), PositionAxis(0)),
+          }),
+          spawnedAt: SimulationTick(0),
+        }],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const storageAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+
+    expect(storageAfter.state.inventoryDurability[0]).toStrictEqual({ current: 250, max: 250 })
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(0)
+    expect(orbsAfter.state.orbs).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request: { orb: orbId },
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 3, orb: orbId }] },
+    }])
   })
 
   it('records an unknown registered-orb snapshot as a typed failure without consuming the request', async () => {
@@ -5139,6 +5804,39 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([
       { request, outcome: { _tag: 'Failed', error: { _tag: 'ReplicatedOwnerUnknown' } } },
     ])
+  })
+
+  it('records player-storage snapshot failure for a registered XP-orb absorption', async () => {
+    const orbId = EntityId('test:xp-orb-storage-snapshot-failure')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: { orbs: [{ id: orbId, value: Result.getOrThrow(createExperienceOrbValue(3)) }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 11,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: {
+        ...harness.context.commit!,
+        playerStorageOwnerId: makeReplicatedOwnerId('test:unregistered-player-storage-owner'),
+      },
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(0 as DeltaTimeSecs).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request,
+      outcome: { _tag: 'Failed', error: { _tag: 'ReplicatedOwnerUnknown' } },
+    }])
   })
 
   it('reports a requested XP orb missing from the registered owner without committing', async () => {

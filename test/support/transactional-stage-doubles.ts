@@ -21,6 +21,7 @@ import {
   localCoordOfBlock,
   type BlockId,
   type BlockPosition,
+  type Dimension,
 } from '@nerima-games/mc-kernel'
 import {
   ChunkStore,
@@ -38,6 +39,7 @@ import {
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_FISHING_OWNER_ID,
+  GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
@@ -145,6 +147,8 @@ export const makeGameplayCommitServices = (
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   initial: GameplayOwnerInitialState = {},
+  // Chunk store per dimension for coordinator reads; every dimension reads `store` when omitted.
+  storeFor: (dimension: Dimension) => ChunkStoreApi = () => store,
 ): Effect.Effect<
   GameplayStageCommitServices,
   WorldCommitCoordinatorError | GameplayOwnerRegistrationFailure
@@ -158,7 +162,7 @@ export const makeGameplayCommitServices = (
     const coordinator = yield* makeWorldCommitCoordinator({
       world: WORLD_ID,
       owners,
-      chunkStores: { forDimension: () => store },
+      chunkStores: { forDimension: storeFor },
     })
     const bucketService = yield* makeBucketService().pipe(
       Effect.provideService(WorldCommitCoordinator, coordinator),
@@ -175,6 +179,7 @@ export const makeGameplayCommitServices = (
       villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
       brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
       fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
+      fishingEnchantmentsOwnerId: GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID,
       entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
       tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
       statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,

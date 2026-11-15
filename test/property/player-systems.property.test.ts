@@ -60,14 +60,12 @@ const expectedVillagerOfferTables = {
   ],
 } as const
 
-const itemForEnchantment: Readonly<Record<EnchantmentId, ItemType>> = {
-  protection: 'iron_helmet',
-  sharpness: 'iron_sword',
-  efficiency: 'iron_pickaxe',
-  unbreaking: 'flint_and_steel',
-  fortune: 'diamond_pickaxe',
-  power: 'bow',
-}
+const itemForEnchantment: Readonly<Partial<Record<EnchantmentId, ItemType>>> = Object.fromEntries(
+  ENCHANTMENT_IDS.flatMap((id) => {
+    const item = ENCHANTMENT_REGISTRY[id].applicableItems[0]
+    return item === undefined ? [] : [[id, item]]
+  }),
+)
 
 const ironPickaxeWith = (
   id: 'efficiency' | 'unbreaking',
@@ -134,9 +132,11 @@ describe('player systems properties', () => {
             durationSecs: durationSecs + extraSecs,
             amplifier: amplifier - 1,
           })
-          const effect = refreshed.effects[0]
+          if (Result.isFailure(refreshed)) return false
+          const refreshedState = refreshed.success.state
+          const effect = refreshedState.effects[0]
 
-          return refreshed.effects.length === 1 &&
+          return refreshedState.effects.length === 1 &&
             effect?.amplifier === amplifier &&
             effect.remainingSecs === durationSecs &&
             effect.pulseClockSecs === 0.25
@@ -149,20 +149,28 @@ describe('player systems properties', () => {
     // Fails if speed remains active after its full duration or expires before the boundary.
     FastCheck.assert(
       FastCheck.property(FastCheck.integer({ min: 1, max: 600 }), (durationSecs) => {
-        const active = applyStatusEffect(emptyStatusEffectState(), {
+        const activeResult = applyStatusEffect(emptyStatusEffectState(), {
           type: 'speed',
           durationSecs,
         })
-        const before = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
-        const exact = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
-        const after = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
-        return Result.isSuccess(before) && Result.isSuccess(exact) && Result.isSuccess(after) &&
-          before.success.state.effects[0]?.remainingSecs === 1 &&
-          before.success.movementSpeedMultiplier > 1 &&
-          exact.success.state.effects.length === 0 &&
-          exact.success.movementSpeedMultiplier === 1 &&
-          after.success.state.effects.length === 0 &&
-          after.success.movementSpeedMultiplier === 1
+        if (Result.isFailure(activeResult)) return false
+        const active = activeResult.success.state
+        const beforeResult = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
+        const exactResult = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
+        const afterResult = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
+        if (Result.isFailure(beforeResult) || Result.isFailure(exactResult) || Result.isFailure(afterResult)) {
+          return false
+        }
+        const before = beforeResult.success
+        const exact = exactResult.success
+        const after = afterResult.success
+
+        return before.state.effects[0]?.remainingSecs === 1 &&
+          before.movementSpeedMultiplier > 1 &&
+          exact.state.effects.length === 0 &&
+          exact.movementSpeedMultiplier === 1 &&
+          after.state.effects.length === 0 &&
+          after.movementSpeedMultiplier === 1
       }),
     )
   })
@@ -198,6 +206,7 @@ describe('player systems properties', () => {
         FastCheck.integer({ min: 1, max: 6 }),
         (id, level) => {
           const item = itemForEnchantment[id]
+          if (item === undefined) return ENCHANTMENT_REGISTRY[id].applicableItems.length === 0
           const decoded = decodeEnchantedItem({
             item,
             durability: durabilityForItem(item),
@@ -236,7 +245,7 @@ describe('player systems properties', () => {
 
         return decoded.ok &&
           decoded.value.enchantments.map(({ id }) => id).join(',') ===
-            'efficiency,unbreaking,fortune'
+            'efficiency,fortune,unbreaking'
       }),
     )
   })

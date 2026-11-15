@@ -215,6 +215,7 @@ import {
   type SimulationTick as SimulationTickValue,
   type DeltaTimeSecs as DeltaTimeSecsValue,
 } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import {
   DEFAULT_MOB_MOVEMENT_SETTINGS,
   durabilityForItem,
@@ -706,10 +707,12 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
 /**
  * A player-caused casualty with no Looting context.
  *
- * Bow and melee requests currently carry damage but no enchantment metadata,
- * so both drop and experience resolution use level zero.
+ * Bow and melee hits carry the attacker's Looting level, and drop resolution
+ * uses it; hits that omit it, such as non-player damage, resolve at level
+ * zero. Experience resolution always uses level zero.
  */
-const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+const NO_LOOTING_LEVEL = Result.getOrThrow(EnchantmentLevel.result(0))
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: NO_LOOTING_LEVEL }
 
 /** Resolve table-backed drops for a kernel entity kind. */
 export const dropRulesOfKind = (kind: EntityKind): Result.Result<ReadonlyArray<MobDropRule>, { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> =>
@@ -1076,7 +1079,9 @@ export type MobCasualty = Readonly<{
   id: EntityId
   kind: EntityKind
   at: Position
+  dimension?: Dimension
   killCredit?: MobKillCredit
+  lootingLevel?: EnchantmentLevel
   lastHitTick?: SimulationTickValue
   deathTick?: SimulationTickValue
   age?: MobAge
@@ -1134,12 +1139,15 @@ const mobCasualty = (
   killCredit = latestHit?.killCredit ?? entity.killCredit,
   lastHitTick = latestHit?.lastHitTick ?? entity.lastHitTick,
   burning = false,
+  lootingLevel?: EnchantmentLevel,
 ): MobCasualty => ({
   id: entity.id,
   kind: entity.kind,
   at: entity.feetPosition,
+  ...(entity.dimension === undefined ? {} : { dimension: entity.dimension }),
   ...(killCredit === undefined ? {} : { killCredit }),
   ...(lastHitTick === undefined ? {} : { lastHitTick }),
+  ...(lootingLevel === undefined ? {} : { lootingLevel }),
   ...(deathTick === undefined ? {} : { deathTick }),
   ...(burning ? { burning: true } : {}),
 })
@@ -2265,6 +2273,7 @@ export type MobDamageHit = Readonly<{
   id: EntityId
   damage: Damage
   killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  lootingLevel?: EnchantmentLevel
   lastHitTick?: SimulationTickValue
   burning?: boolean
 }>
@@ -2378,7 +2387,12 @@ export const planMobDamageRoster = (
   if (hits.length === 0) return { roster, casualties: NO_CASUALTIES, faults: [] }
 
   const faults: MobRosterDamageFault[] = []
-  type DamageBatch = { damages: Array<Damage>; latestHit?: RecentMobHit; burning?: boolean }
+  type DamageBatch = {
+    damages: Array<Damage>
+    latestHit?: RecentMobHit
+    burning?: boolean
+    lootingLevel?: EnchantmentLevel
+  }
   const byEntity = new Map<EntityId, DamageBatch>()
   const invalidDamageIds = new Set<EntityId>()
   for (const hit of hits) {
@@ -2410,7 +2424,10 @@ export const planMobDamageRoster = (
     if (
       recentHit !== undefined &&
       (batch.latestHit === undefined || recentHit.lastHitTick >= batch.latestHit.lastHitTick)
-    ) batch.latestHit = recentHit
+    ) {
+      batch.latestHit = recentHit
+      batch.lootingLevel = hit.lootingLevel ?? NO_LOOTING_LEVEL
+    }
     if (hit.burning === true) batch.burning = true
     byEntity.set(hit.id, batch)
   }
@@ -2445,7 +2462,15 @@ export const planMobDamageRoster = (
     if (isDead(vitals)) {
       return {
         transition: DESPAWNED,
-        emit: mobCasualty(entity, deathTick, recentHits.get(entity.id), undefined, undefined, batch.burning),
+        emit: mobCasualty(
+          entity,
+          deathTick,
+          recentHits.get(entity.id),
+          undefined,
+          undefined,
+          batch.burning,
+          batch.lootingLevel,
+        ),
       }
     }
     return {
@@ -2674,6 +2699,7 @@ export type MobExperienceEvent = {
   readonly source: EntityId
   readonly kind: EntityKind
   readonly at: Position
+  readonly dimension?: Dimension
   readonly amount: number
 }
 
@@ -2713,7 +2739,13 @@ export const experienceOfCasualties = (
       casualty.experienceRoll ?? 0,
       experienceContextOfCasualty(casualty),
     )
-    if (amount > 0) experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
+    if (amount > 0) experience.push({
+      source: casualty.id,
+      kind: casualty.kind,
+      at: casualty.at,
+      ...(casualty.dimension === undefined ? {} : { dimension: casualty.dimension }),
+      amount,
+    })
   }
   return issues.length === 0
     ? { _tag: 'Resolved', experience }
@@ -2767,6 +2799,7 @@ export const rollCasualtyDrops = (
     const kill: MobKill = {
       ...SLAIN_WITHOUT_LOOTING,
       playerKill,
+      lootingLevel: casualty.lootingLevel ?? NO_LOOTING_LEVEL,
       ...(casualty.age === undefined ? {} : { age: casualty.age }),
       ...(casualty.size === undefined ? {} : { size: casualty.size }),
       ...(casualty.burning === undefined ? {} : { burning: casualty.burning }),

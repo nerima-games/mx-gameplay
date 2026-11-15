@@ -14,11 +14,18 @@ export type GameplayStageBlockTypeDecodeFailure = Readonly<{
 export type GameplayStageWorldFaultReason =
   | GameplayStageBlockTypeDecodeFailure
   | GameplayStageMissingBlockReadFailure
+  | GameplayStageUnavailableBlockReadFailure
   | BlockStateCodecFailure
   | LightQueueUnderflowError
 
 export type GameplayStageMissingBlockReadFailure = Readonly<{
   _tag: 'MissingBlockReadResult'
+  position: BlockPosition
+}>
+
+/** A read that returned no block because the chunk is not loaded or the position is outside the world. */
+export type GameplayStageUnavailableBlockReadFailure = Readonly<{
+  _tag: 'ChunkNotLoaded' | 'OutOfWorld'
   position: BlockPosition
 }>
 
