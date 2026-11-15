@@ -4,25 +4,25 @@
 
 ### Minor Changes
 
-- [#72](https://github.com/nerima-games/mx-gameplay/pull/72) [`1ed672f`](https://github.com/nerima-games/mx-gameplay/commit/1ed672fe70ec17095aebc389750ddba7e981d85c) - Add tick-based melee cooldowns, hurt resistance, shield and difficulty resolution, weapon damage values, sprint eligibility, and mining penalties.
+- Add tick-based melee cooldowns, hurt resistance, shield and difficulty resolution, weapon damage values, sprint eligibility, and mining penalties.
 
-- [#80](https://github.com/nerima-games/mx-gameplay/pull/80) [`18fa7df`](https://github.com/nerima-games/mx-gameplay/commit/18fa7df67d6cb16446d8444bae8651f6ba1b92ed) - Align gameplay with kernel 0.17.0, mc-audio 0.6.0, mc-sim 0.11.1, and mc-worldgen 0.9.1. Use faster cave carving and block-state materialization with unchanged generated output.
+- Align gameplay with kernel 0.17.0, mc-audio 0.6.0, mc-sim 0.11.1, and mc-worldgen 0.9.1. Use faster cave carving and block-state materialization with unchanged generated output.
   
   Stages expose world-data failures through new `EntityStageFault` records in `GameplayFrameState.entityStageFaults` and `drainGameplayEntityStageFaults(state)`. `WorldDataFailure` records report the operation, position, source, and typed reason. Equal records are deduplicated while pending and after draining. `placeBlock`, `carveExplosionCrater`, `igniteTnt`, `useFlintAndSteel`, `resolveBlasts`, and the two-argument `breakBlock` overload expose `BlockStateCodecFailure` and `LightQueueUnderflowError`. `planPlaceBlock` and `mushroomLightObjection` expose `LightQueueUnderflowError`. `targetedRightClickRoute` exposes typed target and registry errors. `BlockPlacementCommandOutcome` adds `WorldDataFailed`; farming item-use outcomes include the new `GameplayStageItemUseWorldFailure` type. Gameplay block-decode faults report `UnregisteredBlockId` failures.
   
   Hosts that drain faults retain state from `makeGameplayFrameStateForOwner` and pass it to `gameplayStages`; `makeGameplayStages` and `gameplayModule` keep their state private.
   
-  The biome spawn table covers kernel biome IDs, and default-material surfaces play the default footstep cue.
+  The biome spawn table covers kernel biome IDs, and default-material surfaces play the default footstep cue. The coverage-run per-test timeout is 60 seconds; regular test timeouts and the 100% coverage thresholds are unchanged.
 
-- [#79](https://github.com/nerima-games/mx-gameplay/pull/79) [`16fdf7e`](https://github.com/nerima-games/mx-gameplay/commit/16fdf7e8b476312cda51e8d5c2547dba05356950) - Generate enchanting-table offers through mc-sim's `EnchantmentTableService`, which counts the bookshelves around the requested table from the world. `OffersGenerated` results carry the counted `bookshelfCount` (0 to 15). An offers request is rejected with `table-area-unloaded` when a block used for the count is in an unloaded chunk or outside the world; the roll seed is not consumed, and each unreadable position is recorded as a `WorldDataFailure` stage fault with the new source `EnchantmentTable`.
+- Generate enchanting-table offers through mc-sim's `EnchantmentTableService`, which counts the bookshelves around the requested table from the world. `OffersGenerated` results carry the counted `bookshelfCount` (0 to 15). An offers request is rejected with `table-area-unloaded` when a block used for the count is in an unloaded chunk or outside the world; the roll seed is not consumed, and each unreadable position is recorded as a `WorldDataFailure` stage fault with the new source `EnchantmentTable`.
 
-- [#73](https://github.com/nerima-games/mx-gameplay/pull/73) [`8e302fc`](https://github.com/nerima-games/mx-gameplay/commit/8e302fcce29b8c902a355a5448f406de8408caeb) - Use kernel food definitions, supported vanilla mob drops, and oak-leaf apples.
+- Use kernel food definitions, supported vanilla mob drops, and oak-leaf apples.
 
-- [#77](https://github.com/nerima-games/mx-gameplay/pull/77) [`9958993`](https://github.com/nerima-games/mx-gameplay/commit/995899393c346f67c03c1888ea9bd251c8df11b0) - Upgrade mc-sim to 0.10.0 and align gameplay time progression with its tick-based clock.
+- Upgrade mc-sim to 0.10.0 and align gameplay time progression with its tick-based clock.
 
-- [#78](https://github.com/nerima-games/mx-gameplay/pull/78) [`24a803e`](https://github.com/nerima-games/mx-gameplay/commit/24a803e212bc5d4eea1a25bc3f6173b14e26eeb2) - Use SM3 pathfinding and physics for supported mob movement, add physical skeleton arrows and Blaze fireballs, let spiders climb walls, and burn exposed zombies and skeletons in daylight. Record typed world-data failures for affected targets while other stage work continues. Reject malformed present state.
+- Use SM3 pathfinding and physics for supported mob movement, add physical skeleton arrows and Blaze fireballs, let spiders climb walls, and burn exposed zombies and skeletons in daylight. Record typed world-data failures for affected targets while other stage work continues. Reject malformed present state.
   
-  ## Public contract changes since v0.10.0
+  ## Public contract changes
   
   Relative to the latest published release, v0.10.0, callers must handle the Result and Effect error channels listed below. This inventory follows every export reachable from the package entrypoint and includes inferred declarations. Function-body changes alone are excluded. Referenced-type changes are listed separately from directly changed declarations. Dependency-internal declarations are outside this table.
   
@@ -371,15 +371,15 @@
   
   </details>
 
-- [#75](https://github.com/nerima-games/mx-gameplay/pull/75) [`1597d67`](https://github.com/nerima-games/mx-gameplay/commit/1597d67264b731ecf075d15eef023b7ccdd2a916) - Revise mob spawning with column-based floor search, light and biome checks, difficulty caps, and scheduled passive respawns.
+- Revise mob spawning with column-based floor search, light and biome checks, difficulty caps, and scheduled passive respawns.
 
-- [#79](https://github.com/nerima-games/mx-gameplay/pull/79) [`16fdf7e`](https://github.com/nerima-games/mx-gameplay/commit/16fdf7e8b476312cda51e8d5c2547dba05356950) - Wire combat, mining, fishing, mob-drop, and armor enchantments; apply kernel status-effect definitions during ticks; and add XP-orb pickup, Mending, and continuous mining progress.
+- Wire combat, mining, fishing, mob-drop, and armor enchantments; apply kernel status-effect definitions during ticks; and add XP-orb pickup, Mending, and continuous mining progress.
   
   `applyStatusEffect` now returns a `Result` of `StatusEffectApplicationOutcome` or `StatusEffectApplicationError` instead of a `StatusEffectState`. `tickStatusEffects` now returns a `Result` of `StatusEffectTick` or `InvalidStatusEffectTick` and rejects an invalid state or delta instead of ticking an empty state or zero elapsed time.
   
   Fishing records each cast's Lure and Luck of the Sea levels and open-water decision in the new replicated owner `GAMEPLAY_FISHING_ENCHANTMENTS_OWNER_ID` (`GameplayFishingEnchantmentsSnapshotSchema`), registered by `gameplayOwnerRegistrations` and restorable through `GameplayOwnerInitialState.fishingEnchantments`. The record is written in the cast commit and removed in the reel or cancel commit. `GameplayStageCommitServices` accepts an optional `fishingEnchantmentsOwnerId`. An active cast without a record is rebuilt from the rod at the reel's `toolLocation` and the blocks around the bobber; when that is impossible the request is skipped and a stage fault is recorded (`FishingRodNotHeld` when the request names no rod location, `FishingBobberUnavailable` when the bobber is gone, or a `Fishing` world-data fault when the blocks around the bobber cannot be read), so an advance or tool-less reel for such a cast no longer proceeds with default levels.
 
-- [#79](https://github.com/nerima-games/mx-gameplay/pull/79) [`16fdf7e`](https://github.com/nerima-games/mx-gameplay/commit/16fdf7e8b476312cda51e8d5c2547dba05356950) - Add gameplay requests for generating enchanting-table offers and applying them through mc-sim. Both requests are rejected with `table-missing` when the requested position does not hold an enchanting table.
+- Add gameplay requests for generating enchanting-table offers and applying them through mc-sim. Both requests are rejected with `table-missing` when the requested position does not hold an enchanting table.
 
 ## 0.10.0
 
