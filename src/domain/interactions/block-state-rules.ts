@@ -53,8 +53,11 @@ export type BlockStateWorldPort = Readonly<{
 // ChunkStoreApi stores block IDs only, so this adapter cannot return a stateful cell.
 type ChunkStoreBlockStateRead = Exclude<BlockStateRead, Readonly<{ _tag: 'Found' }>>
 
+/** Host-provided correlation key for one block-state rule request. */
+export type BlockStateRuleRequestId = string
+
 export type BlockStateRuleRequest = Readonly<{
-  requestId: string
+  requestId: BlockStateRuleRequestId
   position: BlockPosition
   operation:
     | Readonly<{ _tag: 'ToggleDoor' }>
@@ -135,7 +138,7 @@ export type BlockStateRuleOutcome =
   | BlockStateRuleFailure
 
 export type BlockStateRuleResult = Readonly<{
-  requestId: string
+  requestId: BlockStateRuleRequestId
   outcome: BlockStateRuleOutcome
 }>
 
