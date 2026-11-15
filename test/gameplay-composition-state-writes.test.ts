@@ -16,7 +16,7 @@ import {
   blockPositionKeyOf,
 } from '@nerima-games/mc-kernel'
 import type { BlockPosition, BlockType, BlockStateValues, Dimension, WorldRevision, WorldWriteBatch, WorldWriteCommit } from '@nerima-games/mc-kernel'
-import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { ChunkStore, LightQueueUnderflowError, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   DomainEventBus,
   TimeService,
@@ -40,6 +40,7 @@ import {
   GAMEPLAY_ENTITIES_OWNER_ID,
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
+  drainGameplayEntityStageFaults,
   requestBlockPlacementCommand,
   requestBlockUse,
   drainBlockUseResults,
@@ -572,6 +573,39 @@ describe('the registered production composition reaches the C7 state writer', ()
       expect(reads).toBe(2)
       expect(composition.stateWorld.batches).toHaveLength(0)
       expect(yield* Ref.get(composition.state.blockStateRuleResults)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records a failed sapling light read once as a SaplingGrowth fault and leaves the sapling unchanged', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(4, 64, 4)
+      const reason = new LightQueueUnderflowError({ index: 4 })
+      let reads = 0
+      const composition = yield* makeProductionComposition(
+        [[position, cell('sapling', stateFor('sapling'))]],
+        emptySlots(),
+        { crops: [] },
+        {},
+        {
+          getLight: () => Effect.suspend(() => {
+            reads += 1
+            return Effect.fail(reason)
+          }),
+        },
+      )
+      yield* runFrames(composition.stages, 2, DeltaTimeSecs(1))
+
+      expect(reads).toBe(2)
+      expect(yield* drainGameplayEntityStageFaults(composition.state)).toStrictEqual([{
+        _tag: 'WorldDataFailure',
+        source: 'SaplingGrowth',
+        operation: 'ReadLight',
+        position,
+        reason,
+      }])
+      expect(composition.stateWorld.batches).toHaveLength(0)
+      expect(yield* Ref.get(composition.state.blockStateRuleResults)).toStrictEqual([])
+      expect(composition.stateWorld.cells.get(blockKey(position))?.state.stage).toBe(0)
     }),
   )
 
