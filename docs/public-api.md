@@ -650,6 +650,13 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 `Blast` が位置を持つのは、`domain/mob/explosion.ts` の `Explosion` が**意図的に持たない**からである
 ——「座標はホストの事実」であり、ここがそのホストである。
 
+### domain/entities/mob-movement-world.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `MobMovementWorldAdapter` | **契約** | `planMobMovementRoster` に渡す mob 移動用 world port と、セル参照、問い合わせ失敗の確認、未ロードセルとの重なり判定をまとめた型 |
+| `mobMovementWorldFromChunkWindow` | **契約** | ホストがmc-worldgenの`ChunkStore`から用意した`ChunkWindow`を mob 移動用 world adapter に変換する。セル参照では未ロード、world の上下境界、不正なセルを区別し、問い合わせ失敗は `queryFailure` で確認できる |
+
 ### domain/entities/dropped-item.ts
 
 | export | 種別 | 備考 |

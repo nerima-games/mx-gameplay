@@ -28,6 +28,10 @@ import { BREWING_ADVANCE_STAGE_ID, GAMEPLAY_STAGE_IDS } from '../src/stages/stag
 const withoutKey = (record: Readonly<Record<string, unknown>>, key: string): Record<string, unknown> =>
   Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key))
 
+const publicMobMovementWorldBuilder: (
+  window: Parameters<typeof gameplay.mobMovementWorldFromChunkWindow>[0],
+) => gameplay.MobMovementWorldAdapter = gameplay.mobMovementWorldFromChunkWindow
+
 describe('public API surface', () => {
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
     Effect.sync(() => {
@@ -107,6 +111,13 @@ describe('public API surface', () => {
   it.effect('re-exports host-facing targeted right-click routing', () =>
     Effect.sync(() => {
       expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
+    }),
+  )
+
+  it.effect('re-exports host-facing mob movement world adaptation', () =>
+    Effect.sync(() => {
+      expect(Object.keys(gameplay)).toContain('mobMovementWorldFromChunkWindow')
+      expect(publicMobMovementWorldBuilder).toBe(gameplay.mobMovementWorldFromChunkWindow)
     }),
   )
 
