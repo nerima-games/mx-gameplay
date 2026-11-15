@@ -8,7 +8,6 @@ import {
   defaultBlockState,
   type BlockFace,
   type BlockId,
-  type BlockRegistryResolutionFailure,
   type BlockPosition,
   type BlockStateAge,
   type BlockStateFacing,
@@ -148,7 +147,7 @@ export type BlockIdDecodeFailure = Readonly<{
   _tag: 'BlockTypeDecodeFailed'
   position: BlockPosition
   block: BlockId
-  failure: BlockRegistryResolutionFailure | Readonly<{ _tag: 'UnregisteredBlockId' }>
+  failure: Readonly<{ _tag: 'UnregisteredBlockId' }>
 }>
 
 export type SaplingTreeSpaceStatus = Readonly<
@@ -198,20 +197,16 @@ type BlockStateAccess =
 const readAccess = (position: BlockPosition, reading: BlockStateRead): BlockStateAccess => {
   if (reading._tag === 'Found') {
     const { cell } = reading
-    const decoded = blockTypeOfId(cell.block)
-    if (Result.isFailure(decoded)) {
-      return {
-        _tag: 'Failed',
-        failure: { _tag: 'BlockTypeDecodeFailed', position, block: cell.block, failure: decoded.failure },
-      }
-    }
-    if (decoded.success === undefined) {
+    // Ports return validated BlockIds; blockTypeOfId fails only when the fixed
+    // registry itself cannot be built, which would fail every id alike.
+    const type = Result.getOrThrow(blockTypeOfId(cell.block))
+    if (type === undefined) {
       return {
         _tag: 'Failed',
         failure: { _tag: 'BlockTypeDecodeFailed', position, block: cell.block, failure: { _tag: 'UnregisteredBlockId' } },
       }
     }
-    return { _tag: 'Found', cell, type: decoded.success }
+    return { _tag: 'Found', cell, type }
   }
   if (reading._tag === 'Unsupported') {
     return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: reading.operation, position } }

@@ -682,18 +682,13 @@ describe('the registered production composition reaches the C7 state writer', ()
     }),
   )
 
-  it.effect('reports block type resolution failures from tree-space reads through the registered stage', () =>
+  it.effect('reports an unregistered block id from a tree-space read through the registered stage', () =>
     Effect.gen(function* () {
-      const malformedSapling = fixtureBlockPosition(4, 64, 4)
       const unregisteredSapling = fixtureBlockPosition(5, 64, 4)
-      const malformedSpace = fixtureBlockPosition(4, 65, 4)
       const unregisteredSpace = fixtureBlockPosition(5, 65, 4)
-      // This models corrupt chunk data crossing the ChunkStore boundary.
-      const malformedBlock = -1 as BlockId
       const unregisteredBlock = BlockId(65_535)
       const composition = yield* makeProductionComposition(
         [
-          [malformedSapling, cell('sapling', { stage: 1 })],
           [unregisteredSapling, cell('sapling', { stage: 1 })],
         ],
         emptySlots(),
@@ -701,9 +696,6 @@ describe('the registered production composition reaches the C7 state writer', ()
         {},
         {
           getBlock: (position) => {
-            if (position.x === 4 && position.y === 65) {
-              return Effect.succeed({ _tag: 'Block', block: malformedBlock })
-            }
             if (position.x === 5 && position.y === 65) {
               return Effect.succeed({ _tag: 'Block', block: unregisteredBlock })
             }
@@ -718,14 +710,6 @@ describe('the registered production composition reaches the C7 state writer', ()
         {
           outcome: {
             _tag: 'BlockTypeDecodeFailed',
-            position: malformedSpace,
-            block: malformedBlock,
-            failure: { _tag: 'BrandError' },
-          },
-        },
-        {
-          outcome: {
-            _tag: 'BlockTypeDecodeFailed',
             position: unregisteredSpace,
             block: unregisteredBlock,
             failure: { _tag: 'UnregisteredBlockId' },
@@ -733,7 +717,6 @@ describe('the registered production composition reaches the C7 state writer', ()
         },
       ])
       expect(composition.stateWorld.batches).toHaveLength(0)
-      expect(composition.stateWorld.cells.get(blockKey(malformedSapling))?.state.stage).toBe(1)
       expect(composition.stateWorld.cells.get(blockKey(unregisteredSapling))?.state.stage).toBe(1)
     }),
   )

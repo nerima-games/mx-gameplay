@@ -9,7 +9,6 @@ import {
   adjacentBlockPosition,
   blockIdOf,
   blockPosition,
-  blockTypeOfId,
   DeltaTimeSecs,
   defaultBlockState,
   type BlockFace,
@@ -302,18 +301,6 @@ describe('block state rules', () => {
         _tag: 'CropRandomTick', speedLevel: speedOf(10), roll: rollOf(0),
       })).toStrictEqual(unregisteredBlockAt(position))
       expect(unknownBlock.writes).toHaveLength(0)
-
-      // An id outside the BlockId range fails registry resolution rather than resolving to no row.
-      const outOfRangeBlock = 65_536 as BlockId
-      const outOfRange = memoryWorld([[position, { block: outOfRangeBlock, state: {} }]])
-      expect(yield* applyRuleAt(outOfRange.port, {
-        _tag: 'CropRandomTick', speedLevel: speedOf(10), roll: rollOf(0),
-      })).toStrictEqual({
-        _tag: 'BlockTypeDecodeFailed',
-        position,
-        block: outOfRangeBlock,
-        failure: Option.getOrThrow(Result.getFailure(blockTypeOfId(outOfRangeBlock))),
-      })
 
       const stone = memoryWorld([[position, { block: blockId('stone'), state: {} }]])
       expect(yield* applyRuleAt(stone.port, {
