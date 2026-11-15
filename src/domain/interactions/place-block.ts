@@ -135,7 +135,6 @@ import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
   blockIdOf,
-  blockTypeOfId,
   blockOfPlaceableItem,
   canBlockStaySupported,
   capabilityOfBlockId,
@@ -172,10 +171,10 @@ const STATEFUL_PLACEABLE_BLOCKS: ReadonlySet<BlockType> = new Set([
   'purpur_stairs',
 ])
 
-const statefulBlockType = (block: BlockId): BlockType | undefined => {
-  const type = Result.getOrUndefined(blockTypeOfId(block))
-  return type !== undefined && STATEFUL_PLACEABLE_BLOCKS.has(type) ? type : undefined
-}
+// Takes the held item's BlockType, not a BlockId read back from the registry,
+// so a stateful block can never be mistaken for a stateless one by a decode.
+const statefulBlockType = (type: BlockType): BlockType | undefined =>
+  STATEFUL_PLACEABLE_BLOCKS.has(type) ? type : undefined
 
 /** Half a unit cube. Written down because it appears three times below and means one thing. */
 const BLOCK_HALF = 0.5
@@ -472,7 +471,7 @@ export const placeBlock = (
       return { _tag: 'NoRoomAbove' }
     }
 
-    const needsState = statefulBlockType(verdict.block)
+    const needsState = statefulBlockType(blockOfPlaceableItem(request.heldItem))
     if (needsState !== undefined) return { _tag: 'StateWriteUnsupported', blockType: needsState }
 
     const outcome = yield* store.setBlock(request.position, verdict.block)

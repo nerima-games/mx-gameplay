@@ -43,11 +43,13 @@ import {
   BlockId,
   blockOfPlaceableItem,
   blockPositionKeyOf,
+  blockTypeOfId,
   canBlockStaySupported,
   capabilityOfBlockId,
   itemStack,
   needsOneOf,
   PLACEABLE_ITEM_TYPES,
+  resolvedBlockOfId,
   StackCount,
   supportRuleOfBlockId,
   type BlockPosition,
@@ -1567,4 +1569,34 @@ describe('placement through gameplay:interactions', () => {
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
     }),
   )
+})
+
+// The stateful-placement guard and the stage take a placed block's type from the
+// held item, and the stair refresh after mining decodes an id that planBreakBlock
+// already resolved. Both rely on these two registry facts, so they are pinned here.
+describe('block type decoding used by placement and the stair refresh', () => {
+  it('every placeable item round-trips through its block id to the same block type', () => {
+    const mismatches = PLACEABLE_ITEM_TYPES.flatMap((item) => {
+      const type = blockOfPlaceableItem(item)
+      const decoded = blockTypeOfId(blockIdOrThrow(type))
+      return Result.isSuccess(decoded) && decoded.success === type ? [] : [item]
+    })
+    expect(PLACEABLE_ITEM_TYPES.length).toBeGreaterThan(0)
+    expect(mismatches).toStrictEqual([])
+  })
+
+  it('every block id the registry resolves also decodes to a block type', () => {
+    const resolvedWithoutType: Array<number> = []
+    let resolvedCount = 0
+    for (let raw = 0; raw <= 65_535; raw += 1) {
+      const id = BlockId(raw)
+      const resolved = resolvedBlockOfId(id)
+      if (Result.isFailure(resolved) || resolved.success === undefined) continue
+      resolvedCount += 1
+      const decoded = blockTypeOfId(id)
+      if (Result.isFailure(decoded) || decoded.success === undefined) resolvedWithoutType.push(raw)
+    }
+    expect(resolvedCount).toBeGreaterThan(0)
+    expect(resolvedWithoutType).toStrictEqual([])
+  })
 })

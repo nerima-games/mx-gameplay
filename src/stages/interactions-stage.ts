@@ -126,6 +126,7 @@ import {
   WorldWriteBatchSchema,
   FoodNutrition,
   blockIdOf,
+  blockOfPlaceableItem,
   blockTypeOfId,
 } from '@nerima-games/mc-kernel'
 import {
@@ -2500,7 +2501,9 @@ const processPlacement = (
           storageCandidate = { ownerId: context.playerStorageOwnerId, state: updated }
         }
 
-        const blockType = Result.getOrUndefined(blockTypeOfId(planned.outcome.block))
+        // planned.outcome.block is the held item's block, so take its type from the
+        // item rather than decoding the id back through the registry.
+        const blockType = blockOfPlaceableItem(request.heldItem)
         const targeting = request.targeting
         const requiresStateRule = blockType === 'door' ||
           blockType === 'oak_stairs' ||
@@ -3960,7 +3963,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 continue
               }
               yield* Ref.set(state.rollSeed, plannedLoot.seed)
-              const yieldedType = Result.getOrUndefined(blockTypeOfId(plan.yielded))
+              // planBreakBlock already validated this id against the same immutable registry.
+              const yieldedType = Result.getOrThrow(blockTypeOfId(plan.yielded))
               if (yieldedType === 'oak_stairs' || yieldedType === 'purpur_stairs') {
                 yield* requestBlockStateRule(state, miningDimension, {
                   requestId: `${request?.requestId ?? positionKey}:refresh-stair-shapes`,
