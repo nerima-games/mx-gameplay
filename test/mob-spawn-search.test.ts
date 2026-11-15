@@ -748,8 +748,9 @@ describe('what the search reads', () => {
           peek: (coord) => Effect.succeed({
             coord,
             blocks,
+            blockStates: new Uint32Array(CHUNK_HEIGHT * 256),
             biomes: Array.from({ length: 256 }, () => 'PLAINS' as const),
-          } satisfies ReadonlyChunk),
+          } satisfies ReadonlyChunkWithBlockStates),
         }
 
         const found = yield* searchSpawnCandidates(api, PLAYER, MIDNIGHT, RandomSeed(7))

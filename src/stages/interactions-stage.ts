@@ -79,6 +79,7 @@ import type {
   IgnitionItemType,
   ItemUseRequest,
   ItemUseResult,
+  ItemUseWorldReadRefusal,
   FishingItemUseRequest,
   MeleeAttackRequest,
   PendingBlockBreakRequest,
