@@ -269,6 +269,17 @@ const playerStorageWithItems = (items: ReadonlyArray<readonly [ItemType, number]
   }
 }
 
+const playerStorageWithBow = (): PlayerStorage => {
+  const empty = emptyPlayerStorage()
+  const bow = Result.getOrThrow(makeItemStack('bow', StackCount(1)))
+  const slots = empty.inventory.slots.map((slot, index) => index === 0 ? bow : slot)
+  return {
+    ...empty,
+    inventory: { ...empty.inventory, slots },
+    inventoryDurability: slots.map((slot) => slot === undefined ? null : durabilityForItem(slot.item)),
+  }
+}
+
 const playerStorageWithKnockbackSword = (): PlayerStorage => {
   const empty = emptyPlayerStorage()
   const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:knockback': 2 }))
@@ -1408,7 +1419,12 @@ describe('interaction input and world boundaries', () => {
       ...meleePlayerPose,
       feetPosition: { ...meleePlayerPose.feetPosition, x: PositionAxis(-Number.MAX_VALUE) },
     }
-    const harness = await Effect.runPromise(makeHarness({ playerPose: meleePlayerPose, entities: { entities: [target], nextSerial: EntitySerial(1) } }))
+    // The stage reads the held bow before resolving the hit, in creative mode too.
+    const harness = await Effect.runPromise(makeHarness({
+      playerPose: meleePlayerPose,
+      playerStorage: playerStorageWithBow(),
+      entities: { entities: [target], nextSerial: EntitySerial(1) },
+    }))
     const before = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
     let playerReads = 0
     const coordinator: WorldCommitCoordinatorApi = {
@@ -6965,7 +6981,8 @@ describe('schema-valid interaction edge paths', () => {
   })
 
   it('faults invalid bow charge and Power requests at registration and stage', async () => {
-    const harness = await Effect.runPromise(makeHarness())
+    // A creative shot still needs a bow in the named slot.
+    const harness = await Effect.runPromise(makeHarness({ playerStorage: playerStorageWithBow() }))
     const shot = {
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
       dirX: 0,
