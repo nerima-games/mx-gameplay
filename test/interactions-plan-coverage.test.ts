@@ -3032,6 +3032,32 @@ describe('registered block-use and placement requests in the interactions stage'
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('records a mushroom light-read failure for a legacy placement request', async () => {
+    const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))
+    const below = blockPosition(BlockAxis(3), BlockAxis(63), BlockAxis(3))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[below, Option.getOrThrow(blockIdOf('dirt'))]],
+      playerStorage: playerStorageWithItem('brown_mushroom', 1),
+      getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+    }))
+    await Effect.runPromise(requestBlockPlacement(harness.state, {
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'brown_mushroom',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+      operation: 'ReadLight',
+      position: target,
+      reason: { _tag: 'LightQueueUnderflowError', index: 0 },
+      occurrences: 1,
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('does not commit an unavailable survival item but places a creative block without consuming storage', async () => {
     const unavailable = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(3))
     const creative = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(3))
