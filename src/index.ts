@@ -27,7 +27,11 @@ export * from './domain/enchantment.js'
 export * from './domain/fall-damage.js'
 export * from './domain/entities/mob-frame.js'
 export { mobMovementWorldFromChunkWindow } from './domain/entities/mob-movement-world.js'
-export type { MobMovementWorldAdapter } from './domain/entities/mob-movement-world.js'
+export type {
+  MobMovementWorldAdapter,
+  MobMovementWorldCell,
+  MobMovementWorldFailure,
+} from './domain/entities/mob-movement-world.js'
 export * from './domain/entities/projectile-runtime.js'
 export * from './domain/falling-block.js'
 export * from './domain/fluid-frontier.js'

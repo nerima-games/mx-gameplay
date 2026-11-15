@@ -30,7 +30,10 @@ const withoutKey = (record: Readonly<Record<string, unknown>>, key: string): Rec
 
 const publicMobMovementWorldBuilder: (
   window: Parameters<typeof gameplay.mobMovementWorldFromChunkWindow>[0],
-) => gameplay.MobMovementWorldAdapter = gameplay.mobMovementWorldFromChunkWindow
+) => gameplay.MobMovementWorldAdapter & Readonly<{
+  cellAt: (cell: Parameters<gameplay.MobMovementWorldAdapter['cellAt']>[0]) =>
+    Result.Result<gameplay.MobMovementWorldCell, gameplay.MobMovementWorldFailure>
+}> = gameplay.mobMovementWorldFromChunkWindow
 
 describe('public API surface', () => {
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
