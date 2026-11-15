@@ -2899,15 +2899,12 @@ const readEnchantmentTableRing = (
     }
   }
   if (unreadable) return undefined
-  return (position) => {
-    const block = blocks.get(blockPositionKeyOf(position))
-    if (block === undefined) {
-      throw new Error(
-        `Enchanting table ring was not pre-read at ${position.x},${position.y},${position.z}`,
-      )
-    }
-    return block
-  }
+  // The ring covers every position mc-sim's bookshelf count reads, so a miss is a
+  // defect in the ring geometry; it must not fall back to a default block.
+  return (position) => Option.getOrThrowWith(
+    Option.fromNullishOr(blocks.get(blockPositionKeyOf(position))),
+    () => new Error(`Enchanting table ring was not pre-read at ${position.x},${position.y},${position.z}`),
+  )
 })
 
 type EnchantmentTableDomainFailure =

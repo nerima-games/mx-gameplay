@@ -36,7 +36,7 @@ import {
 } from '@nerima-games/mc-sim'
 
 import { applyArmorPointsToDamage, type ArmorPoints } from './combat/armor-mitigation.js'
-import { enchantmentTableRandomForSeed, mixSeed, normalizeSeed } from './enchantment-seed.js'
+import { enchantmentTableRandomForSeed } from './enchantment-seed.js'
 import type { Damage } from './death-cause.js'
 import { bowPowerMultiplier } from './interactions/draw-bow.js'
 
@@ -278,8 +278,17 @@ export type EnchantmentOffer = {
   readonly lapisCost: 1 | 2 | 3
 }
 
+const normalizeSeed = (seed: number): number =>
+  Math.trunc(seed) >>> 0
 const normalizeBookshelves = (bookshelves: number): number =>
   Math.min(15, Math.max(0, Math.floor(bookshelves)))
+
+const mixSeed = (value: number): number => {
+  let mixed = value >>> 0
+  mixed = Math.imul(mixed ^ (mixed >>> 16), 0x21f0aaad)
+  mixed = Math.imul(mixed ^ (mixed >>> 15), 0x735a2d97)
+  return (mixed ^ (mixed >>> 15)) >>> 0
+}
 
 export type EnchantmentOfferFailure = Readonly<{
   _tag: 'InvalidEnchantmentOfferInput'

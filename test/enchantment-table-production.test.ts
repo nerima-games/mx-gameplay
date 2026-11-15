@@ -9,6 +9,7 @@ import {
   enchantmentsComponent,
   itemComponents,
   type ItemType,
+  RandomSeed,
   type StageRegistration,
   WorldRevisionSchema,
 } from '@nerima-games/mc-kernel'
@@ -918,7 +919,7 @@ const offerEntriesFor = (bookshelfCount: number, seed = ENCHANTMENT_TABLE_SEED) 
   Result.getOrThrow(generateEnchantmentTableOffers({
     item: 'diamond_sword',
     bookshelfCount,
-    random: enchantmentTableRandomForSeed(seed),
+    random: enchantmentTableRandomForSeed(Result.getOrThrow(RandomSeed.result(seed))),
   })).flatMap((offer, slot) => offer === undefined ? [] : [{ slot, offer }])
 
 const interactionsOnly = (stages: ReadonlyArray<StageRegistration>) =>
