@@ -54,17 +54,17 @@
     "check:catalog": "node scripts/check-catalog.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --testTimeout=60000",
     "mutate": "stryker run stryker.config.mjs",
     "package:verify": "pnpm build && node scripts/verify-package.mjs",
     "prepublishOnly": "pnpm verify && pnpm package:verify",
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
-    "@nerima-games/mc-audio": "0.5.0",
-    "@nerima-games/mc-kernel": "0.14.0",
-    "@nerima-games/mc-sim": "0.10.0",
-    "@nerima-games/mc-worldgen": "0.8.0",
+    "@nerima-games/mc-audio": "0.6.0",
+    "@nerima-games/mc-kernel": "0.17.0",
+    "@nerima-games/mc-sim": "0.11.1",
+    "@nerima-games/mc-worldgen": "0.9.1",
     "effect": "4.0.5"
   },
   "devDependencies": {

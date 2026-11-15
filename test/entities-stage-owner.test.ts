@@ -24,6 +24,7 @@ import {
   type DeltaTimeSecs,
   type BlockId,
 } from '@nerima-games/mc-kernel'
+import { LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
 import {
   EntityId,
   EntityKind,
@@ -1247,6 +1248,49 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
   })
 
+  it('records host light-read failures from hostile and passive spawn searches', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const spawnFloor = Array.from({ length: 16 * 16 }, (_, index) => {
+      const x = 16 + index % 16
+      const z = Math.floor(index / 16)
+      return [blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z)), STONE] as const
+    })
+
+    await Promise.all([
+      { timeOfDay: 0.9, tickCount: HOSTILE_SPAWN_INTERVAL_TICKS - 1 },
+      { timeOfDay: 0.5, tickCount: 0 },
+    ].map(async ({ timeOfDay, tickCount }) => {
+      const harness = await Effect.runPromise(makeHarness({
+        entity: null,
+        playerPose,
+        blocks: spawnFloor,
+        loadedChunks: ['1,0'],
+      }))
+      await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(timeOfDay)))
+      await Effect.runPromise(Ref.set(harness.state.tickCount, tickCount))
+      const context: GameplayStageContext = {
+        ...harness.context,
+        store: {
+          ...harness.context.store,
+          getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+        },
+      }
+
+      await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.02)).pipe(
+        Effect.provide(FrameServicesLayer),
+      ))
+
+      expect(await Effect.runPromise(harness.state.stageFaults.drain)).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'ReadLight',
+        reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
+      }))
+    }))
+  })
+
   it('commits casualty drops and XP with a passive spawn in the same simulation tick', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const creeper: MobEntity = {
@@ -1582,6 +1626,38 @@ describe('entities stage owner-backed MobSimulation', () => {
       blockPositionKeyOf(blockPosition(BlockAxis(0), BlockAxis(63), BlockAxis(0))),
       blockPositionKeyOf(source),
     ])
+  })
+
+  it('records a typed world-data failure when a falling-block source write fails', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const source = blockPosition(BlockAxis(0), BlockAxis(65), BlockAxis(0))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      block: { position: source, id: SAND },
+    }))
+    await Effect.runPromise(Ref.update(harness.state.fallingBlocks, (queue) =>
+      disturb(queue, [blockPositionKeyOf(target)]),
+    ))
+    const failure = new LightQueueUnderflowError({ index: 0 })
+    const context: GameplayStageContext = {
+      ...harness.context,
+      store: {
+        ...harness.context.store,
+        setBlock: () => Effect.fail(failure),
+      },
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(harness.store.blockAt(source))).toBe(SAND)
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toContainEqual(expect.objectContaining({
+      _tag: 'WorldDataFailure',
+      operation: 'WriteBlock',
+      position: source,
+      reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
+    }))
   })
 
   it('keeps entity, block, revision, and output state unchanged when a combined blast commit fails', async () => {

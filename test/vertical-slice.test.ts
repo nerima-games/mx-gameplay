@@ -662,7 +662,10 @@ describe('the slice, through the stage registration', () => {
 
       // ---- the renderer is told about the chunk once -----------------------
       // Three writes (the break, the clear, the place), one coordinate.
-      expect(yield* renderer.drain).toStrictEqual({ changed: [{ cx: 0, cz: 0 }], removed: [] })
+      expect(yield* renderer.drain).toStrictEqual({
+        changed: [{ cx: 0, cz: 0, min: [2, 64, 3], max: [3, 66, 4] }],
+        removed: [],
+      })
 
       // ---- the inbox was consumed, not merely read -------------------------
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
@@ -698,7 +701,10 @@ describe('the slice, through the stage registration', () => {
       // would have delivered seven messages and re-meshed seven times; the
       // per-subscriber SET is what makes this one entry
       // (mc-worldgen §6-4, and the reason the channel is not a Stream).
-      expect(yield* renderer.drain).toStrictEqual({ changed: [{ cx: 0, cz: 0 }], removed: [] })
+      expect(yield* renderer.drain).toStrictEqual({
+        changed: [{ cx: 0, cz: 0, min: [2, 64, 3], max: [3, 68, 4] }],
+        removed: [],
+      })
 
       // ---- and the cascade terminated by itself ----------------------------
       // Nothing external stopped it: the queue drained because the last move

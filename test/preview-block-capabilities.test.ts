@@ -1,10 +1,28 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Cause, Effect } from 'effect'
+import { BlockId, ChunkAxis, chunkCoord } from '@nerima-games/mc-kernel'
 import { blockPosition } from './support/coordinate-fixtures'
 import { makeSite, requestBreak, stepFrame } from '../apps/preview-mining-site/site'
 import { floatingBlocks, makePreviewWorld, restsOnSupport, AIR, SAND, STONE, WATER } from '../apps/preview-mining-site/world'
 
 describe('preview mining block capabilities', () => {
+  it.effect('rejects a raw 16-bit block id that is absent from the registry', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(0xffff)
+      const position = blockPosition(0, 0, 0)
+      const world = yield* makePreviewWorld({
+        cells: [[0, 0, unknownBlock]],
+        loadedChunks: ['0,0'],
+        z: 0,
+      })
+
+      expect(world.peekBlock(position)).toBe(unknownBlock)
+      const peek = yield* Effect.exit(world.api.peek(chunkCoord(ChunkAxis(0), ChunkAxis(0))))
+      if (peek._tag !== 'Failure') throw new Error('An unregistered block must fail chunk materialization')
+      expect(Cause.squash(peek.cause)).toMatchObject({ _tag: 'BlockStateCodecFailure', reason: 'unknown-block-id' })
+    }),
+  )
+
   // bug it catches: a Result object made sand on stone appear unsupported.
   it.effect('recognizes stone as support beneath sand', () =>
     Effect.gen(function* () {

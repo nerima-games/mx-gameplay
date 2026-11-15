@@ -73,6 +73,7 @@ import {
   POTATO_MATURITY_SECS,
   type Vitals,
 } from '@nerima-games/mc-sim'
+import { LightQueueUnderflowError, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   drainItemUseResults,
   drainBlockPlacementResults,
@@ -136,7 +137,7 @@ import { BOW_FULL_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot.js'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import { FrameServicesLayer } from './support/frame-services.js'
-import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
+import { injectRawBlockId, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
 import { world } from './support/chunk-store-double.js'
 
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('interaction-plan-coverage')
@@ -280,12 +281,15 @@ const makeHarness = (options: Readonly<{
   readonly vitalsOwnerIdOverride?: ReplicatedOwnerId
   readonly commitVitalsOwnerIdOverride?: ReplicatedOwnerId
   readonly tntOwnerId?: ReplicatedOwnerId
+  readonly getLight?: ChunkStoreApi['getLight']
 }> = {}) => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(
     world(options.blocks ?? []),
     options.loadedChunks ?? ['0,0'],
   )
-  const chunkStore = store.api
+  const chunkStore: ChunkStoreApi = options.getLight === undefined
+    ? store.api
+    : { ...store.api, getLight: options.getLight }
   const registrations = gameplayOwnerRegistrations({
     playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
@@ -540,6 +544,26 @@ const coordinatorWithFirstCommitFailure = (
       return Effect.fail(new WorldCommitEmptyRequest())
     },
   }
+}
+
+const coordinatorWithMissingObservedBlocks = (
+  coordinator: WorldCommitCoordinatorApi,
+): WorldCommitCoordinatorApi => {
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) =>
+    ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && reads.length > 0
+      ? { ...snapshot, blocks: [] }
+      : snapshot,
+  )
+
+  return { ...coordinator, observe }
 }
 
 const coordinatorWithSnapshotFailure = (
@@ -2972,6 +2996,68 @@ describe('registered block-use and placement requests in the interactions stage'
     expect(harness.lastRequest()?.blockWrite?.edits).toHaveLength(1)
   })
 
+  it('reports a mushroom light-read failure without committing the placement', async () => {
+    const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))
+    const below = blockPosition(BlockAxis(3), BlockAxis(63), BlockAxis(3))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[below, Option.getOrThrow(blockIdOf('dirt'))]],
+      playerStorage: playerStorageWithItem('brown_mushroom', 1),
+      getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+    }))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'place-mushroom-light-failure',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'brown_mushroom',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toMatchObject([{
+      requestId: 'place-mushroom-light-failure',
+      success: false,
+      consumed: false,
+      replayed: false,
+      outcome: {
+        _tag: 'WorldDataFailed',
+        reason: { _tag: 'LightQueueUnderflowError', index: 0 },
+      },
+    }])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+      operation: 'ReadLight',
+      position: target,
+      reason: { _tag: 'LightQueueUnderflowError', index: 0 },
+      occurrences: 1,
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a mushroom light-read failure for a legacy placement request', async () => {
+    const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))
+    const below = blockPosition(BlockAxis(3), BlockAxis(63), BlockAxis(3))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[below, Option.getOrThrow(blockIdOf('dirt'))]],
+      playerStorage: playerStorageWithItem('brown_mushroom', 1),
+      getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+    }))
+    await Effect.runPromise(requestBlockPlacement(harness.state, {
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'brown_mushroom',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+      operation: 'ReadLight',
+      position: target,
+      reason: { _tag: 'LightQueueUnderflowError', index: 0 },
+      occurrences: 1,
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('does not commit an unavailable survival item but places a creative block without consuming storage', async () => {
     const unavailable = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(3))
     const creative = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(3))
@@ -4665,22 +4751,33 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('maps schema-valid unregistered block IDs to air across farming actions', async () => {
+  it('returns typed failures and records stage faults for unregistered farming block IDs', async () => {
     const tillPosition = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
     const plantPosition = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
     const harvestPosition = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
     const unknownBlock = BlockId(0xffff)
+    const knownBlock = Option.getOrThrow(blockIdOf('stone'))
     const harness = await Effect.runPromise(makeHarness({
       blocks: [
-        [tillPosition, unknownBlock],
-        [blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), unknownBlock],
-        [plantPosition, unknownBlock],
-        [blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), unknownBlock],
-        [harvestPosition, unknownBlock],
+        [tillPosition, knownBlock],
+        [blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)), knownBlock],
+        [plantPosition, knownBlock],
+        [blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)), knownBlock],
+        [harvestPosition, knownBlock],
       ],
       playerStorage: playerStorageWithItems([['iron_hoe', 1], ['potato', 1]]),
       crops: { crops: [{ dimension: 'overworld', position: harvestPosition, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
     }))
+    const corruptBlockPositions = [
+      tillPosition,
+      blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1)),
+      plantPosition,
+      blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1)),
+      harvestPosition,
+    ]
+    await Promise.all(corruptBlockPositions.map((rawPosition) =>
+      Effect.runPromise(injectRawBlockId(harness.store.api, rawPosition, unknownBlock)),
+    ))
     await Effect.runPromise(requestSoilTill(harness.state, 'unknown-till-block', tillPosition, 'iron_hoe'))
     await Effect.runPromise(requestPotatoPlanting(harness.state, 'unknown-plant-block', plantPosition))
     await Effect.runPromise(requestPotatoHarvest(harness.state, 'unknown-harvest-block', harvestPosition, 0.5))
@@ -4688,16 +4785,92 @@ describe('schema-valid interaction edge paths', () => {
     await harness.run()
 
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
-      { action: 'TillSoil', requestId: 'unknown-till-block', success: false, durabilityDamage: 0, outcome: { _tag: 'notTillable', found: 'air' } },
-      { action: 'PlantPotato', requestId: 'unknown-plant-block', success: false, consumedCount: 0, outcome: { _tag: 'wrongSoil', found: 'air' } },
+      {
+        action: 'TillSoil',
+        requestId: 'unknown-till-block',
+        success: false,
+        durabilityDamage: 0,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: tillPosition, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
+      {
+        action: 'PlantPotato',
+        requestId: 'unknown-plant-block',
+        success: false,
+        consumedCount: 0,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: plantPosition, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
       {
         action: 'HarvestPotato',
         requestId: 'unknown-harvest-block',
         success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: harvestPosition, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
       },
     ])
+    const stageFaults = await Effect.runPromise(harness.state.stageFaults.drain)
+    expect(stageFaults).toHaveLength(5)
+    expect(stageFaults.every((fault) => fault.reason._tag === 'BlockTypeDecodeFailed')).toBe(true)
     expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('reads the upper cell before reporting unregistered tilling and planting targets', async () => {
+    const tillPosition = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
+    const tillAbove = blockPosition(BlockAxis(1), BlockAxis(65), BlockAxis(1))
+    const plantPosition = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const plantAbove = blockPosition(BlockAxis(2), BlockAxis(65), BlockAxis(1))
+    const unknownBlock = BlockId(0xffff)
+    const knownBlock = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [
+        [tillPosition, knownBlock],
+        [tillAbove, knownBlock],
+        [plantPosition, knownBlock],
+        [plantAbove, knownBlock],
+      ],
+      playerStorage: playerStorageWithItems([['iron_hoe', 1], ['potato', 1]]),
+    }))
+    await Promise.all([
+      Effect.runPromise(injectRawBlockId(harness.store.api, tillAbove, unknownBlock)),
+      Effect.runPromise(injectRawBlockId(harness.store.api, plantAbove, unknownBlock)),
+    ])
+    await Effect.runPromise(requestSoilTill(harness.state, 'unknown-till-above', tillPosition, 'iron_hoe'))
+    await Effect.runPromise(requestPotatoPlanting(harness.state, 'unknown-plant-above', plantPosition))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
+      {
+        action: 'TillSoil',
+        requestId: 'unknown-till-above',
+        success: false,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: tillAbove, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
+      {
+        action: 'PlantPotato',
+        requestId: 'unknown-plant-above',
+        success: false,
+        outcome: {
+          _tag: 'WorldDataFailed',
+          reason: { _tag: 'BlockTypeDecodeFailed', position: plantAbove, block: unknownBlock, failure: { _tag: 'UnregisteredBlockId' } },
+        },
+      },
+    ])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([
+      { operation: 'DecodeBlockType', position: tillAbove },
+      { operation: 'DecodeBlockType', position: plantAbove },
+    ])
     expect(harness.commitCalls()).toBe(0)
   })
 
@@ -4777,6 +4950,80 @@ describe('schema-valid interaction edge paths', () => {
       outcome: { _tag: 'cropOwnerMismatch' },
     }])
     expect(await Effect.runPromise(Ref.get(mismatched.state.unsupportedOperations))).toStrictEqual([])
+  })
+
+  it('returns a no-op result when bone meal targets a non-crop block', async () => {
+    const boneMealTarget = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[boneMealTarget, stone]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-on-stone', boneMealTarget))
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-on-stone',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'notCrop', at: boneMealTarget, block: 'stone' },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('reports a harvest when the crop owner disagrees with the world block', async () => {
+    const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, wheatBlock]],
+      crops: { crops: [{ dimension: 'overworld', position: target, crop: 'potato_crop', growthSecs: 0 }] },
+    }))
+    await Effect.runPromise(requestPotatoHarvest(harness.state, 'harvest-crop-owner-mismatch', target, 0.5))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'HarvestPotato',
+      requestId: 'harvest-crop-owner-mismatch',
+      success: false,
+      outcome: {
+        _tag: 'cropOwnerMismatch',
+        block: 'wheat_crop',
+        registeredCrop: 'potato_crop',
+      },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a missing block result returned by the host coordinator', async () => {
+    const target = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithMissingObservedBlocks(harness.coordinator),
+    )
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-missing-read', target))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-missing-read',
+      success: false,
+      consumedCount: 0,
+      outcome: {
+        _tag: 'WorldDataFailed',
+        reason: { _tag: 'MissingBlockReadResult', position: target },
+      },
+    }])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+      _tag: 'WorldDataFailure',
+      operation: 'ReadBlock',
+      position: target,
+      reason: { _tag: 'MissingBlockReadResult', position: target },
+    }])
   })
 
   it('detects crop-owner revision conflicts for bone meal, planting, and harvesting', async () => {

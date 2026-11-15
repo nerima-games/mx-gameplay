@@ -64,6 +64,7 @@ import {
   biomeAt,
   type ChunkStoreApi,
   type Dimension,
+  type LightQueueUnderflowError,
   type ReadonlyChunk,
 } from '@nerima-games/mc-worldgen'
 import {
@@ -155,6 +156,11 @@ type MobSpawnSearch = {
    */
   readonly unreadable: number
   readonly seed: number
+  readonly faults?: ReadonlyArray<Readonly<{
+    operation: 'ReadLight'
+    position: BlockPosition
+    reason: LightQueueUnderflowError
+  }>>
 }
 
 const EMPTY_ATTEMPTS: ReadonlyArray<never> = []
@@ -187,6 +193,7 @@ export const searchSpawnCandidates = (
     const rotation = rollAt(batch, 0)
 
     const attempts: Array<MobSpawnAttempt> = []
+    const faults: Array<NonNullable<MobSpawnSearch['faults']>[number]> = []
     let unreadable = 0
     const chunks = new Map<string, ReadonlyChunk | undefined>()
 
@@ -261,7 +268,13 @@ export const searchSpawnCandidates = (
           if (footBlock !== AIR_BLOCK_ID || headBlock !== AIR_BLOCK_ID) continue
 
           const footAt = blockPosition(probeAt.x, BlockAxis(groundY + 1), probeAt.z)
-          const light = yield* store.getLight(footAt)
+          const lightResult = yield* Effect.result(store.getLight(footAt))
+          if (lightResult._tag === 'Failure') {
+            faults.push({ operation: 'ReadLight', position: footAt, reason: lightResult.failure })
+            columnUnreadable = true
+            break
+          }
+          const light = lightResult.success
           if (light._tag !== 'Light') {
             columnUnreadable = true
             break
@@ -294,6 +307,7 @@ export const searchSpawnCandidates = (
       attempts: attempts.length === 0 ? EMPTY_ATTEMPTS : attempts,
       unreadable,
       seed: batch.seed,
+      ...(faults.length === 0 ? {} : { faults }),
     }
   })
 

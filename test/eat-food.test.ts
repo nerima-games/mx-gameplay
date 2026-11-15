@@ -178,11 +178,10 @@ describe('resolveFoodUse', () => {
         expect(kernelEffect).toBeDefined()
         if (kernelEffect === undefined) continue
 
-        const knownKernel014Outlier = expected.item === 'pufferfish' && expected.name === 'nausea'
         expect(kernelEffect).toMatchObject({
           durationSecs: expected.durationSecs,
           chance: expected.chance,
-          amplifier: expected.level - 1 + (knownKernel014Outlier ? 1 : 0),
+          amplifier: expected.level - 1,
         })
 
         const translated = effectsOf(request(expected.item, {}, 0)).find(({ type }) => type === expected.name)

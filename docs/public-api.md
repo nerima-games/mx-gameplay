@@ -2,18 +2,20 @@
 
 ## 1. ホスト連携で中心となるのは stage 登録である
 
-**ホスト連携の中心となる契約は `StageRegistration` の配列で、状態サービスは公開しない。**
+**ホスト連携の中心は stage 登録であり、ゲーム状態を問い合わせるサービスは公開しない。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
 「今インベントリに何が入っているか」「あの Mob はどこにいるか」「今何時か」— 全部**状態への問い合わせ**であり、
 状態は `mc-sim` か `mc-worldgen` にある。`mx-gameplay` に聞くべきことは残らない。
 
-`mc-compose` が消費するのは `makeGameplayStages` ただ 1 つである。
+`mc-compose` は `makeGameplayStages` を登録する。
 
 ```typescript
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
+
+`GameplayStageFaults` は stage が記録した異常を `drain` で回収する診断用 outbox である。`gameplayModule.layers` がサービスを提供し、直接 `makeGameplayStages` を使うホストはサービスを登録時に渡す。package は `gameplayModule` も `GameModule` として公開する。fault と item-use failure は `drain` と結果の型付き union から参照できる。
 
 `index.ts` はほかの要素も export する。`makeProjectileRuntime` は、mc-sim の `ProjectileServiceApi` を使う gameplay の呼び出し側に、`launch` と `step` だけを型付きで提供する。projectile の状態、物理計算、commit、event は mc-sim が所有する。この adapter は domain 間の連携向けに見える export で、ホスト連携の契約には含めない。ほかの export の分類は §5 に記す。
 
@@ -50,67 +52,44 @@ kernel の `ClockPort` を再掲すると**同じ文字列 ID を持つ別の `C
 ここには長らく「`GameModule` はまだ実装していない。`RIn` は mc-sim の公開 API が存在するまで
 名前を付けられないから」と書いてあった。**診断は半分間違っていて、間違っていた側が重要だった。**
 
-Layer は障害ではなかった。mx-gameplay は他リポジトリが呼ぶサービスを 1 つも公開しない
+Layer は障害ではなかった。mx-gameplay はゲーム状態を所有するサービスを公開しない
 （ルールはサービスではない。他リポジトリが本リポジトリに尋ねたくなることは実際には状態への問いであり、
-状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。だから `layers` は空であり、最初から空だった。
+状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。この原則は変わらないが、stage の typed fault を
+ホストが回収できるよう `GameplayStageFaults` を提供するため、現在の `layers` は空ではない。
 
 本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
 `Ref` から組み立てられるので、`ReadonlyArray` 型のフィールドに入れる方法が無かった。
 mc-sim が publish されても解決しない。縦切りスパイクが `frameStages` を Effect にしたことで解決した。
 
 ```typescript
-export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>
+export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never,
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults>
 
-export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
-  layers: Layer.empty,
+export const gameplayModule: GameModule<GameplayStageFaults, never, never,
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults> = {
+  layers: GameplayStageFaultsLayer,
   frameStages: makeGameplayStages,
 }
 ```
 
-### 2-2. `RRegister` は `ChunkStore | EntityManager | InventoryService` になった。`RIn` は `never` のままである
+### 2-2. `RRegister` は gameplay が登録時に使う6サービスである。`RIn` は `never` のままである
 
-ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
-— つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
-stage がブロックを読み書きするようになったので、**登録**するのに mc-worldgen の `ChunkStore` が要る。
-stage が Mob を反復するようになったので、mc-sim の `EntityManager` も要る。
-そして stage が**採掘したアイテムを預ける**ようになったので、mc-sim の `InventoryService` も要る ——
-plan.md §2.3-1 の実例そのものであり、この 3 本目が入るまでは `Ref` で止まっていた。
-
-**3 本目は mc-compose が予告していたものでもある。** あちらの `docs/e2e-triage.md` §4.3 は
-「mx-gameplay は**登録時に**`InventoryService` を acquire するしかない。すると `registerModule` の
-`RRegister` に `InventoryService` が乗る」と書いており、そのとおりになった。
-そこに残る問い —— 「mx-gameplay が書き mx-ui が読む 1 つのインスタンスを、
-mc-sim を import できない mc-compose がどう構築するのか」 —— は**こちらでは解けない**。
-このリポジトリが答えられるのは「要求する」ところまでで、誰が discharge するかはホストの問題である。
-
-2 つのパラメータの違いがここで初めて観測できる。
+`makeGameplayStages` は登録時に `ChunkStore`、`EntityManager`、`TimeService`、
+`WorldCommitCoordinator`、`DomainEventBus` を取得する。`GameplayStageFaults` は
+`gameplayModule.layers` が提供し、stage とホストが同じ outbox を使う。
 
 | | 値 | 意味 |
 | --- | --- | --- |
-| `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
-| `RRegister` | `ChunkStore \| EntityManager \| InventoryService` | 本リポジトリが stage を**登録**するのに要るもの |
-
-本リポジトリは他リポジトリが供給しなければならないものを構築するのではなく、
-他リポジトリが供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
+| `RIn` | `never` | `GameplayStageFaultsLayer` の構築に外部サービスは要らない |
+| `RRegister` | `ChunkStore \| EntityManager \| TimeService \| WorldCommitCoordinator \| DomainEventBus \| GameplayStageFaults` | 本リポジトリが stage を**登録**するのに要るもの |
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから 3 つとも登録時に 1 度だけ取得し、4 stage が共有する。
-固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
-`acquires exactly three services to register — the store, the roster and the inventory`
-（`test/stage-registration.test.ts`）。この最後のテストは長く「exactly **two**」だったうえに、
-「3 本目の候補は mc-sim の `InventoryService` であり、丸ごと写せるようになるまでは送信箱で代用する」と
-**コメントで名指ししていた**。その予告も履行された。次の候補は `PlayerService` で、
-そちらは丸ごと写せない —— `cameraPose` が `ClockPort` を要求し、`ClockPort` をローカルに書き直すのは
-`domain/frame-contract.ts` の言う「狭い型より遥かに悪い失敗」だからである。
+（階層モデル、plan.md §2.2 が禁じている）。各依存は登録時に一度取得し、stage が共有する。
 
-`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
-`EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
-どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
-消費者には見える —— `api-lock.md` の "Supporting declarations" に
-`ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
-`InventoryService` / `InventoryServiceApi` などが載っているのはそのためである。
-タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
+`ChunkStore`、`EntityManager`、`WorldCommitCoordinator`、`DomainEventBus` の語彙はそれぞれの所有元から使う。
+`GameplayStageFaults` とその fault の型は本パッケージの API であり、`makeGameplayStages` の環境型や
+`gameplayModule.layers` に現れる。API lock は export と supporting declaration の両方を追跡する。
 
 ### 2-3. `simModule` に型引数を生やすべきか —— **生やすべきでない**
 
@@ -166,7 +145,7 @@ const world = Layer.merge(
 mc-sim の `EntityManager` 契約にも同じ制約がある。
 
 **mx-gameplay 側で `simModule` の型引数が要らなかった証拠**は `RRegister` にある:
-`ChunkStore | EntityManager | InventoryService` に `S` は現れない。ホストがどう具体化しても、
+`ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults` に `S` は現れない。ホストがどう具体化しても、
 本リポジトリが宣言する要求は 1 つのままである（テスト
 `the roster requirement carries no behaviour parameter`）。
 
@@ -284,22 +263,31 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
+| `makeGameplayStages` | **契約** | stage 登録時に `ChunkStore`、`EntityManager`、`TimeService`、`WorldCommitCoordinator`、`DomainEventBus`、`GameplayStageFaults` を要求する（§2-2） |
+| `gameplayModule` | **契約** | `makeGameplayStages` を包む `GameModule`。`layers` が `GameplayStageFaultsLayer` を提供する |
+| `GameplayStageFaults` / `GameplayStageFaultsApi` | **契約** | stage の world fault を operation・位置・理由ごとに集約する outbox。ホストは `drain` で faults と発生回数を受け取る |
+| `GameplayStageWorldFault` / `GameplayStageWorldFaultInput` / `GameplayStageWorldFaultReason` / `GameplayStageFaultOccurrenceCount` / `GameplayStageBlockTypeDecodeFailure` / `GameplayStageMissingBlockReadFailure` / `GameplayStageItemUseWorldFailure` | **契約** | fault と item-use failure の公開型 |
 | `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キューと、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |
+| `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キュー、`GameplayStageFaults`、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |
 | `requestShieldBlocking` | 内部(可視) | `SetShieldBlocking` を次の entities tick に積む。盾の装備状態と構え時間は stage が検証する |
 | `setPortalCandidates` | **契約** | ホストが宛先次元ごとの既知ポータル snapshot を渡す。未設定の次元は空候補として扱い、新規ポータル設計になる |
 | `drainPortalTravels` | **契約** | 成立した移動を FIFO で 1 回だけ取り出す。2 回目の drain は空になる |
 | `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
-| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union |
+| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union。相関付き配置結果は `WorldDataFailed` を、farming item-use 結果は `GameplayStageItemUseWorldFailure` を返す。旧 `requestBlockPlacement` は相関結果を作らず、fault を `GameplayStageFaults` に記録する |
 | `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
 | `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、非レバーなら通常の配置へフォールバックする |
 | `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
+
+### stages/gameplay-owner-registrations.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `GAMEPLAY_*_OWNER_ID` / owner snapshot schemas / `gameplayOwnerRegistrations` / `GAMEPLAY_OWNER_REGISTRATIONS` | 内部(可視) | gameplay の entity owner IDs、snapshot schemas、registration builder と一覧を定義する |
 
 下表は**全部ではなく、判定の型が違う Ref**を挙げている —— 残りは同じ型
 （受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
@@ -558,13 +546,13 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 outbox を空にする破壊的な読み出しで、同一プロセス内では **at-most-once** である。
 永続化や配送確認を含む end-to-end の exactly-once 境界ではない。
 
-### domain/interactions/break-block.ts（**バレルから re-export しない**）
+### domain/interactions/break-block.ts
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `breakBlock` / `BreakOutcome` | 非公開 | 1 ルール 1 ファイル（DN-GP-9）の 1 本目。`setBlock` を 1 回呼ぶだけで、**read-then-write をしない** — 掘れたブロックは書き込みの戻り値 `previous` から来る |
+| `breakBlock` / `BreakOutcome` / `planBreakBlock` / `BreakTransactionResult` | 内部(可視) | 旧 overload は `setBlock` の戻り値から結果を作る。transaction overload は WCC で cascade と owner state を同じ revision から計画する |
 
-`BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
+legacy overload の `BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
 アイテムを生まず、チャンクを汚さず、落下ブロックの仕事も作らない。
 固定しているテスト: `` REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work ``。
 

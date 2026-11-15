@@ -53,6 +53,8 @@ describe('public API surface', () => {
         'CollectBrewingBottleRequestSchema',
         'GameplayBrewingBottleItemUseResultSchema',
         'GameplayFishingItemUseResultSchema',
+        'GameplayStageFaults',
+        'GameplayStageFaultsLayer',
         'requestCollectBrewingBottle',
         'setPlayerDead',
         'setPortalCandidates',

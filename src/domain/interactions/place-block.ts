@@ -124,7 +124,12 @@ import {
   type BlockPosition,
   type ChunkCoord,
 } from '@nerima-games/mc-kernel'
-import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockReading,
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
@@ -388,7 +393,7 @@ export const placementVerdict = (
 export const placeBlock = (
   store: ChunkStoreApi,
   request: PlaceRequest,
-): Effect.Effect<PlaceOutcome> =>
+): Effect.Effect<PlaceOutcome, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.gen(function* () {
     const target = yield* store.getBlock(request.position)
 
@@ -492,7 +497,7 @@ export type PlaceBlockPlan = Readonly<{
 export const planPlaceBlock = (
   store: ChunkStoreApi,
   request: PlaceRequest,
-): Effect.Effect<PlaceBlockPlan> =>
+): Effect.Effect<PlaceBlockPlan, LightQueueUnderflowError> =>
   Effect.gen(function* () {
     const target = yield* store.getBlock(request.position)
     const block = Option.getOrThrow(blockIdOf(blockOfPlaceableItem(request.heldItem)))

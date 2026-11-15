@@ -26,7 +26,12 @@ describe('generated world composition', () => {
       expect((yield* world.player.pose).feetPosition).toStrictEqual({ x: 0.5, y: surfaceY + 1, z: 0.5 })
 
       yield* world.chunkStore.load(chunkCoord(0, 0))
-      expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
+      expect((yield* dirty.drain).changed).toStrictEqual([{
+        cx: 0,
+        cz: 0,
+        min: [0, 0, 0],
+        max: [16, 256, 16],
+      }])
       expect(yield* world.chunkStore.getBlock(blockPosition(0, surfaceY, 0))).toMatchObject({ _tag: 'Block' })
 
       const write = yield* world.chunkStore.setBlock(blockPosition(0, surfaceY, 0), BlockId(0))
@@ -35,7 +40,12 @@ describe('generated world composition', () => {
         _tag: 'Block',
         block: 0,
       })
-      expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
+      expect((yield* dirty.drain).changed).toStrictEqual([{
+        cx: 0,
+        cz: 0,
+        min: [0, Number(surfaceY), 0],
+        max: [1, Number(surfaceY) + 1, 1],
+      }])
     }),
   )
 
@@ -65,12 +75,12 @@ describe('generated world composition', () => {
 
   it.effect('uses kernel passability for generated block collision', () =>
     Effect.gen(function* () {
-      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: 20260728 })
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: NoiseSeed(424242) })
       yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
-      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
+      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(false) // water
+      expect(isSolid({ x: 0, y: 53, z: 0 })).toBe(true) // sand
     }),
   )
 

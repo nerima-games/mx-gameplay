@@ -77,7 +77,11 @@ import {
   resistsExplosion,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 import { AIR_BLOCK_ID, type BlockPosition } from '@nerima-games/mc-kernel'
 
 /**
@@ -161,7 +165,7 @@ export const carveExplosionCrater = (
   store: ChunkStoreApi,
   centre: BlockPosition,
   power: number,
-): Effect.Effect<ReadonlyArray<BlockPositionKey>> =>
+): Effect.Effect<ReadonlyArray<BlockPositionKey>, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.gen(function* () {
     const disturbed: Array<BlockPositionKey> = []
     const blastPower = Result.getOrUndefined(BlockBlastResistance.result(power))

@@ -21,7 +21,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Effect, Ref, Result, Schema } from 'effect'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, EntitySerial, InterpolationFraction, RandomSeed, SimulationTick, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
-import { CHUNK_HEIGHT, type ChunkStoreApi, type Dimension, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
+import { CHUNK_HEIGHT, LightQueueUnderflowError, type ChunkStoreApi, type Dimension, type ReadonlyChunkWithBlockStates } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
@@ -672,8 +672,9 @@ describe('what the search reads', () => {
         peek: (coord) => Effect.succeed({
           coord,
           blocks,
+          blockStates: new Uint32Array(CHUNK_HEIGHT * 256),
           biomes: Array.from({ length: 256 }, () => 'PLAINS' as const),
-        } satisfies ReadonlyChunk),
+        } satisfies ReadonlyChunkWithBlockStates),
       }
 
       const found = yield* searchSpawnCandidates(api, PLAYER, MIDNIGHT, RandomSeed(7))
@@ -692,16 +693,18 @@ describe('what the search reads', () => {
           ? undefined
           : Reflect.get(target, property, receiver),
       })
-      const malformedChunks: ReadonlyArray<(coord: ReadonlyChunk['coord']) => ReadonlyChunk> = [
-        (coord) => ({ coord, blocks: readableBlocks, biomes: [] }),
+      const malformedChunks: ReadonlyArray<(coord: ReadonlyChunkWithBlockStates['coord']) => ReadonlyChunkWithBlockStates> = [
+        (coord) => ({ coord, blocks: readableBlocks, blockStates: new Uint32Array(CHUNK_HEIGHT * 256), biomes: [] }),
         (coord) => ({
           coord,
           blocks: readableBlocks,
+          blockStates: new Uint32Array(CHUNK_HEIGHT * 256),
           biomes: missingBiome,
         }),
         (coord) => ({
           coord,
           blocks: new Uint16Array(CHUNK_HEIGHT * 256 - 1),
+          blockStates: new Uint32Array(CHUNK_HEIGHT * 256 - 1),
           biomes: readableBiomes,
         }),
       ]
@@ -880,6 +883,26 @@ describe('what the search reads', () => {
       // whether or not it could see anything, which is the rule that keeps the
       // sequence independent of how much a frame managed to read.
       expect(found.seed).toBe(drawRolls(1, SPAWN_SEARCH_ROLLS).seed)
+    }),
+  )
+
+  it.effect('records a typed light-queue failure and marks its column unreadable', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const failure = new LightQueueUnderflowError({ index: 0 })
+      const brokenLight: ChunkStoreApi = {
+        ...store.api,
+        getLight: () => Effect.fail(failure),
+      }
+
+      const found = yield* searchSpawnCandidates(brokenLight, PLAYER, MIDNIGHT, RandomSeed(1))
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.unreadable).toBeGreaterThan(0)
+      expect(found.faults).toContainEqual(expect.objectContaining({
+        operation: 'ReadLight',
+        reason: failure,
+      }))
     }),
   )
 

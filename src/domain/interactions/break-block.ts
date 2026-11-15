@@ -57,7 +57,11 @@ import {
   type WorldCommitRequest,
   type WorldReadSnapshot,
 } from '@nerima-games/mc-sim'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type {
+  BlockStateCodecFailure,
+  ChunkStoreApi,
+  LightQueueUnderflowError,
+} from '@nerima-games/mc-worldgen'
 
 /**
  * TOTAL, mirroring `BlockWriteOutcome`. There is no error channel here because
@@ -182,7 +186,7 @@ const positionKey = (position: BlockPosition): string =>
 const breakBlockLegacy = (
   store: ChunkStoreApi,
   position: BlockPosition,
-): Effect.Effect<BreakOutcome> =>
+): Effect.Effect<BreakOutcome, BlockStateCodecFailure | LightQueueUnderflowError> =>
   Effect.map(store.setBlock(position, AIR_BLOCK_ID), (outcome): BreakOutcome => {
     if (outcome._tag === 'Written') {
       return { _tag: 'Broken', yielded: outcome.previous, chunk: outcome.chunk }
@@ -345,7 +349,7 @@ const transactionBreakBlock = (
 export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
-): Effect.Effect<BreakOutcome>
+): Effect.Effect<BreakOutcome, BlockStateCodecFailure | LightQueueUnderflowError>
 export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
@@ -360,7 +364,7 @@ export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
   context?: BreakTransactionContext,
-): Effect.Effect<BreakOutcome | BreakTransactionResult> {
+): Effect.Effect<BreakOutcome | BreakTransactionResult, BlockStateCodecFailure | LightQueueUnderflowError> {
   if (arguments.length < 3) return breakBlockLegacy(store, position)
   if (context === undefined) return Effect.succeed(failure({ _tag: 'MissingTransactionContext' }))
   return transactionBreakBlock(position, context)

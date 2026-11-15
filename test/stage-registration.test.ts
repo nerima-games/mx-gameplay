@@ -11,7 +11,7 @@ import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
 import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition, type ItemType } from '@nerima-games/mc-kernel'
-import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { LightQueueUnderflowError, type BlockReading, type ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
@@ -120,6 +120,7 @@ import {
   makeGameplayFrameStateForOwner,
   makeGameplayStages,
   gameplayModule,
+  GameplayStageFaults,
   GameplayFishingItemUseResultSchema,
   GameplayBrewingItemUseRequestSchema,
   GameplayBrewingItemUseResultSchema,
@@ -209,7 +210,12 @@ import {
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { brimming, emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
-import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
+import {
+  gameplayCommitServicesLayer,
+  injectRawBlockId,
+  makeGameplayCommitServices,
+  makeTransactionalChunkStoreDouble,
+} from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
 import { FRAME_DELTA, runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
@@ -360,7 +366,8 @@ const emptyWorldBase = Layer.mergeAll(
   emptyInventoryLayer,
   Layer.succeed(DomainEventBus, registrationEventBus),
 )
-const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
+const emptyHostWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
+const emptyWorld = Layer.merge(emptyHostWorld, gameplayModule.layers)
 const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
 
 const builtStages = Effect.gen(function* () {
@@ -377,6 +384,7 @@ const builtStages = Effect.gen(function* () {
     roster,
     inventory,
     player,
+    time,
     commit,
     stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
   }
@@ -667,6 +675,36 @@ describe('fire lifecycle stage integration', () => {
       expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
         { position, ageTicks: 0, unloadedRetries: 1 },
       ])
+    }),
+  )
+
+  it.effect('records and skips an active fire whose host light read fails under rain', () =>
+    Effect.gen(function* () {
+      const { state, store, roster, inventory, player, time, commit } = yield* builtStages
+      const position = fixtureBlockPosition(1, 64, 0)
+      const initialFire = makeFireLifecycleState([position], 7)
+      yield* store.api.setBlock(position, FIRE)
+      const rain: WeatherState = { weather: 'rain', remainingSecs: 100 }
+      yield* Ref.set(state.weather, rain)
+      yield* Ref.set(state.fireLifecycle, initialFire)
+      const brokenStore: ChunkStoreApi = {
+        ...store.api,
+        getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+      }
+      const stages = gameplayStages(state, brokenStore, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(initialFire.fires)
+      expect(yield* state.stageFaults.drain).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'ReadLight',
+        position,
+        reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
+      }))
     }),
   )
 
@@ -1523,6 +1561,7 @@ describe('stage behaviour', () => {
         'rollSeed',
         'shieldBlocking',
         'spawnAttempts',
+        'stageFaults',
         'survivalHunger',
         'targetPosition',
         'tickCount',
@@ -2361,8 +2400,8 @@ describe('the module contract has caught up with this file’s shape', () => {
    * `stages/registration.ts` used to carry a comment saying it was "NOT yet a
    * `GameModule`" because the service set could not be named until mc-sim
    * published. That diagnosis was half wrong, and the wrong half is what the
-   * spike found: mx-gameplay publishes no service for another repository to call — a rule is not a
- * service (plan.md §2.3-1) — so its Layer is empty and always was.
+   * spike found: mx-gameplay publishes no gameplay state for another repository
+   * to call. The module now publishes only its drainable stage-fault service.
    *
    * The real obstacle was that `GameModule.frameStages` was an ARRAY. These
    * stages are built from `Ref`s allocated in an Effect, so there was no way to
@@ -2377,10 +2416,10 @@ describe('the module contract has caught up with this file’s shape', () => {
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
       const module: GameModule<
+        GameplayStageFaults,
         never,
         never,
-        never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -2405,15 +2444,16 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services to register and exposes nine stages', () =>
+  it.effect('acquires five host services and the module fault service to register nine stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
       > = gameplayModule.frameStages
 
-      // Providing those five — and no local player or inventory services —
+      // Providing the five host services and module-owned fault service — with
+      // no local player or inventory services —
       // discharges the whole registration context.
       // If a stage started demanding another service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
@@ -2467,7 +2507,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayStageFaults
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')
@@ -4563,34 +4603,42 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
     }),
   )
 
-  it.effect('classifies an unregistered block id near a fire as unknown rather than crashing', () =>
+  it.effect('records a typed fault for an unregistered block near a fire without crashing', () =>
     Effect.gen(function* () {
-      // `blockTypeOfId` is kernel's own function and is documented PARTIAL over
-      // `BlockType` — nothing gates every id a save or a corrupted chunk could
-      // hold being registered. Every
-      // other fire test only ever reads registered blocks, so the
-      // `blockTypeOfId(reading.block) ?? '__unknown_fire_block__'` fallback
-      // had never fired.
       const firePosition = fixtureBlockPosition(8, 64, 8)
       const UNREGISTERED_BLOCK_ID = BlockId(250)
-      const { state, stages } = yield* builtStagesInWorld(
+      const strangeNeighbour = fixtureBlockPosition(9, 64, 8)
+      const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [firePosition, FIRE],
           [fixtureBlockPosition(8, 63, 8), STONE],
-          [fixtureBlockPosition(9, 64, 8), UNREGISTERED_BLOCK_ID],
         ]),
         ['0,0'],
       )
+      yield* injectRawBlockId(store.api, strangeNeighbour, UNREGISTERED_BLOCK_ID)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 29))
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
-      // Nothing crashed reading the unregistered neighbour; the fire itself
-      // is unaffected by it.
+      // The fire remains active, and the invalid block id reaches the drainable
+      // stage fault API instead of being treated as an ordinary block.
       const fires = (yield* Ref.get(state.fireLifecycle)).fires
       expect(fires).toHaveLength(1)
       expect(fires[0]?.position).toStrictEqual(firePosition)
+      expect(yield* state.stageFaults.drain).toMatchObject([
+        {
+          _tag: 'WorldDataFailure',
+          operation: 'DecodeBlockType',
+          position: strangeNeighbour,
+          reason: {
+            _tag: 'BlockTypeDecodeFailed',
+            block: UNREGISTERED_BLOCK_ID,
+            failure: { _tag: 'UnregisteredBlockId' },
+          },
+          occurrences: 1,
+        },
+      ])
     }),
   )
 
@@ -5777,26 +5825,37 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
     }),
   )
 
-  it.effect('an unregistered neighbouring block reads as an unknown fire block rather than crashing', () =>
+  it.effect('records a typed fault for an unregistered fire neighbour without crashing', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(30, 64, 30)
       const strangeNeighbour = fixtureBlockPosition(31, 64, 30)
       const { state, store, stages } = yield* builtStagesInWorld(
-        world([
-          [position, FIRE],
-          [strangeNeighbour, UNREGISTERED_BLOCK_ID],
-        ]),
+        world([[position, FIRE], [fixtureBlockPosition(30, 63, 30), STONE]]),
         ['0,0', '1,1'],
       )
+      yield* injectRawBlockId(store.api, strangeNeighbour, UNREGISTERED_BLOCK_ID)
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 41))
 
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
-      // Nothing crashed reading the unregistered id, and the fire itself is
-      // still tracked.
+      // The raw id remains observable and the fire stays active while the
+      // decode failure is recorded for the host to drain.
       expect(yield* store.blockAt(strangeNeighbour)).toBe(UNREGISTERED_BLOCK_ID)
-      expect((yield* Ref.get(state.fireLifecycle)).fires.length).toBeGreaterThanOrEqual(0)
+      expect((yield* Ref.get(state.fireLifecycle)).fires.map((fire) => fire.position)).toContainEqual(position)
+      expect(yield* state.stageFaults.drain).toMatchObject([
+        {
+          _tag: 'WorldDataFailure',
+          operation: 'DecodeBlockType',
+          position: strangeNeighbour,
+          reason: {
+            _tag: 'BlockTypeDecodeFailed',
+            block: UNREGISTERED_BLOCK_ID,
+            failure: { _tag: 'UnregisteredBlockId' },
+          },
+          occurrences: 1,
+        },
+      ])
     }),
   )
 
@@ -6061,6 +6120,31 @@ describe('End portal travel commits the player owner from either source dimensio
 })
 
 describe('portal rechecks cancel travel after the player moves or the chunk unloads', () => {
+  it.effect('records an unknown player-cell block instead of treating it as portal data', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(0xffff)
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'])
+      yield* injectRawBlockId(harness.store.api, cell, unknownBlock)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.state.stageFaults.drain).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'DecodeBlockType',
+        position: cell,
+        reason: expect.objectContaining({
+          _tag: 'BlockTypeDecodeFailed',
+          block: unknownBlock,
+          failure: { _tag: 'UnregisteredBlockId' },
+        }),
+      }))
+    }),
+  )
+
   it.effect('keeps the travel pending when the recheck cannot snapshot the player owner', () =>
     Effect.gen(function* () {
       const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
@@ -6204,6 +6288,56 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
       expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
       expect(yield* Ref.get(harness.state.portalDwell)).toStrictEqual({ _tag: 'Outside' })
       expect(yield* harness.store.blockAt(cell)).toBe(netherPortal)
+    }),
+  )
+
+  it.effect('records an unregistered block seen by the second portal read', () =>
+    Effect.gen(function* () {
+      const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
+      const unknownBlock = BlockId(0xffff)
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([[cell, netherPortal]]), ['0,0'])
+      const portalReads = yield* Ref.make(0)
+      const store: ChunkStoreApi = {
+        ...harness.store.api,
+        getBlock: (position) => {
+          if (blockKey(position) !== blockKey(cell)) return harness.store.api.getBlock(position)
+          return Effect.gen(function* () {
+            const readIndex = yield* Ref.modify(portalReads, (count) => [count, count + 1] as const)
+            if (readIndex === 1) return { _tag: 'Block', block: unknownBlock } satisfies BlockReading
+            return yield* harness.store.api.getBlock(position)
+          })
+        },
+      }
+      const stages = gameplayStages(
+        harness.state,
+        store,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        harness.commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(portalReads)).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* harness.state.stageFaults.drain).toContainEqual(expect.objectContaining({
+        _tag: 'WorldDataFailure',
+        operation: 'DecodeBlockType',
+        position: cell,
+        reason: expect.objectContaining({
+          _tag: 'BlockTypeDecodeFailed',
+          block: unknownBlock,
+          failure: { _tag: 'UnregisteredBlockId' },
+        }),
+      }))
     }),
   )
 })
@@ -6858,7 +6992,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('bone meal against an unloaded cell reports not-a-crop without a block reading', () =>
+  it.effect('bone meal against an unloaded cell returns an explicit world-unavailable outcome', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([]), [])
@@ -6874,7 +7008,7 @@ describe('farming and food item uses through the full interactions stage', () =>
           heldItem: 'bone_meal',
           success: false,
           consumedCount: 0,
-          outcome: { _tag: 'notCrop', at: position, block: undefined },
+          outcome: { _tag: 'WorldUnavailable', position, state: 'ChunkNotLoaded' },
         },
       ])
     }),
@@ -7022,7 +7156,7 @@ describe('farming and food item uses through the full interactions stage', () =>
         action: 'HarvestPotato',
         requestId: 'harvest-unloaded-crop',
         success: false,
-        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+        outcome: { _tag: 'WorldUnavailable', position, state: 'ChunkNotLoaded' },
       }])
     }),
   )
@@ -7032,7 +7166,7 @@ describe('farming and food item uses through the full interactions stage', () =>
       const position = fixtureBlockPosition(41, 64, 41)
       const slots = [...emptySlots()]
       slots[0] = itemStack('iron_hoe', 1)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['0,0'], undefined, slots)
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['2,2'], undefined, slots)
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestSoilTill(state, 'till-fail', position, 'iron_hoe')
@@ -7045,7 +7179,7 @@ describe('farming and food item uses through the full interactions stage', () =>
         heldItem: 'iron_hoe',
         success: false,
         durabilityDamage: 0,
-        outcome: { _tag: 'notTillable' },
+        outcome: { _tag: 'notTillable', found: 'stone' },
       })
     }),
   )

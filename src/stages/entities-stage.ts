@@ -539,6 +539,9 @@ const runMobSimulation = (
       dimension,
       'hostile',
     )
+    for (const fault of found.faults ?? []) {
+      yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+    }
     searchedAttempts = found.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
     nextRollSeed = found.seed
   }
@@ -551,6 +554,9 @@ const runMobSimulation = (
       dimension,
       'passive',
     )
+    for (const fault of found.faults ?? []) {
+      yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+    }
     nextRollSeed = found.seed
     searchedAttempts = searchedAttempts.length === 0
       ? found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)
@@ -1072,13 +1078,16 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           return
         }
 
-        const { destinations } = yield* applyFallingBlocks(store, batch)
+        const moves = yield* applyFallingBlocks(store, batch)
+        for (const fault of moves.failures ?? []) {
+          yield* state.stageFaults.record({ _tag: 'WorldDataFailure', ...fault })
+        }
 
         // `update`, not `set`: the store writes above may have caused other
         // rules to disturb positions while this tick was running, and a `set`
         // would erase them.
-        if (destinations.length > 0) {
-          yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, destinations))
+        if (moves.destinations.length > 0) {
+          yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, moves.destinations))
         }
       })),
   }

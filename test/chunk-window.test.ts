@@ -270,6 +270,7 @@ describe('openChunkWindow', () => {
           Effect.succeed({
             coord,
             blocks: new Uint16Array(0),
+          blockStates: new Uint32Array(0),
             biomes: [],
           }),
       }

@@ -29,6 +29,7 @@ import {
   isSuccessfulBlockUse,
   planFurnaceAdvance,
   processBlockPlacementCommand,
+  resultOrDie,
   isRetryableWorldCommitFailure,
   resolveBlockUse,
   stepPortalTravel,
@@ -37,7 +38,7 @@ import {
 } from './registration-core.js'
 import { AttackRangeDistance, EntityHealthPoints, EntityId, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
-import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
+import type { BlockId, BlockType, ItemType } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
 import {
   DamageAmount,
@@ -50,6 +51,7 @@ import {
   withInventory,
   type PlayerStorage,
   type StorageLocation,
+  type WorldBlockRead,
 } from '@nerima-games/mc-sim'
 import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
@@ -84,6 +86,10 @@ import type {
   EnderPearlThrowRequest,
   BlockPlacementCommand,
 } from './registration-core.js'
+import type {
+  GameplayStageBlockTypeDecodeFailure,
+  GameplayStageItemUseWorldFailure,
+} from './gameplay-stage-faults.js'
 
 import {
   AIR_BLOCK_ID,
@@ -1666,7 +1672,7 @@ const processPlacement = (
           }
         }
 
-        const planned = yield* planPlaceBlock(store, {
+        const plannedResult = yield* Effect.result(planPlaceBlock(store, {
           position,
           heldItem: request.heldItem,
           playerFeet: kernelPosition(
@@ -1674,7 +1680,24 @@ const processPlacement = (
             PositionAxis(playerState.pose.feetPosition.y),
             PositionAxis(playerState.pose.feetPosition.z),
           ),
-        })
+        }))
+        if (Result.isFailure(plannedResult)) {
+          const reason = plannedResult.failure
+          yield* state.stageFaults.record({
+            _tag: 'WorldDataFailure',
+            operation: 'ReadLight',
+            position,
+            reason,
+          })
+          return {
+            requestId: command?.requestId ?? '',
+            success: false,
+            consumed: false,
+            replayed: false,
+            outcome: { _tag: 'WorldDataFailed', reason },
+          }
+        }
+        const planned = plannedResult.success
         if (planned.outcome._tag !== 'Placed') {
           return {
             requestId: command?.requestId ?? '',
@@ -1956,6 +1979,57 @@ const processEnderPearlThrow = (
     yield* Ref.set(state.rollSeed, roll.seed)
     yield* Ref.update(state.enderPearlOutcomes, (outcomes) => [...outcomes, outcome])
   })
+
+type ItemUseBlockRead =
+  | Readonly<{ _tag: 'Block'; blockType: BlockType }>
+  | Readonly<{ _tag: 'Failure'; failure: GameplayStageItemUseWorldFailure }>
+
+const itemUseBlockTypeAt = (
+  state: GameplayStageContext['state'],
+  position: BlockPosition,
+  blockRead: WorldBlockRead | undefined,
+): Effect.Effect<ItemUseBlockRead> => Effect.gen(function* () {
+  if (blockRead === undefined) {
+    const reason = { _tag: 'MissingBlockReadResult' as const, position }
+    yield* state.stageFaults.record({
+      _tag: 'WorldDataFailure',
+      operation: 'ReadBlock',
+      position,
+      reason,
+    })
+    return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
+  }
+
+  if (blockRead.reading._tag !== 'Block') {
+    return {
+      _tag: 'Failure',
+      failure: {
+        _tag: 'WorldUnavailable',
+        position,
+        state: blockRead.reading._tag,
+      },
+    }
+  }
+
+  const decoded = yield* resultOrDie(blockTypeOfId(blockRead.reading.block))
+  if (decoded === undefined) {
+    const reason: GameplayStageBlockTypeDecodeFailure = {
+      _tag: 'BlockTypeDecodeFailed',
+      position,
+      block: blockRead.reading.block,
+      failure: { _tag: 'UnregisteredBlockId' },
+    }
+    yield* state.stageFaults.record({
+      _tag: 'WorldDataFailure',
+      operation: 'DecodeBlockType',
+      position,
+      reason,
+    })
+    return { _tag: 'Failure', failure: { _tag: 'WorldDataFailed', reason } }
+  }
+
+  return { _tag: 'Block', blockType: decoded }
+})
 
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
@@ -2451,12 +2525,20 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                const reading = observed.success.blocks[0]?.reading
-                const blockType = reading?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(reading.block))
-                  : undefined
+                const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
+                if (blockRead._tag === 'Failure') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: blockRead.failure,
+                  })
+                  break itemUseAction
+                }
                 const outcome = yield* applyBoneMeal(
-                  () => Effect.succeed(blockType),
+                  () => Effect.succeed(blockRead.blockType),
                   position,
                 )
                 if (outcome._tag !== 'applied') {
@@ -2497,7 +2579,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseRequests
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
-                if (crop === undefined || crop.crop !== blockType) {
+                if (crop === undefined || crop.crop !== blockRead.blockType) {
                   itemUseResults.push({
                     action: request.action,
                     requestId: request.requestId,
@@ -2507,7 +2589,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     outcome: {
                       _tag: 'cropOwnerMismatch',
                       at: position,
-                      block: blockType,
+                      block: blockRead.blockType,
                       registeredCrop: crop?.crop,
                     },
                   })
@@ -2581,14 +2663,32 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                const groundRead = observed.success.blocks[0]?.reading
-                const aboveRead = observed.success.blocks[1]?.reading
-                const groundBlock = groundRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(groundRead.block)) ?? 'air'
-                  : 'air'
-                const aboveBlock = aboveRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(aboveRead.block)) ?? 'air'
-                  : 'air'
+                const groundRead = yield* itemUseBlockTypeAt(state, ground, observed.success.blocks[0])
+                const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
+                if (groundRead._tag === 'Failure') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    durabilityDamage: 0,
+                    outcome: groundRead.failure,
+                  })
+                  break itemUseAction
+                }
+                if (aboveRead._tag === 'Failure') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    durabilityDamage: 0,
+                    outcome: aboveRead.failure,
+                  })
+                  break itemUseAction
+                }
+                const groundBlock = groundRead.blockType
+                const aboveBlock = aboveRead.blockType
                 const candidate = candidateForPlayerStorageItemUse(
                   commit.playerStorageOwnerId,
                   observed.success.state,
@@ -2710,14 +2810,32 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   yield* requeueItemUsesFrom(itemUseIndex)
                   break itemUseRequests
                 }
-                const soilRead = observed.success.blocks[0]?.reading
-                const aboveRead = observed.success.blocks[1]?.reading
-                const soilBlock = soilRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(soilRead.block)) ?? 'air'
-                  : 'air'
-                const aboveBlock = aboveRead?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(aboveRead.block)) ?? 'air'
-                  : 'air'
+                const soilRead = yield* itemUseBlockTypeAt(state, soil, observed.success.blocks[0])
+                const aboveRead = yield* itemUseBlockTypeAt(state, above, observed.success.blocks[1])
+                if (soilRead._tag === 'Failure') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: soilRead.failure,
+                  })
+                  break itemUseAction
+                }
+                if (aboveRead._tag === 'Failure') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: aboveRead.failure,
+                  })
+                  break itemUseAction
+                }
+                const soilBlock = soilRead.blockType
+                const aboveBlock = aboveRead.blockType
                 const candidate = candidateForPlayerStorageItemUse(
                   commit.playerStorageOwnerId,
                   observed.success.state,
@@ -2844,10 +2962,18 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseRequests
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
-                const reading = observed.success.blocks[0]?.reading
-                const cropType = reading?._tag === 'Block'
-                  ? Result.getOrUndefined(blockTypeOfId(reading.block)) ?? 'air'
-                  : 'air'
+                const blockRead = yield* itemUseBlockTypeAt(state, position, observed.success.blocks[0])
+                if (blockRead._tag === 'Failure') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    positionKey: request.positionKey,
+                    success: false,
+                    outcome: blockRead.failure,
+                  })
+                  break itemUseAction
+                }
+                const cropType = blockRead.blockType
                 if (crop === undefined || crop.crop !== cropType) {
                   const outcome = crop === undefined && !isCropType(cropType)
                     ? cropDrops(cropType, false, request.roll)
