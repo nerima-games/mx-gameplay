@@ -573,8 +573,6 @@ legacy overload の `BreakOutcome` は `BlockWriteOutcome` と同じく全域で
 
 ### domain/interactions/block-state-rules.ts
 
-| export | 種別 | 備考 |
-| --- | --- | --- |
 `index.ts` はこのモジュールを `export *` せず、下表の名前だけを列挙して export する。状態遷移の関数（`applyBlockStateRule`、`cropAgeAfterRandomTick` など）と chunk store 用の adapter はパッケージの export に含めない。
 
 | export | 種別 | 備考 |

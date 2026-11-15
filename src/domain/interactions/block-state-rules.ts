@@ -78,7 +78,7 @@ export const BoneMealCropStagesSchema: Schema.Codec<BoneMealCropStages, number> 
   .check(Schema.isBetween({ minimum: 2, maximum: 5 }))
   .pipe(Schema.brand('BoneMealCropStages'))
 
-/** Height of a side-face hit within the clicked block, in [0, 1). */
+/** Height of a side-face hit within the clicked block, in [0, 1]. */
 export type StairHitHeight = number & Brand.Brand<'StairHitHeight'>
 export const StairHitHeightSchema: Schema.Codec<StairHitHeight, number> = Schema.Finite
   .check(Schema.isGreaterThanOrEqualTo(0))
