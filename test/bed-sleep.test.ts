@@ -220,6 +220,12 @@ describe('multiplayer sleep roster', () => {
       expect(afterTwo.success.state.sleepers[0]?.elapsedSecs).toBe(5)
     })
 
+    it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])('rejects invalid elapsed time %s without aging sleepers', (deltaSecs) => {
+      const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
+      expect(advanceSleep(state, deltaSecs, 1, 1, 1)).toEqual(Result.fail('invalid-sleep-delta'))
+      expect(state.sleepers[0]?.elapsedSecs).toBe(0)
+    })
+
     it('rejects a non-finite ratio instead of treating it as all players', () => {
       const state = enterSleep(initialSleepRuntimeState(), 'alice', location())
       expect(advanceSleep(state, 1, 1, Number.NaN, 1)).toEqual(Result.fail('invalid-sleep-ratio'))

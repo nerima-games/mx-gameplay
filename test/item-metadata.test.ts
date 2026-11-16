@@ -1,11 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import { createItemMetadataStore, type ItemMetadataStore } from '../src/domain/item-metadata'
 import type { EnchantedItem } from '../src/domain/enchantment'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel'
 
 const enchantedPickaxe: EnchantedItem = {
   item: 'wooden_pickaxe',
   durability: { current: 59, max: 59 },
-  enchantments: [{ id: 'unbreaking', level: 1 }],
+  enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
 }
 
 describe('key builders', () => {

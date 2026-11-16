@@ -60,7 +60,7 @@
  * budget makes the sequence depend only on HOW MANY blocks were broken, which is
  * `../frame-rolls`' rule that it depend on what happened.
  */
-import { Result } from 'effect'
+import { Option, Result } from 'effect'
 import {
   dropOfBlockId,
   blockTypeOfId,
@@ -93,12 +93,14 @@ export type MinedItem = {
   readonly count: number
 }
 
-export type BlockLootFailure = Readonly<{
-  _tag: 'BlockLootRegistryFailure'
-  block: BlockId
-  lookup: 'drop' | 'type'
-  failure: BlockRegistryResolutionFailure
-}>
+export type BlockLootFailure =
+  | Readonly<{
+      _tag: 'BlockLootRegistryFailure'
+      block: BlockId
+      lookup: 'drop' | 'type'
+      failure: BlockRegistryResolutionFailure
+    }>
+  | Readonly<{ _tag: 'InvalidBlockLootRoll'; index: 0 | 1 | 2 | 3 }>
 
 /**
  * Everything about the tool, as far as the loot is concerned.
@@ -239,6 +241,7 @@ export const BLOCK_LOOT_ROLLS = 4
 const MAX_BONUS_LINES = BLOCK_LOOT_ROLLS - 1
 
 const NO_LOOT: ReadonlyArray<never> = []
+const DEFAULT_ROLLS: ReadonlyArray<number> = [0, 0, 0, 0]
 
 /**
  * Is the Fortune level on this tool worth consulting?
@@ -302,16 +305,21 @@ const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): 
  *   - air, water, lava, bedrock, snow and leaves yield nothing to anyone
  *     (`count: 0` in kernel's table).
  *
- * `rolls` shorter than `BLOCK_LOOT_ROLLS` reads as zeros, the lowest result for
- * variable-count rolls. Zero also passes chance gates, which keeps deterministic
- * fixtures able to exercise every bonus line. The stage draws the full budget
- * from `../frame-rolls`; tests pass explicit rolls when checking probabilities.
+ * The first four explicit rolls must be finite values in [0, 1).
+ * Omitting rolls selects a deterministic all-zero budget.
  */
 export const blockLoot = (
   block: BlockId,
   context: BlockLootContext = NO_TOOL,
-  rolls: ReadonlyArray<number> = NO_LOOT,
+  rolls: ReadonlyArray<number> = DEFAULT_ROLLS,
 ): Result.Result<ReadonlyArray<MinedItem>, BlockLootFailure> => {
+  const rollIndices: readonly [0, 1, 2, 3] = [0, 1, 2, 3]
+  for (const index of rollIndices) {
+    const roll = rolls[index]
+    if (roll === undefined || !Number.isFinite(roll) || roll < 0 || roll >= 1) {
+      return Result.fail({ _tag: 'InvalidBlockLootRoll', index })
+    }
+  }
   let lookup: 'drop' | 'type' = 'drop'
   const resolved = Result.gen(function* () {
     const drop = yield* dropOfBlockId(block, context)
@@ -328,7 +336,8 @@ export const blockLoot = (
     })
   }
   const { drop, type } = resolved.success
-  const roll = rolls[0] ?? 0
+  // The full roll budget was validated before registry resolution.
+  const roll = Option.getOrThrow(Option.fromUndefinedOr(rolls[0]))
 
   const items: Array<MinedItem> = []
 
@@ -342,7 +351,6 @@ export const blockLoot = (
     const mined =
       type === 'gravel' &&
       context.silkTouch !== true &&
-      Number.isFinite(roll) &&
       roll < gravelFlintChance
         ? { item: 'flint' as const, count: 1 }
         : withFortune(drop, context, roll)
@@ -361,7 +369,8 @@ export const blockLoot = (
   const bonus = type === undefined || context.silkTouch === true ? undefined : BONUS_DROPS.get(type)
   if (bonus !== undefined) {
     bonus.slice(0, MAX_BONUS_LINES).forEach((line, index) => {
-      const bonusRoll = rolls[index + 1] ?? 0
+      // MAX_BONUS_LINES keeps every index inside the validated roll budget.
+      const bonusRoll = Option.getOrThrow(Option.fromUndefinedOr(rolls[index + 1]))
       const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
         ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
         : 0

@@ -543,16 +543,12 @@ describe('vehicle frame', () => {
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
   })
 
-  it('falls back to unpowered when no isPoweredRailAt hook is provided', async () => {
+  it('reports missing power queries without updating a cart on powered rails', async () => {
     const vehicle = {
       id: VehicleId('v:no-power-hook'),
       type: 'minecart' as const,
       dimension: 'overworld' as const,
       position: { x: 0, y: 64, z: 0 },
-      // Deliberately far beyond a realistic minecart speed: braking (rather
-      // than the powered acceleration) cuts it to a fifth, and that reduced
-      // speed still needs to reach the block one cell away within a single
-      // (dt-clamped) frame, so the collision-resolved re-step also runs.
       velocity: { x: 50, y: 0, z: 0 },
       yawRadians: 0,
     }
@@ -573,14 +569,14 @@ describe('vehicle frame', () => {
       ),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.1))
+    const failures = await Effect.runPromise(advanceVehicles(store, service, 0.1))
 
-    // Braked (not accelerated) despite standing on a powered rail, because no
-    // `isPoweredRailAt` hook means the track can never be reported "powered".
-    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
-    expect(velocity.x).toBeCloseTo(2)
-    expect(velocity.y).toBe(0)
-    expect(velocity.z).toBe(0)
+    expect(failures).toStrictEqual([{
+      _tag: 'VehicleEnvironmentFailure',
+      vehicleId: vehicle.id,
+      failure: { _tag: 'MissingPoweredRailQuery' },
+    }])
+    expect(next).toBeUndefined()
   })
 
   it('records malformed delta time per active vehicle without reading terrain or updating state', async () => {

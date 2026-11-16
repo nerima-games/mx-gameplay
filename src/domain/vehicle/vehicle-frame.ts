@@ -38,6 +38,7 @@ export type VehicleFrameFailure =
     }>
   | Readonly<{ _tag: 'VehicleMotionFailure'; vehicleId: VehicleId; failure: VehicleMotionFailure }>
   | Readonly<{ _tag: 'VehicleUpdateFailure'; vehicleId: VehicleId; failure: VehicleOperationError }>
+  | Readonly<{ _tag: 'VehicleEnvironmentFailure'; vehicleId: VehicleId; failure: Readonly<{ _tag: 'MissingPoweredRailQuery' }> }>
 
 const blockKey = (position: BlockPosition): string => `${position.x},${position.y},${position.z}`
 const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
@@ -190,6 +191,7 @@ const stepVehicle = (
       reading: Extract<BlockReading, { readonly _tag: 'ChunkNotLoaded' | 'OutOfWorld' }>
     }>
   | Readonly<{ _tag: 'MotionFailure'; failure: VehicleMotionFailure }>
+  | Readonly<{ _tag: 'EnvironmentFailure'; failure: Readonly<{ _tag: 'MissingPoweredRailQuery' }> }>
 > => Effect.gen(function* () {
   const position = blockPositionAt(
     Math.floor(vehicle.position.x),
@@ -229,11 +231,19 @@ const stepVehicle = (
   const kind = railKindAt(readings, position)
   const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, blockPositionAt(x, y, z)) !== 'none'
   const shape = yield* Effect.fromResult(resolveRailShape(isRailAt, position.x, position.y, position.z))
+  const powered = kind === 'powered'
+    ? environment.isPoweredRailAt === undefined
+      ? undefined
+      : environment.isPoweredRailAt(vehicle.dimension, position)
+    : false
+  if (powered === undefined) {
+    return { _tag: 'EnvironmentFailure' as const, failure: { _tag: 'MissingPoweredRailQuery' as const } }
+  }
   const track = {
     kind,
     shape,
     ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
-    powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
+    powered,
   } as const
   const transition = yield* Effect.fromResult(stepMinecart(vehicle, {
     ...track,
@@ -280,6 +290,10 @@ export const advanceVehicles = (
         position: transition.position,
         reading: transition.reading,
       })
+      continue
+    }
+    if (transition._tag === 'EnvironmentFailure') {
+      failures.push({ _tag: 'VehicleEnvironmentFailure', vehicleId: vehicle.id, failure: transition.failure })
       continue
     }
     if (transition._tag === 'MotionFailure') {

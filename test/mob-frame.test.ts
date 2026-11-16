@@ -821,7 +821,7 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         item: 'wooden_pickaxe',
         count: 1,
         durability: pickaxeDurability,
-        enchantments: [{ id: 'unbreaking', level: 1 }],
+        enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
       }
       expect(isDroppedItemBehaviour(enchanted)).toBe(true)
       expect(repairMobBehaviour(DROPPED_ITEM_KIND, enchanted)).toBe(enchanted)
@@ -830,7 +830,7 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       // the whole behaviour invalid, same as a malformed durability would.
       const badEnchantment = {
         ...enchanted,
-        enchantments: [{ id: 'not_a_real_enchantment', level: 1 }],
+        enchantments: [{ id: 'not_a_real_enchantment', level: EnchantmentLevel(1) }],
       }
       expect(isDroppedItemBehaviour(badEnchantment)).toBe(false)
       expect(repairMobBehaviour(DROPPED_ITEM_KIND, badEnchantment)).toStrictEqual({

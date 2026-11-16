@@ -14,7 +14,7 @@ import {
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Result, Schema } from 'effect'
-import { AttackRangeDistance, DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel, AttackRangeDistance, DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, WorldRevisionConflict } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
@@ -135,7 +135,7 @@ describe('dropped item entities', () => {
         durability: durabilityForItem('wooden_pickaxe'),
         eligibleFromFrame: 10,
         customName: 'Field pickaxe',
-        enchantments: [{ id: 'unbreaking', level: 1 }],
+        enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
       },
     ], expectedRevision)
     expect(Result.isSuccess(outcome)).toBe(true)
@@ -158,7 +158,7 @@ describe('dropped item entities', () => {
       durability: durabilityForItem('wooden_pickaxe'),
       eligibleFromFrame: 10,
       customName: 'Field pickaxe',
-      enchantments: [{ id: 'unbreaking', level: 1 }],
+      enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
     })
   })
 

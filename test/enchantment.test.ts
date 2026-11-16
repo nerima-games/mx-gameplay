@@ -7,6 +7,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   InterpolationFraction,
+  EnchantmentLevel,
   type InterpolationFraction as InterpolationFractionValue,
 } from '@nerima-games/mc-kernel/domain/quantities'
 import {
@@ -89,7 +90,7 @@ const enchantedItem = (
 ): EnchantedItem => ({
   item,
   durability: durabilityForItem(item),
-  enchantments: id === undefined ? [] : [{ id, level }],
+  enchantments: id === undefined ? [] : [{ id, level: EnchantmentLevel(level) }],
 })
 
 const experienceAmount = (value: number) =>
@@ -277,14 +278,25 @@ describe('enchantment registry', () => {
 })
 
 describe('enchanted item codec', () => {
+  it.each([-1, 0.5, 256, Number.NaN, Number.POSITIVE_INFINITY, '2'])(
+    'rejects explicit invalid level %s without replacing it',
+    (level) => {
+      expect(decodeEnchantedItem({
+        item: 'bow', durability: durabilityForItem('bow'), enchantments: [{ id: 'power', level }],
+      })).toEqual({
+        ok: false, issues: [{ path: 'enchantments.0.level', reason: 'must be within the level cap' }],
+      })
+    },
+  )
+
   it('canonicalizes order and round-trips item, durability and enchantments', () => {
     const input = {
       item: 'diamond_pickaxe',
       durability: durabilityForItem('diamond_pickaxe'),
       enchantments: [
-        { id: 'fortune', level: 3 },
-        { id: 'efficiency', level: 5 },
-        { id: 'unbreaking', level: 3 },
+        { id: 'fortune', level: EnchantmentLevel(3) },
+        { id: 'efficiency', level: EnchantmentLevel(5) },
+        { id: 'unbreaking', level: EnchantmentLevel(3) },
       ],
     } as const
     const snapshot = snapshotEnchantedItem(input)
@@ -924,9 +936,9 @@ describe('enchantment derivations', () => {
     expect(enchantmentLevel(component([['power', 2]]), 'power')).toBe(2)
     expect(enchantmentLevel(component([['power', 0]]), 'power')).toBe(0)
     expect(enchantmentLevel(component([['power', 255]]), 'power')).toBe(255)
-    expect(
-      enchantmentLevel({ 'minecraft:power': 256 } as unknown as EnchantmentsComponent, 'power'),
-    ).toBe(0)
+    for (const level of [-1, 0.5, 256, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(Result.isFailure(EnchantmentLevel.result(level))).toBe(true)
+    }
   })
 
   it('builds kernel components through the checked enchantment constructor', () => {

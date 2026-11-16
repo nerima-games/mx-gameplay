@@ -808,16 +808,20 @@ describe('status effects', () => {
     )
   })
 
-  it('clamps a non-finite amplifier when projecting malformed state into modifiers', () => {
-    const malformed = {
-      effects: [{ type: 'speed', remainingSecs: 1, pulseClockSecs: 0, amplifier: Number.NaN }],
-    } as unknown as StatusEffectState
-    const modifiers = statusEffectModifiers(malformed)
-
-    expect(statusEffectLevel(malformed, 'speed')).toBe(1)
-    expect(modifiers.movementSpeedMultiplier).toBeCloseTo(1.2, 12)
-    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectModifiersSchema)(modifiers))).toBe(true)
-  })
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0.5, 256])(
+    'rejects amplifier %s at the validated state boundary',
+    (amplifier) => {
+      const malformed: StatusEffectState = {
+        effects: [{ type: 'speed', remainingSecs: 1, pulseClockSecs: 0, amplifier }],
+      }
+      expect(Result.isFailure(
+        Schema.decodeUnknownResult(ValidatedStatusEffectStateSchema)(malformed),
+      )).toBe(true)
+      expect(applyStatusEffect(malformed, {
+        type: 'speed', durationSecs: 1,
+      })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-state' }))
+    },
+  )
 
   it('clones active and hidden status-effect records without aliasing', () => {
     const visibleOnly = apply(emptyStatusEffectState(), { type: 'speed', durationSecs: 5, amplifier: 0 }).state

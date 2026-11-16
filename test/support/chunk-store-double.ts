@@ -447,5 +447,5 @@ export const makeChunkStoreDouble = (
  */
 export const emptyWorldStoreLayer: Layer.Layer<ChunkStore> = Layer.effect(
   ChunkStore,
-  Effect.map(makeChunkStoreDouble(world([]), ['0,0']), (double) => double.api),
+  Effect.map(Effect.suspend(() => makeChunkStoreDouble(world([]), ['0,0'])), (double) => double.api),
 )

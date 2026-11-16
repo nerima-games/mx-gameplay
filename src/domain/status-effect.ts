@@ -134,7 +134,7 @@ export type StatusEffectInstantEffect =
   | Readonly<{ type: 'saturation'; amplifier: EffectAmplifier }>
 
 export type StatusEffectApplicationOutcome = Readonly<{
-  state: StatusEffectState
+  state: ValidatedStatusEffectState
   instantEffects: ReadonlyArray<StatusEffectInstantEffect>
 }>
 
@@ -144,7 +144,7 @@ export type ValidatedStatusEffectApplicationOutcome = Readonly<{
 }>
 
 export type StatusEffectTick = Readonly<{
-  state: StatusEffectState
+  state: ValidatedStatusEffectState
   poisonPulses: number
   regenerationPulses: number
   witherPulses: StatusEffectPulseCount
@@ -225,7 +225,8 @@ export const POISON_MINIMUM_HEALTH_POINTS: number = 1
 export const REGENERATION_HEAL_POINTS: number = 1
 export const PLAYER_MAXIMUM_HEALTH_POINTS: number = 20
 
-export const emptyStatusEffectState = (): StatusEffectState => ({ effects: [] })
+export const emptyStatusEffectState = (): ValidatedStatusEffectState =>
+  makeValidatedStatusEffectState({ effects: [] })
 
 const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
   Schema.declareConstructor<A, I>()([schema], ([inner]) =>
@@ -310,7 +311,7 @@ export const StatusEffectApplicationOutcomeSchema: Schema.Codec<
   StatusEffectApplicationOutcome,
   unknown
 > = strictCodec(Schema.Struct({
-  state: StatusEffectStateSchema,
+  state: ValidatedStatusEffectStateSchema,
   instantEffects: Schema.Array(StatusEffectInstantEffectSchema),
 }))
 
@@ -653,26 +654,23 @@ export const applyStatusEffect = (
   return Result.succeed(applyStatusEffectToValidatedState(decodedState.success, decodedApplication.success))
 }
 
-const finiteAmplifier = (amplifier: number): number =>
-  Number.isFinite(amplifier) ? Math.max(0, Math.min(STATUS_EFFECT_AMPLIFIER_MAX, Math.floor(amplifier))) : 0
-
 const effectLevel = (effect: ActiveStatusEffect): number =>
-  finiteAmplifier(effect.amplifier) + 1
+  effect.amplifier + 1
 
 /** Returns the 1-based Vanilla level, or zero when the effect is absent. */
 export const statusEffectLevel = (
-  state: StatusEffectState,
+  state: ValidatedStatusEffectState,
   type: StatusEffectType,
 ): StatusEffectLevel => {
   const definition = STATUS_EFFECT_DEFINITIONS[type]
   const effect = state.effects.find((candidate) => candidate.type === definition.name)
   return makeStatusEffectLevel(effect === undefined
     ? 0
-    : Math.min(definition.maxAmplifier, finiteAmplifier(effect.amplifier)) + 1)
+    : Math.min(definition.maxAmplifier, effect.amplifier) + 1)
 }
 
 /** Projects active kernel effects into the shared numeric modifiers for stages. */
-export const statusEffectModifiers = (state: StatusEffectState): StatusEffectModifiers => {
+export const statusEffectModifiers = (state: ValidatedStatusEffectState): StatusEffectModifiers => {
   const levels: Partial<Record<StatusEffectType, StatusEffectLevel>> = {}
   for (const effect of state.effects) levels[effect.type] = makeStatusEffectLevel(effectLevel(effect))
 
@@ -715,7 +713,7 @@ export const statusEffectModifiers = (state: StatusEffectState): StatusEffectMod
     jumpBoostLevel: level('jump_boost'),
     slowFalling: level('slow_falling') > 0,
     luck: makeStatusEffectLuck(luck),
-    nauseaAmplifier: nausea === undefined ? null : makeEffectAmplifier(finiteAmplifier(nausea.amplifier)),
+    nauseaAmplifier: nausea === undefined ? null : makeEffectAmplifier(nausea.amplifier),
     blindness: level('blindness') > 0,
     darkness: level('darkness') > 0,
     nightVision: level('night_vision') > 0,
@@ -841,7 +839,8 @@ export const tickStatusEffects = (
     return advanced === undefined ? [] : [advanced]
   })
 
-  const nextState: StatusEffectState = { effects: canonicalEffects(effects) }
+  // Ticking preserves validated bounds while updating clocks, shortening effects, and promoting hidden effects.
+  const nextState = makeValidatedStatusEffectState({ effects: canonicalEffects(effects) })
   const modifiers = statusEffectModifiers(nextState)
   return Result.succeed({
     state: nextState,

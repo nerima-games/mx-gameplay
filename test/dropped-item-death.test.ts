@@ -8,7 +8,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import { Result, Schema } from 'effect'
-import { StackCount, WorldRevisionSchema, enchantmentsComponent, itemComponents } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel, StackCount, WorldRevisionSchema, enchantmentsComponent, itemComponents } from '@nerima-games/mc-kernel'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   emptyEquipment,
@@ -142,7 +142,7 @@ describe('deathDropsFromPlayerStorage', () => {
         'equipment:head': {
           item: 'iron_helmet',
           durability: durabilityForItem('iron_helmet'),
-          enchantments: [{ id: 'vanishing_curse', level: 1 }],
+          enchantments: [{ id: 'vanishing_curse', level: EnchantmentLevel(1) }],
         },
       },
     }
@@ -165,7 +165,7 @@ describe('deathDropsFromPlayerStorage', () => {
         '0': {
           item: 'iron_helmet',
           durability: durabilityForItem('iron_helmet'),
-          enchantments: [{ id: 'vanishing_curse', level: 1 }],
+          enchantments: [{ id: 'vanishing_curse', level: EnchantmentLevel(1) }],
         },
       },
     }
@@ -214,7 +214,7 @@ describe('deathDropsFromPlayerStorage', () => {
         '0': {
           item: 'wooden_pickaxe',
           durability: durabilityForItem('wooden_pickaxe'),
-          enchantments: [{ id: 'unbreaking', level: 1 }],
+          enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
         },
       },
     }
@@ -223,7 +223,7 @@ describe('deathDropsFromPlayerStorage', () => {
 
     expect(drops[0]).toMatchObject({
       customName: 'Old Faithful',
-      enchantments: [{ id: 'unbreaking', level: 1 }],
+      enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
     })
   })
 
@@ -235,7 +235,7 @@ describe('deathDropsFromPlayerStorage', () => {
         '0': {
           item: 'wooden_pickaxe',
           durability: durabilityForItem('wooden_pickaxe'),
-          enchantments: [{ id: 'unbreaking', level: 1 }],
+          enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
         },
       },
     }
@@ -255,7 +255,7 @@ describe('deathDropsFromPlayerStorage', () => {
         '0': {
           item: 'wooden_pickaxe',
           durability: durabilityForItem('wooden_pickaxe'),
-          enchantments: [{ id: 'unbreaking', level: 1 }],
+          enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
         },
       },
     }

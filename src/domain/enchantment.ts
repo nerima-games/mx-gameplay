@@ -93,7 +93,7 @@ export const enchantmentsConflict = (
 
 export type Enchantment = {
   readonly id: EnchantmentId
-  readonly level: number
+  readonly level: EnchantmentLevelValue
 }
 
 export type EnchantmentDamageMultiplier = number & Brand.Brand<'EnchantmentDamageMultiplier'>
@@ -208,11 +208,13 @@ export const decodeEnchantedItem = (value: unknown): EnchantedItemResult => {
         issues.push({ path: `enchantments.${index}.id`, reason: 'must be a registered enchantment' })
         continue
       }
+      const level = Schema.decodeUnknownResult(
+        Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 255 })).pipe(Schema.brand('EnchantmentLevel')),
+      )(levelValue)
       if (
-        typeof levelValue !== 'number' ||
-        !Number.isSafeInteger(levelValue) ||
-        levelValue < 1 ||
-        levelValue > ENCHANTMENT_REGISTRY[idValue].maxLevel
+        Result.isFailure(level) ||
+        level.success < 1 ||
+        level.success > ENCHANTMENT_REGISTRY[idValue].maxLevel
       ) {
         issues.push({ path: `enchantments.${index}.level`, reason: 'must be within the level cap' })
         continue
@@ -230,7 +232,7 @@ export const decodeEnchantedItem = (value: unknown): EnchantedItemResult => {
         continue
       }
       seen.add(idValue)
-      enchantments.push({ id: idValue, level: levelValue })
+      enchantments.push({ id: idValue, level: level.success })
     }
   }
 
@@ -342,7 +344,8 @@ const offerForValidInput = (
     seed: normalizedSeed,
     bookshelfCount: shelves,
     slot,
-    enchantment: { id, level },
+    // The registry cap and positive level formula keep generated levels in the kernel range.
+    enchantment: { id, level: Result.getOrThrow(EnchantmentLevel.result(level)) },
     requiredPlayerLevel,
     lapisCost: (slot + 1) as 1 | 2 | 3,
   }
@@ -445,7 +448,9 @@ const LegacyEnchantmentOfferSchema = Schema.Struct({
   slot: Schema.Literals([0, 1, 2]),
   enchantment: Schema.Struct({
     id: Schema.Literals(ENCHANTMENT_IDS),
-    level: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 255 })),
+    level: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 255 })).pipe(
+      Schema.brand('EnchantmentLevel'),
+    ),
   }),
   requiredPlayerLevel: Schema.Int.check(Schema.isGreaterThan(0)),
   lapisCost: Schema.Literals([1, 2, 3]),
@@ -494,7 +499,10 @@ export const applyEnchantmentOffer = (
     if (expected === undefined || !tableOffersMatch(offer, expected)) {
       return rejectTransaction(state, 'invalid_offer')
     }
-    offeredEnchantments = offer.enchantments
+    // The offer exactly matches the generated registry-bounded levels checked above.
+    offeredEnchantments = offer.enchantments.map(({ id, level }) => ({
+      id, level: Result.getOrThrow(EnchantmentLevel.result(level)),
+    }))
     requiredPlayerLevel = Math.max(offer.levelCost, offer.lapisCost)
   } else {
     const expected = offerForValidInput(state.seed, state.bookshelfCount, offer.slot)
@@ -549,31 +557,27 @@ const isEnchantedItemSource = (source: EnchantmentSource): source is EnchantedIt
   typeof source.item === 'string' &&
   isItemType(source.item)
 
-const validLevel = (value: unknown): EnchantmentLevelValue =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 255
-    ? EnchantmentLevel(value)
-    : EnchantmentLevel(0)
-
 /** Read one level from a gameplay item, an enchantment list, or a kernel component. */
 export const enchantmentLevel = (
   source: EnchantmentSource,
   id: EnchantmentId,
 ): EnchantmentLevelValue => {
   if (Array.isArray(source)) {
-    return validLevel(
-      (source as ReadonlyArray<Enchantment>).find((enchantment) => enchantment.id === id)?.level,
-    )
+    return (source as ReadonlyArray<Enchantment>).find((enchantment) => enchantment.id === id)?.level
+      ?? EnchantmentLevel(0)
   }
   if (isEnchantedItemSource(source)) {
-    return validLevel(source.enchantments.find((enchantment) => enchantment.id === id)?.level)
+    return source.enchantments.find((enchantment) => enchantment.id === id)?.level ?? EnchantmentLevel(0)
   }
   const component = source as EnchantmentsComponent
-  return validLevel(component[`minecraft:${id}`] ?? component[id])
+  return component[`minecraft:${id}`] ?? component[id] ?? EnchantmentLevel(0)
 }
 
 /** Convert the gameplay list representation into the kernel's namespaced component map. */
 export const enchantmentComponentOf = (
-  item: EnchantedItem,
+  item: Omit<EnchantedItem, 'enchantments'> & Readonly<{
+    enchantments: ReadonlyArray<Readonly<{ id: EnchantmentId; level: number }>>
+  }>,
 ): ReturnType<typeof enchantmentsComponent> =>
   enchantmentsComponent(Object.fromEntries(
     item.enchantments.map(({ id, level }) => [`minecraft:${id}`, level]),

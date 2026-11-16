@@ -7194,6 +7194,11 @@ describe('schema-valid interaction edge paths', () => {
       chargeSecs: BOW_MIN_CHARGE_SECS,
       powerLevel: 1.5,
     }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-power-overflow', {
+      ...shot,
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+      powerLevel: 256,
+    }))
     await Effect.runPromise(requestBowShot(harness.state, 'bow-valid-boundary', {
       ...shot,
       chargeSecs: BOW_MIN_CHARGE_SECS,
@@ -7215,6 +7220,7 @@ describe('schema-valid interaction edge paths', () => {
       ...pending,
       stageInvalidCharge,
       stageInvalidPower,
+      { ...shot, requestId: 'bow-power-stage-overflow', chargeSecs: BOW_MIN_CHARGE_SECS, powerLevel: 256 },
     ]))
     await harness.run()
 
@@ -7227,6 +7233,8 @@ describe('schema-valid interaction edge paths', () => {
         { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-fraction', reason: 'InvalidBowPowerLevel' },
         { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-stage-injected', reason: 'InvalidBowChargeSecs' },
         { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-stage-injected', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-overflow', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-stage-overflow', reason: 'InvalidBowPowerLevel' },
       ]),
     )
     expect(faults.filter((fault) =>
