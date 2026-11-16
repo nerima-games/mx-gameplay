@@ -2,6 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { PositionAxis, position, RandomSeed, DeltaTimeSecs, EntityHealthPoints, EntitySerial } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import { Result } from 'effect'
+import fc from 'fast-check'
 import { isLookingAtEnderman } from '../src/domain/mob/enderman-gaze.js'
 import { hostileMobSnapshot, isHostileMobSnapshot, planMobRosterSweep, repairMobBehaviour, STEADY_ENDERMAN, type MobRoster } from '../src/domain/entities/mob-frame.js'
 
@@ -41,6 +42,26 @@ describe('enderman gaze', () => {
   it('rejects invalid geometry and a directionless coincident eye', () => {
     expect(isLookingAtEnderman(at(0, 0, 0), Number.NaN, 0, at(0, 0, 8))).toEqual(Result.fail('invalid-gaze-input'))
     expect(isLookingAtEnderman(at(0, 2.55, 0), 0, 0, at(0, 1.62, 0))).toEqual(Result.succeed(false))
+  })
+
+  it('returns a typed failure for malformed raw positions and angles', () => {
+    const valid = at(0, 0, 8)
+    for (const invalid of [null, undefined, false, '0', 0, [], {}, { x: 0, y: 0 }, { x: '0', y: 0, z: 0 }]) {
+      expect(isLookingAtEnderman(invalid, 0, 0, valid)).toEqual(Result.fail('invalid-gaze-input'))
+      expect(isLookingAtEnderman(valid, 0, 0, invalid)).toEqual(Result.fail('invalid-gaze-input'))
+    }
+    for (const invalid of [null, undefined, false, '0', {}, []]) {
+      expect(isLookingAtEnderman(valid, invalid, 0, valid)).toEqual(Result.fail('invalid-gaze-input'))
+      expect(isLookingAtEnderman(valid, 0, invalid, valid)).toEqual(Result.fail('invalid-gaze-input'))
+    }
+  })
+
+  it('returns a boolean result or a typed failure for arbitrary raw boundary values', () => {
+    fc.assert(fc.property(fc.anything(), fc.anything(), fc.anything(), fc.anything(), (playerFeet, yaw, pitch, mobFeet) => {
+      const actual = isLookingAtEnderman(playerFeet, yaw, pitch, mobFeet)
+      if (Result.isFailure(actual)) expect(actual.failure).toBe('invalid-gaze-input')
+      else expect(typeof actual.success).toBe('boolean')
+    }))
   })
 
   it('requires five consecutive ticks, resets a candidate, and retains established hostility', () => {

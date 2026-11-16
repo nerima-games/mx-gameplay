@@ -437,16 +437,16 @@ export type HostileMobSnapshot = {
   readonly tamed: boolean
 }
 
-export type EndermanAnger = Readonly<{
-  target: EntityId
-  stareTicks: number
-  attackCooldownTicks: number
-}>
-const EndermanAngerSchema: Schema.Codec<EndermanAnger, unknown> = Schema.Struct({
+const EndermanAngerSchema: Schema.Struct<{
+  readonly target: typeof EntityIdSchema
+  readonly stareTicks: Schema.Int
+  readonly attackCooldownTicks: Schema.Int
+}> = Schema.Struct({
   target: EntityIdSchema,
   stareTicks: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 5 })),
   attackCooldownTicks: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 })),
 })
+export type EndermanAnger = Schema.Schema.Type<typeof EndermanAngerSchema>
 
 export type MobBehaviour =
   | HostileMobSnapshot
