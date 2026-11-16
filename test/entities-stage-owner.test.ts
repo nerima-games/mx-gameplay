@@ -2978,6 +2978,73 @@ describe('entities stage owner-backed MobSimulation', () => {
     await expectEntityStageExecutionFailure(harness.state, 'MobProjectilePreviewMismatch')
   })
 
+  it.each([SKELETON_KIND, BLAZE_KIND].flatMap((kind) => [
+    { kind, boundary: 'at 64 blocks', playerY: 125.38, launches: true },
+    { kind, boundary: 'just beyond 64 blocks', playerY: 125.38000009999999, launches: false },
+    { kind, boundary: 'with an 80-block eye height difference', playerY: 142.38, launches: false },
+  ]))('keeps the $kind projectile line of sight limit $boundary', async ({ kind, playerY, launches }) => {
+    const sourceY = kind === BLAZE_KIND ? 62.5 : 62.38
+    const source = ecosystemMobAt(`test:bounded-ray:${String(kind)}`, kind, 0, sourceY)
+    const horizontal = Math.sqrt(127)
+    const harness = await Effect.runPromise(makeHarness({ entity: source, projectileService: true,
+      playerPose: { ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(horizontal), PositionAxis(playerY), PositionAxis(0)),
+      },
+    }))
+    // The source eye is y=64; sqrt(127)^2 + 63^2 is 64^2, inside the ranged horizontal band.
+    const length = Math.hypot(horizontal, playerY + 1.62 - 64)
+    if (launches) expect(length).toBe(64)
+    else expect(length).toBeGreaterThan(64)
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID, ProjectileServiceSnapshotSchema,
+    ))
+    expect(projectiles.state.projectiles).toHaveLength(launches ? 1 : 0)
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    if (launches) {
+      expect(faults).toEqual([])
+    } else {
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault', source: 'ProjectileLineOfSight',
+        target: { _tag: 'Entity', entityId: source.id },
+        failure: expect.objectContaining({
+          _tag: 'EntityWorldRaycastFailure',
+          failure: expect.objectContaining({ name: 'RangeError', message: 'Arrow raycast distance exceeds 64 blocks' }),
+        }),
+      }))
+    }
+  })
+
+  it('continues a saved arrow when another mob exceeds the projectile line of sight limit', async () => {
+    const source = ecosystemMobAt('test:bounded-ray-with-saved-arrow', SKELETON_KIND, 0, 62.38)
+    const projectileId = 'mx-gameplay:mob:arrow:test:previous-flight:0'
+    const harness = await Effect.runPromise(makeHarness({ entity: source, projectileService: true,
+      playerPose: { ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(Math.sqrt(127)), PositionAxis(142.38), PositionAxis(0)),
+      },
+    }))
+    await seedFlyingMobProjectile(harness.coordinator, projectileId,
+      position(PositionAxis(0), PositionAxis(100), PositionAxis(4)), { x: 2, y: 0, z: 0 })
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toContainEqual(expect.objectContaining({
+      _tag: 'EntityWorldDataFault', source: 'ProjectileLineOfSight',
+      target: { _tag: 'Entity', entityId: source.id },
+      failure: expect.objectContaining({ _tag: 'EntityWorldRaycastFailure', failure: expect.any(RangeError) }),
+    }))
+    const snapshot = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID, ProjectileServiceSnapshotSchema,
+    ))
+    const arrow = snapshot.state.projectiles.find(({ id }) => String(id) === projectileId)
+    expect(arrow?.projectile.position.x).toBeGreaterThan(0)
+    expect(arrow?.projectile.ageSeconds).toBe(0.05)
+    expect(faults.filter((fault) => fault._tag === 'EntityWorldDataFault' && fault.source === 'ProjectileStep')).toEqual([])
+  })
+
   it('treats an unrepresentable ranged ray as blocked at the stage boundary', async () => {
     const edge = 2 ** 53
     const sourceChunkX = Math.floor(Number.MAX_SAFE_INTEGER / 16)
@@ -3013,6 +3080,13 @@ describe('entities stage owner-backed MobSimulation', () => {
     const roster = await Effect.runPromise(strictRoster(harness.coordinator))
     const afterSkeleton = roster.state.entities.find(({ id }) => id === skeleton.id)
     expect(projectiles.state.projectiles).toStrictEqual([])
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(expect.objectContaining({
+      _tag: 'EntityWorldDataFault', source: 'ProjectileLineOfSight',
+      failure: expect.objectContaining({
+        _tag: 'EntityWorldRaycastFailure',
+        failure: expect.objectContaining({ _tag: 'BrandError', message: expect.any(String), issue: expect.any(Object) }),
+      }),
+    }))
     const hostileSnapshot = afterSkeleton?.behaviour
     expect(hostileSnapshot?._tag).toBe('HostileMob')
     if (hostileSnapshot?._tag !== 'HostileMob') return

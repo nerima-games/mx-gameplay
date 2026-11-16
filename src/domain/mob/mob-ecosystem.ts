@@ -30,7 +30,7 @@ const motionPhaseTicks = (phase: number): number => Math.ceil(phase)
 
 export type MobStateRepairFailure =
   | Readonly<{ _tag: 'MobMovementStateRepairFailure' }>
-  | Readonly<{ _tag: 'MobBehaviourStateRepairFailure'; kind: 'creeper' | 'enderman' | 'zombie' | 'primed-tnt' | 'dropped-item' }>
+  | Readonly<{ _tag: 'MobBehaviourStateRepairFailure'; kind: EntityKind | 'creeper' | 'enderman' | 'zombie' | 'primed-tnt' | 'dropped-item' }>
   | Readonly<{
       _tag: 'EcosystemMobStateRepairFailure'
       field: '_tag' | 'attackCooldownTicks' | 'attackCooldownSecs' | 'motionPhase' | 'provoked' | 'movementGoal' | 'movement' | 'hasHeadProtection' | 'burningTicks'

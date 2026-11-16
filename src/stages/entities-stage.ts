@@ -69,6 +69,7 @@ import {
   damageAt,
   emptyPlayerStorage,
   ARROW_PROFILE,
+  raycastArrowBlock,
   type ReplicatedOwnerCandidate,
   type PlayerStorage,
   type ProjectileLaunchRequest,
@@ -572,8 +573,7 @@ const projectileWorldFor = (
     const rayFailure: { value: EntityWorldQueryFailure | undefined } = { value: undefined }
     let rayUnavailable: Extract<ProjectileLineOfSightFailure, { _tag: 'ProjectilePathUnavailable' }> | undefined
     const shapes = new Map<string, NonNullable<ProjectileBlockShape>>()
-    const direction = position(PositionAxis(to.x - from.x), PositionAxis(to.y - from.y), PositionAxis(to.z - from.z))
-    const ray = voxelRaycast(from, direction, distance, (x, y, z) => {
+    const isBlocking: Parameters<typeof raycastArrowBlock>[2] = (x, y, z) => {
       const result = cellAt(position(PositionAxis(x), PositionAxis(y), PositionAxis(z)))
       if (Result.isFailure(result)) {
         rayFailure.value ??= result.failure
@@ -588,11 +588,16 @@ const projectileWorldFor = (
       if (shape === null) return false
       shapes.set(`${x},${y},${z}`, shape)
       return true
-    }, mode === 'shape' ? (x, y, z) => {
-      const shape = shapes.get(`${x},${y},${z}`)
-      // Unavailable reads have no shape; their typed failure takes precedence below.
-      return shape === undefined ? [] : [shape]
-    } : undefined)
+    }
+    const ray = mode === 'voxel'
+      ? raycastArrowBlock(from, to, isBlocking)
+      : voxelRaycast(from,
+        position(PositionAxis(to.x - from.x), PositionAxis(to.y - from.y), PositionAxis(to.z - from.z)),
+        distance, isBlocking, (x, y, z) => {
+          const shape = shapes.get(`${x},${y},${z}`)
+          // Unavailable reads have no shape; their typed failure takes precedence below.
+          return shape === undefined ? [] : [shape]
+        })
     if (rayFailure.value !== undefined) {
       rememberFailure(rayFailure.value)
       return Result.fail(rayFailure.value)
@@ -600,7 +605,6 @@ const projectileWorldFor = (
     if (rayUnavailable !== undefined) return Result.fail(rayUnavailable)
     if (Result.isFailure(ray)) {
       const failure: EntityWorldQueryFailure = { _tag: 'EntityWorldRaycastFailure', position: from, failure: ray.failure }
-      rememberFailure(failure)
       return Result.fail(failure)
     }
     return Result.succeed(Option.isNone(ray.success))

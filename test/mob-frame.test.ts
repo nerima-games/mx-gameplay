@@ -79,7 +79,7 @@ import {
   dropRollsNeededForTable,
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
-import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
+import { BLAZE_KIND, COW_KIND, SKELETON_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import {
   CREEPER_EXPLOSION_POWER,
   explosionDamageAmount as explosionDamageAmountResult,
@@ -1140,6 +1140,27 @@ describe('enderman hostility lifecycle', () => {
   })): MobRoster => ({ entities: [{ id, kind: ENDERMAN_KIND, feetPosition: feet,
     healthPoints: EntityHealthPoints(40), behaviour }], nextSerial: EntitySerial(1) })
 
+  it.each([CREEPER_KIND, ZOMBIE_KIND, SKELETON_KIND, BLAZE_KIND, COW_KIND])('labels foreign enderman metadata with the actual kind %s', (kind) => {
+    const base = hostileMobSnapshot(kind === CREEPER_KIND ? DORMANT_FUSE : initialEcosystemMobState())
+    for (const metadata of [{ endermanAnger: angry }, { ecosystem }]) {
+      const repaired = repairMobBehaviour(kind, { ...base, ...metadata })
+      expect(repaired).toStrictEqual({ _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind },
+      })
+      expect(isMobBehaviourRepairFault(repaired)).toBe(true)
+    }
+  })
+
+  it('keeps invalid enderman metadata labelled as enderman and rejects malformed fault kinds', () => {
+    expect(repairMobBehaviour(ENDERMAN_KIND, { ...hostileMobSnapshot(STEADY_ENDERMAN), endermanAnger: null }))
+      .toStrictEqual({ _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind: ENDERMAN_KIND } })
+    for (const kind of ['', '   ', null, 1]) {
+      expect(isMobBehaviourRepairFault({ _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind },
+      })).toBe(false)
+    }
+  })
+
   it('clears target and combat provocation once while preserving flinch and metadata', () => {
     const neutral = hostileMobSnapshot(STEADY_ENDERMAN)
     expect(clearEndermanAnger(neutral)).toBe(neutral)
@@ -1273,17 +1294,22 @@ describe('enderman hostility lifecycle', () => {
     expect(stepped.roster.entities[0]?.behaviour).toMatchObject({ behaviour: STEADY_ENDERMAN })
   })
 
-  it('samples a twenty-second expiry only when the fifth gaze tick acquires the target', () => {
+  it.each([
+    { seed: 1, expiresAt: 410, nextSeed: 16807 },
+    { seed: 400, expiresAt: 411, nextSeed: 6722800 },
+    { seed: 64000, expiresAt: 600, nextSeed: 1075648000 },
+    { seed: 127700, expiresAt: 790, nextSeed: 2146253900 },
+  ])('samples the inclusive tick range on acquisition ($seed gives expiry $expiresAt)', ({ seed, expiresAt, nextSeed }) => {
     const candidate = initial(atPosition(0, 64, 8), hostileMobSnapshot(STEADY_ENDERMAN, {
       endermanAnger: { target: actor, stareTicks: 4 }, ecosystem: initialEcosystemMobState(),
     }))
     const stepped = planMobRosterSweep(candidate, { target: ORIGIN, simulationTick: SimulationTick(10), dt: DeltaTimeSecs(0.05),
       endermanGaze: { target: actor, looking: new Set([id]), visible: new Set([id]) },
-    }, RandomSeed(1))
+    }, RandomSeed(seed))
     expect(stepped.roster.entities[0]?.behaviour).toMatchObject({
-      endermanAnger: { target: actor, stareTicks: 5, expiresAt: 410 }, ecosystem: { provoked: true },
+      endermanAnger: { target: actor, stareTicks: 5, expiresAt }, ecosystem: { provoked: true },
     })
-    expect(stepped.seed).toBe(16807)
+    expect(stepped.seed).toBe(nextSeed)
   })
 
   it('records a typed fault when the absolute expiry exceeds the safe tick range', () => {

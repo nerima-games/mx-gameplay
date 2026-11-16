@@ -212,6 +212,7 @@ import {
   SimulationTick,
   NonNegativeTickCount,
   isItemType,
+  isEntityKind,
   type ItemType,
   type RandomSeed,
   type SimulationTick as SimulationTickValue,
@@ -495,7 +496,9 @@ export const isMobBehaviourRepairFault = (value: unknown): value is MobBehaviour
   if (tag === 'MobMovementStateRepairFailure') return true
   if (tag === 'MobBehaviourStateRepairFailure') {
     const kind = (failure as { readonly kind?: unknown }).kind
-    return kind === 'creeper' || kind === 'enderman' || kind === 'zombie' || kind === 'primed-tnt' || kind === 'dropped-item'
+    // These two serialized repair labels predate the underscore-separated entity kinds.
+    return kind === 'primed-tnt' || kind === 'dropped-item' ||
+      (isEntityKind(kind) && (HOSTILE_KINDS.includes(kind) || ECOSYSTEM_MOB_KINDS.includes(kind)))
   }
   if (tag !== 'EcosystemMobStateRepairFailure') return false
   const field = (failure as { readonly field?: unknown }).field
@@ -805,9 +808,11 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
     if (Result.isFailure(movement) || (movementPresent && movement.success === undefined)) {
       return { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobMovementStateRepairFailure' } }
     }
-    if ((kind !== ENDERMAN_KIND && (Object.hasOwn(behaviour, 'endermanAnger') || Object.hasOwn(behaviour, 'ecosystem'))) ||
-      !isHostileMobSnapshot(behaviour)) {
-      return { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' } }
+    if (kind !== ENDERMAN_KIND && (Object.hasOwn(behaviour, 'endermanAnger') || Object.hasOwn(behaviour, 'ecosystem'))) {
+      return { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind } }
+    }
+    if (!isHostileMobSnapshot(behaviour)) {
+      return { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind } }
     }
     return inner.success === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour')
       ? behaviour
@@ -875,7 +880,7 @@ const repairCreeperFuse = (
   if (!fieldPresent) return Result.succeed(migrateLegacyMissingCreeperFuse())
   return isCreeperFuse(value)
     ? Result.succeed(value)
-    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: 'creeper' })
+    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: CREEPER_KIND })
 }
 
 const migrateLegacyMissingCreeperFuse = (): CreeperFuse => DORMANT_FUSE
@@ -887,7 +892,7 @@ const repairEndermanFlinch = (
   if (!fieldPresent) return Result.succeed(migrateLegacyMissingEndermanFlinch())
   return isEndermanFlinch(value)
     ? Result.succeed(value)
-    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' })
+    : Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: ENDERMAN_KIND })
 }
 
 const migrateLegacyMissingEndermanFlinch = (): EndermanFlinch => STEADY_ENDERMAN
@@ -1589,9 +1594,10 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
                 emit: { _tag: 'MobFrameRuleFault', entityId: entity.id, failure: draw.failure },
               }
               cursor = draw.success.seed
-              // 20–39 seconds, sampled once at acquisition; no per-tick anger countdown.
-              // https://minecraft.wiki/w/Enderman#Behavior
-              const deadline = senses.simulationTick + (20 + Math.floor(draw.success.roll * 20)) * 20
+              // Uniform 400–780 ticks inclusive, sampled once at acquisition.
+              // https://github.com/mahtomedi/minecraft/blob/main/src/main/java/net/minecraft/world/entity/monster/EnderMan.java#L85
+              // https://github.com/mahtomedi/minecraft/blob/main/src/main/java/net/minecraft/util/TimeUtil.java#L11-L12
+              const deadline = senses.simulationTick + 400 + Math.floor(draw.success.roll * 381)
               if (!Number.isSafeInteger(deadline)) return {
                 transition: UNCHANGED,
                 emit: { _tag: 'MobFrameRuleFault', entityId: entity.id,
