@@ -23,7 +23,7 @@ import {
 } from './registration-core.js'
 import type { FrameRollFailure } from '../domain/frame-rolls.js'
 import { Brand, Equal, Option, Result, Schema } from 'effect'
-import { COLLISION_SHAPE_AABBS } from '@nerima-games/mc-physics'
+import { BlockLength, COLLISION_SHAPE_AABBS, voxelRaycast } from '@nerima-games/mc-physics'
 import type { LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
 import {
   AIR_BLOCK_ID,
@@ -147,6 +147,7 @@ import {
 } from '../domain/entities/entity-world-cell.js'
 import { mobMovementCell, mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
 import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
+import { isLookingAtEnderman } from '../domain/mob/enderman-gaze.js'
 import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND, MOB_MOVEMENT_POLICIES } from '../domain/mob/mob-ecosystem.js'
 import type { BurningActor } from '../domain/fire-lifecycle.js'
 import {
@@ -1714,7 +1715,71 @@ const runMobSimulation = (
       position: playerPosition,
     })
   }
-  const hasMovableMob = hasMobMovementCandidates(tickRoster, dimension, playerPosition)
+  const endermanLooking = new Set<ReturnType<typeof EntityId>>()
+  const endermanVisible = new Set<ReturnType<typeof EntityId>>()
+  for (const entity of tickRoster.entities) {
+    if (entity.kind !== 'enderman') continue
+    // Both owner schemas validate finite coordinates and angles before this stage.
+    const gaze = Result.getOrThrow(isLookingAtEnderman(playerPosition, playerSnapshot.state.pose.yawRadians,
+      playerSnapshot.state.pose.pitchRadians, entity.feetPosition))
+    const anger = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour.endermanAnger : undefined
+    const closeAngry = anger?.stareTicks === 5 && anger.target === PLAYER_BLAST_ENTITY_ID &&
+      Math.hypot(entity.feetPosition.x - playerPosition.x, entity.feetPosition.y - playerPosition.y,
+        entity.feetPosition.z - playerPosition.z) <= 1.5
+    if (!gaze && !closeAngry) continue
+    const from = position(PositionAxis(playerPosition.x), PositionAxis(playerPosition.y + 1.62), PositionAxis(playerPosition.z))
+    const to = position(PositionAxis(entity.feetPosition.x), PositionAxis(entity.feetPosition.y + 2.55), PositionAxis(entity.feetPosition.z))
+    const cells: EntityWorldCellPosition[] = []
+    const direction = position(PositionAxis(to.x - from.x), PositionAxis(to.y - from.y), PositionAxis(to.z - from.z))
+    // The feet range is 64; the eye segment may be slightly longer than an arrow's 64-block budget.
+    const rayLength = BlockLength(Math.hypot(direction.x, direction.y, direction.z))
+    const ray = voxelRaycast(from, direction, rayLength, (x, y, z) => { cells.push({ x, y, z }); return false })
+    if (Result.isFailure(ray)) {
+      yield* recordEntityWorldDataFault(state, 'EndermanGaze', {
+        _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: from,
+      }, entity.id)
+      faultedEntities.set(entity.id, entity)
+      continue
+    }
+    const coords = new Map<string, ReturnType<typeof chunkCoordsAround>[number]>()
+    for (const cell of cells) {
+      for (const coord of chunkCoordsAround(position(PositionAxis(cell.x), PositionAxis(cell.y), PositionAxis(cell.z)), 0)) {
+        coords.set(`${coord.cx},${coord.cz}`, coord)
+      }
+    }
+    const window = yield* openChunkWindow(store, [...coords.values()])
+    let visible = true
+    const shapes = new Map<string, NonNullable<ProjectileBlockShape>>()
+    for (const cell of cells) {
+      const reading = entityWorldCellAt(window, cell)
+      if (Result.isFailure(reading)) {
+        yield* recordEntityWorldDataFault(state, 'EndermanGaze', reading.failure, entity.id)
+        faultedEntities.set(entity.id, entity)
+        visible = false
+        break
+      }
+      if (reading.success._tag === 'Unloaded' || reading.success._tag === 'BelowWorld') {
+        visible = false
+        break
+      }
+      if (reading.success._tag !== 'Loaded') continue
+      const shape = COLLISION_SHAPE_AABBS[reading.success.properties.collisionShape]
+      if (shape === null) continue
+      shapes.set(`${cell.x},${cell.y},${cell.z}`, shape)
+    }
+    if (!visible) continue
+    const hit = voxelRaycast(from, direction, rayLength,
+      (x, y, z) => shapes.has(`${x},${y},${z}`),
+      (x, y, z) => [shapes.get(`${x},${y},${z}`)!])
+    // The same validated segment was traversed above; shapes come from the registry.
+    if (Option.isNone(Result.getOrThrow(hit))) {
+      endermanVisible.add(entity.id)
+      if (gaze) endermanLooking.add(entity.id)
+    }
+  }
+  tickRoster = { ...tickRoster, entities: tickRoster.entities.filter(({ id }) => !faultedEntities.has(id)) }
+  const hasMovableMob = hasMobMovementCandidates(tickRoster, dimension, playerPosition) ||
+    endermanLooking.size > 0
   const movementCoords = mobMovementChunkCoords(tickRoster, playerPosition)
   const hasUndeadForDaylight = hasUndeadDaylightCandidates(tickRoster, dimension)
   let movementWindow: import('../domain/chunk-window.js').ChunkWindow | undefined = undefined
@@ -1760,6 +1825,7 @@ const runMobSimulation = (
   }
   const sweep = planMobRosterSweep(tickRoster, {
     target: playerPosition,
+    endermanGaze: { target: PLAYER_BLAST_ENTITY_ID, looking: endermanLooking, visible: endermanVisible },
     dt,
     undeadDaylight: daylightFacts,
   }, RandomSeed(seed))
@@ -1792,7 +1858,8 @@ const runMobSimulation = (
   }
   const movement = movementWorld === undefined
     ? { roster: teleportRoster, faults: [] as ReadonlyArray<MobMovementRosterFault> }
-    : Result.getOrThrow(planMobMovementRoster(teleportRoster, playerPosition, movementWorld, stageTick, dimension))
+    : Result.getOrThrow(planMobMovementRoster(teleportRoster, playerPosition, movementWorld, stageTick, dimension,
+      { target: PLAYER_BLAST_ENTITY_ID, looking: endermanLooking }))
   const movementFaultEntityIds = new Set(movement.faults.map(({ entityId }) => entityId))
   for (const fault of movement.faults) {
     yield* recordMobMovementRosterFault(state, fault)

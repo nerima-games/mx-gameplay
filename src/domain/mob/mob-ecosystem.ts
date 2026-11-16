@@ -126,6 +126,7 @@ export const MOB_MOVEMENT_POLICIES: ReadonlyMap<EntityKind, MobMovementPolicy> =
   [SKELETON_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(16), followRange: mobMovementDistance(16) }],
   [BLAZE_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(24), followRange: mobMovementDistance(48) }],
   [ZOMBIFIED_PIGLIN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(35) }],
+  [ENDERMAN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(64) }],
   [ENDERMITE_KIND, { _tag: 'Approach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(16) }],
   [VILLAGER_KIND, VILLAGER_MOVEMENT_POLICY],
 ])

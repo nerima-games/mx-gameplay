@@ -105,7 +105,7 @@ const profileForKind = (kind: EntityKind): MobPathProfile => {
           ? [0.9, 0.9]
           : kind === ZOMBIE_KIND || kind === 'skeleton' || kind === 'zombified_piglin'
             ? [0.6, 1.95]
-            : [0.6, 1.8]
+            : kind === 'enderman' ? [0.6, 2.9] : [0.6, 1.8]
   const raw = kind === SPIDER_KIND
     ? { kind: 'spider', width, height }
     : { kind: 'ground', width, height, canJump: true }

@@ -2347,6 +2347,7 @@ export type EntityWorldDataFaultSource =
   | 'UndeadDaylight'
   | 'MobMovement'
   | 'EndermanTeleport'
+  | 'EndermanGaze'
   | 'ProjectileLineOfSight'
   | 'ProjectileStep'
   | 'TntExplosion'

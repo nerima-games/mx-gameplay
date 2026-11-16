@@ -226,10 +226,11 @@ import {
   type MobMovementState,
   type Durability,
 } from '@nerima-games/mc-sim'
-import { Brand, Effect, Result } from 'effect'
+import { Brand, Effect, Result, Schema } from 'effect'
 import type { MobMovementWorldAdapter, MobMovementWorldFailure } from './mob-movement-world.js'
 import {
   BlockAxis,
+  EntityIdSchema,
   EntityHealthPoints,
   PositionAxis,
   blockPosition,
@@ -350,7 +351,7 @@ const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
 // ---------------------------------------------------------------------------
 
 /**
- * Everything an enderman needs remembered between two frames, and nothing else.
+ * The enderman's pending hit response, stored beside its persistent anger.
  *
  * TWO TAGS AND NO FIELDS, which is the whole design. `endermanTeleportUrge` asks
  * for three facts and exactly one of them survives a frame: a roll is drawn where
@@ -429,11 +430,23 @@ export type HostileMobSnapshot = {
   readonly _tag: 'HostileMob'
   readonly behaviour?: CreeperFuse | EndermanFlinch | EcosystemMobState
   readonly movement?: MobMovementState
+  readonly endermanAnger?: EndermanAnger
   readonly ageTicks: number
   readonly persistent: boolean
   readonly named: boolean
   readonly tamed: boolean
 }
+
+export type EndermanAnger = Readonly<{
+  target: EntityId
+  stareTicks: number
+  attackCooldownTicks: number
+}>
+const EndermanAngerSchema: Schema.Codec<EndermanAnger, unknown> = Schema.Struct({
+  target: EntityIdSchema,
+  stareTicks: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 5 })),
+  attackCooldownTicks: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 })),
+})
 
 export type MobBehaviour =
   | HostileMobSnapshot
@@ -475,6 +488,7 @@ export const hostileMobSnapshot = (
   _tag: 'HostileMob',
   ...(behaviour === undefined ? {} : { behaviour }),
   ...(options.movement === undefined ? {} : { movement: options.movement }),
+  ...(options.endermanAnger === undefined ? {} : { endermanAnger: options.endermanAnger }),
   ageTicks: options.ageTicks ?? 0,
   persistent: options.persistent ?? false,
   named: options.named ?? false,
@@ -762,6 +776,12 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
   ) {
     const inner = repairHostileInner(kind, behaviour.behaviour, Object.hasOwn(behaviour, 'behaviour'))
     if (Result.isFailure(inner)) return { _tag: 'MobBehaviourRepairFault', failure: inner.failure }
+    if (Object.hasOwn(behaviour, 'endermanAnger') &&
+      (kind !== ENDERMAN_KIND || Result.isFailure(Schema.decodeUnknownResult(EndermanAngerSchema, {
+        onExcessProperty: 'error',
+      })(behaviour.endermanAnger)))) {
+      return { _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind: 'enderman' } }
+    }
     const movementPresent = Object.hasOwn(behaviour, 'movement')
     const movement = repairMobMovementState(behaviour.movement)
     if (Result.isFailure(movement) || (movementPresent && movement.success === undefined)) {
@@ -775,6 +795,9 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
           named: behaviour.named,
           tamed: behaviour.tamed,
           ...(movement.success === undefined ? {} : { movement: movement.success }),
+          ...(behaviour.endermanAnger === undefined ? {} : {
+            endermanAnger: Schema.decodeUnknownSync(EndermanAngerSchema)(behaviour.endermanAnger),
+          }),
         })
   }
 
@@ -880,6 +903,7 @@ type HostileMobSnapshotEnvelope = Readonly<{
   _tag: 'HostileMob'
   behaviour?: unknown
   movement?: unknown
+  endermanAnger?: unknown
   ageTicks: number
   persistent: boolean
   named: boolean
@@ -902,6 +926,8 @@ const hasHostileMobSnapshotMetadata = (value: unknown): value is HostileMobSnaps
 
 export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
   if (!hasHostileMobSnapshotMetadata(value)) return false
+  if (Object.hasOwn(value, 'endermanAnger') &&
+    Result.isFailure(Schema.decodeUnknownResult(EndermanAngerSchema, { onExcessProperty: 'error' })(value.endermanAnger))) return false
   return Result.isSuccess(repairMobMovementState(value.movement))
 }
 
@@ -1270,6 +1296,7 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] }
 
 /** What the frame knows that the rules need. */
 export type MobFrameSenses = {
+  readonly endermanGaze?: Readonly<{ target: EntityId; looking: ReadonlySet<EntityId>; visible?: ReadonlySet<EntityId> }>
   /**
    * Where the mobs' target is, or `undefined` for no target at all.
    *
@@ -1461,7 +1488,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
         const distance =
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
 
-        const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+        let snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
         const ageTicks = snapshot === undefined ? undefined : snapshot.ageTicks + 1
         despawnScratch.distanceToPlayerBlocks = distance
         if (ageTicks === undefined) delete despawnScratch.ageTicks
@@ -1512,6 +1539,27 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
         }
 
         const behaviour = innerBehaviour(entity.behaviour)
+        if (entity.kind === ENDERMAN_KIND && isFlinch(behaviour)) {
+          const previous = snapshot?.endermanAnger
+          const gaze = senses.endermanGaze
+          const looking = gaze !== undefined && gaze.looking.has(entity.id)
+          const angry = previous?.stareTicks === 5
+          const next = angry
+            ? { ...previous, attackCooldownTicks: Math.max(0, previous.attackCooldownTicks - 1) }
+            : looking && gaze !== undefined
+              ? {
+                  target: gaze.target,
+                  stareTicks: previous?.target === gaze.target ? Math.min(5, previous.stareTicks + 1) : 1,
+                  attackCooldownTicks: 0,
+                }
+              : undefined
+          if (next !== undefined || previous !== undefined) {
+            const nextSnapshot = { ...(snapshot === undefined ? hostileMobSnapshot(behaviour) : snapshot) }
+            if (next === undefined) delete nextSnapshot.endermanAnger
+            else nextSnapshot.endermanAnger = next
+            snapshot = nextSnapshot
+          }
+        }
         const storedBehaviour = (
           next: Exclude<HostileMobSnapshot['behaviour'], undefined>,
         ): MobBehaviour => snapshot === undefined
@@ -1612,6 +1660,25 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
 
         if (entity.kind === ENDERMAN_KIND && isFlinch(behaviour)) {
           const struck = behaviour._tag === 'Struck'
+          const anger = snapshot?.endermanAnger
+          const staring = distance !== undefined && distance <= 16 &&
+            senses.endermanGaze?.looking.has(entity.id) === true
+          const target = anger?.stareTicks === 5 &&
+            senses.endermanGaze?.target === anger.target ? senses.target : undefined
+          if (!staring && target !== undefined && distanceBetween(entity.feetPosition, target) <= 1.5 &&
+            anger !== undefined && anger.attackCooldownTicks === 0 &&
+            senses.endermanGaze?.visible?.has(entity.id) === true) {
+            return {
+              transition: changed({
+                feetPosition: entity.feetPosition,
+                healthPoints: entity.healthPoints,
+                behaviour: { ...snapshot!, behaviour: STEADY_ENDERMAN,
+                  endermanAnger: { ...anger, attackCooldownTicks: 20 } },
+              }),
+              emit: { _tag: 'MobAttack', attackerKind: entity.kind, mode: 'melee', damage: 7,
+                source: entity.id, at: entity.feetPosition },
+            }
+          }
 
           // THE CHASE LANE ONLY RUNS WHEN THERE IS SOMETHING TO CHASE, and this
           // is the one gate the frame adds rather than the rule.
@@ -1623,11 +1690,9 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           // because the damage branch anchors on `self` and needs no target at
           // all: a mob hit in an empty world can still flee.
           //
-          // Whether it is REALLY chasing is `enderman-anger.ts`, which is not
-          // ported (`../mob/enderman-teleport` lists it), so a present target is
-          // read as a chase — the identical reading `../mob/creeper-fuse` gets
-          // from this same field.
-          if (!struck && senses.target === undefined) {
+          // A chase requires the stored angry target to match this player.
+          // Looking at the enderman pauses pursuit without clearing that target.
+          if (!struck && (target === undefined || staring)) {
             return snapshot === undefined
               ? IGNORED
               : {
@@ -1659,7 +1724,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
               ? undefined
               : urge.anchor === 'self'
                 ? entity.feetPosition
-                : senses.target
+                : target
 
           let teleport: EndermanTeleportProbe | undefined
           if (anchor !== undefined) {
@@ -1697,12 +1762,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
             }
           }
 
-          // Nothing moved and nothing was owed: the shared step, and the roster
-          // stays the array it was.
-          if (!struck && snapshot === undefined) {
-            return teleport === undefined ? IGNORED : { transition: UNCHANGED, emit: teleport }
-          }
-
+          // An unstruck chase has stored anger and therefore always has a snapshot.
           // A blow is spent whether or not it moved the mob. `STEADY_ENDERMAN` is
           // shared, so clearing the flinch allocates nothing beyond the state
           // record every `Changed` transition needs.
@@ -1796,6 +1856,12 @@ const ecosystemStateForMovement = (
   const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
   const behaviour = snapshot === undefined ? entity.behaviour : snapshot.behaviour
   if (behaviour === undefined) return Result.succeed(undefined)
+  if (entity.kind === ENDERMAN_KIND && isFlinch(behaviour)) {
+    return Result.succeed({
+      ...initialEcosystemMobState(),
+      provoked: snapshot?.endermanAnger?.stareTicks === 5,
+    })
+  }
   if (entity.kind === CREEPER_KIND && isFuse(behaviour)) return Result.succeed(initialEcosystemMobState())
   const ecosystem = repairEcosystemMobState(behaviour)
   if (Result.isFailure(ecosystem)) return ecosystem
@@ -1844,12 +1910,16 @@ export const planMobMovementRoster = (
   world: MobMovementWorldAdapter,
   simulationTick: SimulationTickValue,
   dimension: Dimension,
+  endermanGaze?: MobFrameSenses['endermanGaze'],
 ): Result.Result<Readonly<{ roster: MobRoster; faults: ReadonlyArray<MobMovementRosterFault> }>, never> => {
   const entries: Array<Readonly<{ entity: MobEntity; movement: MobMovementState; snapshot?: HostileMobSnapshot; ecosystem: EcosystemMobState }>> = []
   const faults: MobMovementRosterFault[] = []
   for (const entity of roster.entities) {
     if (entity.dimension !== undefined && entity.dimension !== dimension) continue
     const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+    if (entity.kind === ENDERMAN_KIND && (endermanGaze === undefined ||
+      (endermanGaze.looking.has(entity.id) && target !== undefined && distanceBetween(entity.feetPosition, target) <= 16) ||
+      snapshot?.endermanAnger?.target !== endermanGaze.target)) continue
     const ecosystemResult = ecosystemStateForMovement(entity)
     if (Result.isFailure(ecosystemResult)) {
       faults.push({
