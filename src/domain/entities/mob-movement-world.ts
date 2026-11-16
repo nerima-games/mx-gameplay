@@ -206,7 +206,14 @@ const hazardInCell = (cell: MobMovementWorldCell): 'water' | 'lava' | 'cactus' |
   return null
 }
 
-/** Build an SM3 world that keeps unloaded, world-boundary, and corrupt cells distinct. */
+/**
+ * Build an SM3 world from a window opened by `openChunkWindow`.
+ *
+ * Create one adapter per window snapshot. This adapter caches successful cell
+ * lookups and retains the first query failure. A window not opened by
+ * `openChunkWindow` yields `EntityWorldWindowUnavailable` on cell lookup; read
+ * the failure with `queryFailure()`.
+ */
 export const mobMovementWorldFromChunkWindow = (
   window: ChunkWindow,
 ): MobMovementWorldAdapter => {

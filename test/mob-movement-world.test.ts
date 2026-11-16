@@ -61,6 +61,7 @@ describe('SM3 mob movement world', () => {
       unreadableProbes: () => 0,
     }
     const unavailable = entityWorldCellAt(legacyWindow, cell)
+    const adapter = mobMovementWorldFromChunkWindow(legacyWindow)
     const invalidBlockId = Brand.nominal<BlockId>()(65_536)
     const invalidLookup = entityWorldBlockDataAt(cell, invalidBlockId)
 
@@ -68,6 +69,8 @@ describe('SM3 mob movement world', () => {
       _tag: 'Failure',
       failure: { _tag: 'EntityWorldWindowUnavailable', cell },
     })
+    expect(adapter.isPassable(cell)).toBe(false)
+    expect(adapter.queryFailure()).toMatchObject({ _tag: 'EntityWorldWindowUnavailable', cell })
     expect(invalidLookup).toMatchObject({
       _tag: 'Failure',
       failure: { _tag: 'EntityWorldRegistryFailure', cell },

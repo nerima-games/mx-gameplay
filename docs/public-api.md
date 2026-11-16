@@ -650,6 +650,17 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 `Blast` が位置を持つのは、`domain/mob/explosion.ts` の `Explosion` が**意図的に持たない**からである
 ——「座標はホストの事実」であり、ここがそのホストである。
 
+### domain/entities/mob-movement-world.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `MobMovementWorldAdapter` | **契約** | `planMobMovementRoster`に渡すmob移動用world portと、セル参照、問い合わせ失敗の確認、未ロードセルとの重なり判定をまとめた型 |
+| `MobMovementWorldCell` | **契約** | `cellAt`が返すセルのunion。ロード済み、未ロード、worldの上限外、下限外を表す |
+| `MobMovementWorldFailure` | **契約** | `cellAt`と`queryFailure`が扱う型付き失敗のunion。`_tag`で原因を判別する |
+| `mobMovementWorldFromChunkWindow` | **契約** | `openChunkWindow`で開いた`ChunkWindow`からmob移動用world adapterを構築する |
+
+mc-serverは、mc-worldgenの`ChunkStore`から`openChunkWindow`で開いた`ChunkWindow`を、この関数に渡す。1つのwindow（snapshot）につきadapterを1つ作る。`mobMovementWorldFromChunkWindow`は、成功したセルと最初の問い合わせ失敗をadapter内に保持する。`openChunkWindow`を通さずに作ったwindowではreaderが登録されないため、セル参照は`EntityWorldWindowUnavailable`で失敗する。失敗はセル参照の後に`queryFailure()`で確認できる。
+
 ### domain/entities/dropped-item.ts
 
 | export | 種別 | 備考 |
