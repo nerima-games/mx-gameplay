@@ -2,6 +2,8 @@ import {
   EntityHealthPoints,
   EntityId,
   EntityIdSchema,
+  DimensionIdSchema,
+  type Dimension,
   DomainEventSchema,
   ITEM_TYPES,
   MAX_STACK_COUNT,
@@ -22,6 +24,7 @@ import {
   DurabilitySchema,
   emptyPlayerStorage,
   EQUIPMENT_SLOTS,
+  LegacyItemStackSchema,
   PlayerStorageSnapshotSchema,
   playerStorageOwnerRegistration,
   ReplicatedOwnerIdSchema,
@@ -396,14 +399,22 @@ const resolveDroppedItemSpawn = (
 type DroppedItemRecord = Readonly<{
   id: Schema.Schema.Type<typeof EntityIdSchema>
   feetPosition: Position
+  velocity?: Readonly<{ x: number; y: number; z: number }>
+  dimension?: Dimension
+  stack?: ItemStack
   behaviour: DroppedItemSnapshotBehaviour
 }>
 const DroppedItemRecordSchema: Schema.Codec<DroppedItemRecord, unknown> = strictCodec(
   Schema.Struct({
     id: EntityIdSchema,
     feetPosition: DroppedItemPositionSchema,
+    velocity: Schema.optionalKey(Schema.Struct({ x: Schema.Finite, y: Schema.Finite, z: Schema.Finite })),
+    dimension: Schema.optionalKey(DimensionIdSchema),
+    stack: Schema.optionalKey(LegacyItemStackSchema),
     behaviour: DroppedItemBehaviourSnapshotSchema,
-  }),
+  }).check(Schema.makeFilter(({ stack, behaviour, velocity, dimension }) =>
+    (velocity === undefined || dimension !== undefined) &&
+    (stack === undefined || (stack.item === behaviour.item && stack.count === behaviour.count)))),
 )
 
 const DroppedItemOwnerSnapshotFields: {
@@ -747,9 +758,9 @@ export const planDroppedItemPickup = (
         continue
       }
 
-      const stack = yield* Effect.fromResult(
-        itemStack(droppedItem.behaviour.item, droppedItem.behaviour.count),
-      )
+      const stack = droppedItem.stack === undefined
+        ? yield* Effect.fromResult(itemStack(droppedItem.behaviour.item, droppedItem.behaviour.count))
+        : droppedItem.stack
       const outcome = addStorageStoredStack(storage, {
         ...stack,
         durability: copyDurability(droppedItem.behaviour.durability),
@@ -769,6 +780,9 @@ export const planDroppedItemPickup = (
       if (result.leftover !== null) {
         nextItems.push({
           ...droppedItem,
+          ...(droppedItem.stack === undefined ? {} : {
+            stack: { item: result.leftover.item, count: result.leftover.count, components: result.leftover.components },
+          }),
           behaviour: {
             ...droppedItem.behaviour,
             count: result.leftover.count,

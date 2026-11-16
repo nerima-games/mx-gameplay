@@ -57,6 +57,7 @@ import {
   DamageAmount,
   DamageCause,
   EntityId,
+  EntitySerial,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
   ExperienceDelta,
@@ -433,6 +434,7 @@ const undeadDaylightFacts = (
 
 const BlocksPerSecondSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecond'))
 const BlocksPerSecondSquaredSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecondSquared'))
+const PROJECTILE_MAX_AXIS_CELL_SPAN = 16
 const PROJECTILE_FIXED_STEP_SECONDS = 1 / 20
 const PROJECTILE_AGE_TOLERANCE_SECONDS = 1e-9
 const BLAZE_FIREBALL_PROFILE: ProjectileProfile = {
@@ -646,7 +648,9 @@ const projectileWorldFor = (
       const maxY = Math.floor(Math.max(start.y, end.y))
       const maxZ = Math.floor(Math.max(start.z, end.z))
       if ([minX, minY, minZ, maxX, maxY, maxZ].some((value) => !Number.isSafeInteger(value))) return [bounds]
-      if (maxX - minX > 16 || maxY - minY > 16 || maxZ - minZ > 16) return [bounds]
+      if (maxX - minX > PROJECTILE_MAX_AXIS_CELL_SPAN ||
+        maxY - minY > PROJECTILE_MAX_AXIS_CELL_SPAN ||
+        maxZ - minZ > PROJECTILE_MAX_AXIS_CELL_SPAN) return [bounds]
       const boxes: Array<ReturnType<ProjectileWorld['blockBounds']>[number]> = []
       for (let x = minX; x <= maxX; x += 1) {
         for (let y = minY; y <= maxY; y += 1) {
@@ -2960,6 +2964,154 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
     }
   })
 
+const THROWN_ITEM_PROFILE: ProjectileProfile = {
+  ...ARROW_PROFILE,
+  // Vanilla item gravity is 0.04 blocks/tick² at 20 Hz.
+  gravity: Schema.decodeUnknownSync(BlocksPerSecondSquaredSchema)(16),
+  airDrag: 0.98,
+  waterDrag: 0.8,
+}
+
+const advanceThrownItems = (
+  context: GameplayStageContext,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> => Effect.gen(function* () {
+  const { state, store, commit } = context
+  if (dt === 0 || commit === undefined || commit.droppedItemsOwnerId === undefined) return
+  const owner = commit.droppedItemsOwnerId
+  let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+  const attempted = yield* Effect.result(Effect.gen(function* () {
+    const snapshot = yield* commit.coordinator.snapshot(owner, DroppedItemOwnerSnapshotSchema)
+    if (!snapshot.state.items.some(({ velocity }) => velocity !== undefined)) return
+    const player = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+    if (player.revision !== snapshot.revision) {
+      return yield* Effect.fail(new WorldRevisionConflict({ expected: snapshot.revision, actual: player.revision }))
+    }
+    operation = 'CandidateBuild'
+    const dimension = player.state.pose.feetPosition.dimension
+    const items: Array<DroppedItemOwnerSnapshot['items'][number]> = []
+    let changed = false
+    for (const drop of snapshot.state.items) {
+      if (drop.velocity === undefined || drop.dimension !== dimension) {
+        items.push(drop)
+        continue
+      }
+      const velocity = yield* Schema.decodeUnknownEffect(Schema.Struct({
+        x: BlocksPerSecondSchema, y: BlocksPerSecondSchema, z: BlocksPerSecondSchema,
+      }))(drop.velocity)
+      const dx = velocity.x * dt
+      const dy = (velocity.y - THROWN_ITEM_PROFILE.gravity * dt) * dt
+      const dz = velocity.z * dt
+      // Bound the window before loading it; drag only shortens this segment.
+      const segment = [
+        { start: drop.feetPosition.x, end: drop.feetPosition.x + dx },
+        { start: drop.feetPosition.y, end: drop.feetPosition.y + dy },
+        { start: drop.feetPosition.z, end: drop.feetPosition.z + dz },
+      ]
+      if (!segment.every(({ start, end }) =>
+        Number.isSafeInteger(Math.floor(start)) &&
+        Number.isSafeInteger(Math.floor(end)) &&
+        Math.abs(Math.floor(end) - Math.floor(start)) <= PROJECTILE_MAX_AXIS_CELL_SPAN,
+      )) {
+        return yield* Effect.fail({
+          _tag: 'DroppedItemMotionFailure', reason: 'SegmentBudgetExceeded',
+        } satisfies Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>)
+      }
+      const coords = chunkCoordsAround(drop.feetPosition, Math.hypot(dx, dz) + 1)
+      const window = yield* openChunkWindow(store, coords)
+      const adapter = projectileWorldFor({ entities: [], nextSerial: EntitySerial(0) }, drop.feetPosition, dimension, window, coords)
+      const collisionBoxes: Array<ReturnType<ProjectileWorld['blockBounds']>[number]> = []
+      const world: ProjectileWorld = {
+        ...adapter.world,
+        entities: [],
+        blockBounds: (start, end) => {
+          const boxes = adapter.world.blockBounds(start, end)
+          collisionBoxes.push(...boxes)
+          return boxes
+        },
+      }
+      const stepped = stepProjectile({
+        state: 'flying', position: drop.feetPosition, velocity, ageSeconds: FixedDurationSecs(0),
+      }, dt, world, THROWN_ITEM_PROFILE)
+      const failure = adapter.queryFailure()
+      if (failure !== undefined) {
+        yield* recordGameplayEntityWorldDataFault(state, 'DroppedItemMotion', failure)
+        items.push(drop)
+        continue
+      }
+      if (adapter.unloadedEntryFraction() !== undefined) {
+        items.push(drop)
+        continue
+      }
+      if (stepped.projectile.state === 'despawned') {
+        return yield* Effect.fail({
+          _tag: 'DroppedItemMotionFailure',
+          reason: stepped.projectile.reason,
+        } satisfies Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>)
+      }
+      changed = true
+      if (stepped.projectile.state === 'stuck') {
+        const { hit } = stepped.projectile
+        const gravityVelocity = velocity.y - THROWN_ITEM_PROFILE.gravity * dt
+        let normal: Readonly<{ x: number; y: number; z: number }> = hit.normal
+        if (normal.x === 0 && normal.y === 0 && normal.z === 0) {
+          // The projectile solver leaves t=0 contacts without a normal.
+          // Recover the touched face from the same geometry and incoming velocity.
+          const face = collisionBoxes.filter((box) =>
+            hit.point.x >= box.minX - 1e-9 && hit.point.x <= box.maxX + 1e-9 &&
+            hit.point.y >= box.minY - 1e-9 && hit.point.y <= box.maxY + 1e-9 &&
+            hit.point.z >= box.minZ - 1e-9 && hit.point.z <= box.maxZ + 1e-9,
+          ).flatMap((box) => [
+            { point: hit.point.x, bound: box.minX, toward: velocity.x > 0, normal: { x: -1, y: 0, z: 0 } },
+            { point: hit.point.x, bound: box.maxX, toward: velocity.x < 0, normal: { x: 1, y: 0, z: 0 } },
+            { point: hit.point.y, bound: box.minY, toward: gravityVelocity > 0, normal: { x: 0, y: -1, z: 0 } },
+            { point: hit.point.y, bound: box.maxY, toward: gravityVelocity < 0, normal: { x: 0, y: 1, z: 0 } },
+            { point: hit.point.z, bound: box.minZ, toward: velocity.z > 0, normal: { x: 0, y: 0, z: -1 } },
+            { point: hit.point.z, bound: box.maxZ, toward: velocity.z < 0, normal: { x: 0, y: 0, z: 1 } },
+          ]).find((candidate) => candidate.toward && Math.abs(candidate.point - candidate.bound) < 1e-9)
+          if (face === undefined) {
+            return yield* Effect.fail({
+              _tag: 'DroppedItemMotionFailure', reason: 'InitialContactFaceUnavailable',
+            } satisfies Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>)
+          }
+          normal = face.normal
+        }
+        const drag = normal.y > 0 ? 0.7 : 1
+        const bounced = {
+          x: velocity.x * (normal.x === 0 ? drag : -0.5),
+          y: normal.y === 0 ? gravityVelocity : -gravityVelocity * 0.5,
+          z: velocity.z * (normal.z === 0 ? drag : -0.5),
+        }
+        // Leave the contact plane so the next swept segment can move away.
+        const at = position(
+          PositionAxis(hit.point.x + normal.x * 0.001),
+          PositionAxis(hit.point.y + normal.y * 0.001),
+          PositionAxis(hit.point.z + normal.z * 0.001),
+        )
+        if (normal.y > 0 && Math.abs(gravityVelocity) < 1 && Math.hypot(bounced.x, bounced.z) < 0.1) {
+          const { velocity: _velocity, ...resting } = drop
+          items.push({ ...resting, feetPosition: at })
+        } else {
+          items.push({ ...drop, feetPosition: at, velocity: bounced })
+        }
+      } else {
+        items.push({ ...drop, feetPosition: stepped.projectile.position, velocity: stepped.projectile.velocity })
+      }
+    }
+    if (!changed) return
+    operation = 'WorldCommit'
+    yield* commit.coordinator.commit({
+      expectedRevision: snapshot.revision, expectedDimensions: [],
+      changes: [{ ownerId: owner, state: { items } }],
+    })
+  }))
+  if (Result.isFailure(attempted)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation, subject: 'DroppedItem', requestId: String(owner), error: attempted.failure,
+    })
+  }
+})
+
 export const makeEntitiesStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
   return {
@@ -3011,8 +3163,11 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
+          const pickupFrame = request.currentFrame === undefined
+            ? yield* Ref.get(state.tickCount)
+            : request.currentFrame
           const plannedResult = yield* Effect.result(planDroppedItemPickup(
-            request,
+            { ...request, currentFrame: pickupFrame },
             storageSnapshot.state,
             droppedItemsSnapshot.state,
           ))
@@ -3205,6 +3360,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         yield* runMobSimulation(context, dt)
         yield* runPlayerDeathDrops(context)
         yield* spawnQueuedExperienceOrbs(context)
+        yield* advanceThrownItems(context, dt)
 
         // ---- falling blocks ------------------------------------------------
         //

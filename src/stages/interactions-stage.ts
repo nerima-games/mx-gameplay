@@ -1,4 +1,6 @@
 import { Brand } from 'effect'
+import { forwardVector, hotbarSlotIndex, HOTBAR_SIZE, HOTBAR_START, itemStack as makeHotbarStack } from '@nerima-games/mc-sim'
+import { itemOfBlock, maxStackCountForItem } from '@nerima-games/mc-kernel'
 import {
   GameplayBrewingBottleItemUseResultSchema,
   GameplayBrewingItemUseResultSchema,
@@ -60,6 +62,7 @@ import {
   DamageAmount,
   DamageCause,
   PlayerServiceSnapshotSchema,
+  DurabilitySchema,
   applyDamage as applyVitalsDamage,
   damageAt as damagePlayerStorageAt,
   removeItemAt,
@@ -95,6 +98,7 @@ import type {
   IgnitionItemType,
   ItemUseRequest,
   ItemUseResult,
+  HotbarItemUseResult,
   ItemUseWorldReadRefusal,
   FishingItemUseRequest,
   MeleeAttackRequest,
@@ -3475,6 +3479,149 @@ const itemUseBlockTypeAt = (
   return { _tag: 'Block', blockType: decoded }
 })
 
+// Vanilla launch and pickup tuning converted from ticks at 20 Hz.
+const THROWN_ITEM_SPEED = 6
+const THROWN_ITEM_UPWARD_SPEED = 2
+const THROWN_ITEM_ORIGIN_HEIGHT = 1.32
+const THROWN_ITEM_PICKUP_DELAY_FRAMES = 40
+
+const processHotbarItemUse = (
+  state: GameplayStageContext['state'],
+  commit: GameplayStageContext['commit'],
+  request: Extract<ItemUseRequest, { action: 'DropSelectedItem' | 'PickBlock' }>,
+): Effect.Effect<void> => Effect.gen(function* () {
+  if (commit === undefined || commit.hotbar === undefined) {
+    yield* recordGameplayUnsupportedOperation(state, {
+      _tag: 'Unsupported', action: request.action, requestId: request.requestId,
+      reason: commit === undefined ? 'WorldCommitCoordinatorUnavailable' : 'OwnerRegistrationUnavailable',
+    })
+    return
+  }
+  const hotbar = commit.hotbar
+  let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+  const attempted = yield* Effect.result(Effect.gen(function* () {
+    const selected = yield* hotbar.getSelectedSlot
+    const slotIndex = hotbarSlotIndex(selected)
+    const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+    const slots = storage.state.inventory.slots
+    const held = slots[slotIndex]
+    if (request.action === 'PickBlock') {
+      const item = itemOfBlock(request.block)
+      const publish = (outcome: HotbarItemUseResult & { action: 'PickBlock' }) =>
+        Ref.update(state.itemUseResults, (results) => [...results, outcome])
+      if (item === undefined) {
+        yield* publish({ requestId: request.requestId, action: 'PickBlock', success: false, outcome: 'NoItemForm', slotIndex })
+        return
+      }
+      const matchingHotbar = slots.findIndex((stack, index) =>
+        index >= HOTBAR_START && index < HOTBAR_START + HOTBAR_SIZE && stack?.item === item)
+      if (matchingHotbar >= 0) {
+        yield* hotbar.setSelectedSlot(matchingHotbar - HOTBAR_START)
+        yield* publish({ requestId: request.requestId, action: 'PickBlock', success: true, outcome: 'Selected', slotIndex: matchingHotbar })
+        return
+      }
+      const matchingMain = slots.findIndex((stack, index) => index < HOTBAR_START && stack?.item === item)
+      let nextStorage: PlayerStorage
+      let target = slotIndex
+      let outcome: 'Swapped' | 'Created'
+      operation = 'CandidateBuild'
+      if (matchingMain >= 0) {
+        const nextSlots = [...slots]
+        nextSlots[target] = slots[matchingMain]
+        nextSlots[matchingMain] = held
+        const durability = storage.state.inventoryDurability.map((value, index) =>
+          index === target ? storage.state.inventoryDurability[matchingMain]
+            : index === matchingMain ? storage.state.inventoryDurability[target] : value)
+        nextStorage = yield* Schema.decodeUnknownEffect(PlayerStorageSnapshotSchema)({
+          ...storage.state, inventory: { slots: nextSlots }, inventoryDurability: durability,
+        })
+        outcome = 'Swapped'
+      } else {
+        if (request.mode === 'survival') {
+          yield* publish({ requestId: request.requestId, action: 'PickBlock', success: false, outcome: 'MissingItem', slotIndex })
+          return
+        }
+        if (held !== undefined) {
+          const empty = slots.findIndex((stack, index) => index >= HOTBAR_START && stack === undefined)
+          if (empty >= 0) target = empty
+        }
+        const nextSlots = [...slots]
+        nextSlots[target] = yield* Effect.fromResult(makeHotbarStack(item, maxStackCountForItem(item)))
+        nextStorage = yield* Effect.fromResult(withInventory(storage.state, { slots: nextSlots }))
+        outcome = 'Created'
+      }
+      operation = 'WorldCommit'
+      yield* commit.coordinator.commit({
+        expectedRevision: storage.revision, expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: nextStorage }],
+      })
+      yield* hotbar.setSelectedSlot(target - HOTBAR_START)
+      yield* publish({ requestId: request.requestId, action: 'PickBlock', success: true, outcome, slotIndex: target })
+      return
+    }
+    if (held === undefined) {
+      yield* Ref.update(state.itemUseResults, (results) => [
+        ...results, { requestId: request.requestId, action: 'DropSelectedItem', success: false, outcome: 'EmptySlot', count: 0 } satisfies HotbarItemUseResult,
+      ])
+      return
+    }
+    const droppedOwner = commit.droppedItemsOwnerId
+    if (droppedOwner === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: request.action, requestId: request.requestId,
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      return
+    }
+    const [drops, player] = yield* Effect.all([
+      commit.coordinator.snapshot(droppedOwner, DroppedItemOwnerSnapshotSchema),
+      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
+    ])
+    if (storage.revision !== drops.revision || storage.revision !== player.revision) {
+      return yield* Effect.fail(new WorldRevisionConflict({ expected: storage.revision, actual: drops.revision !== storage.revision ? drops.revision : player.revision }))
+    }
+    operation = 'CandidateBuild'
+    const count = request.amount === 'stack' ? held.count : 1
+    const removed = yield* Effect.fromResult(removeItemAt(storage.state.inventory, slotIndex, held.item, count))
+    const nextStorage = yield* Effect.fromResult(withInventory(storage.state, removed.inventory))
+    const direction = yield* Effect.fromResult(forwardVector(player.state.pose))
+    const feet = player.state.pose.feetPosition
+    const at = kernelPosition(PositionAxis(feet.x), PositionAxis(feet.y + THROWN_ITEM_ORIGIN_HEIGHT), PositionAxis(feet.z))
+    const eligibleFromFrame = (yield* Ref.get(state.tickCount)) + THROWN_ITEM_PICKUP_DELAY_FRAMES
+    const durability = yield* Schema.decodeUnknownEffect(Schema.NullOr(DurabilitySchema))(
+      storage.state.inventoryDurability[slotIndex],
+    )
+    const appended = yield* Effect.fromResult(appendDroppedItemSpawns(drops.state, [{
+      item: held.item, count, at, durability,
+      eligibleFromFrame,
+    }], storage.revision))
+    const velocity = {
+      x: direction.x * THROWN_ITEM_SPEED,
+      y: direction.y * THROWN_ITEM_SPEED + THROWN_ITEM_UPWARD_SPEED,
+      z: direction.z * THROWN_ITEM_SPEED,
+    }
+    const stack = yield* Effect.fromResult(makeHotbarStack(held.item, count, { components: held.components }))
+    const items = appended.items.map((drop, index) => index < drops.state.items.length ? drop : { ...drop, velocity, stack, dimension: feet.dimension })
+    operation = 'WorldCommit'
+    yield* commit.coordinator.commit({
+      expectedRevision: storage.revision, expectedDimensions: [],
+      changes: [
+        { ownerId: commit.playerStorageOwnerId, state: nextStorage },
+        { ownerId: droppedOwner, state: { items } },
+      ],
+    })
+    yield* Ref.update(state.itemUseResults, (results) => [
+      ...results, { requestId: request.requestId, action: 'DropSelectedItem', success: true, outcome: 'Dropped', count } satisfies HotbarItemUseResult,
+    ])
+  }))
+  if (Result.isFailure(attempted)) {
+    yield* recordGameplayStageFailure(state, {
+      _tag: 'Failed', operation, subject: 'ItemUse', requestId: request.requestId, error: attempted.failure,
+    })
+    yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
+  }
+})
+
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
   const enchantmentTableMailbox = enchantmentTableMailboxFor(state)
@@ -4072,6 +4219,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               success: false,
               outcome: 'PlayerDead',
             })
+            continue
+          }
+          if ('action' in request && (request.action === 'DropSelectedItem' || request.action === 'PickBlock')) {
+            yield* processHotbarItemUse(state, commit, request)
             continue
           }
           if ('action' in request) {

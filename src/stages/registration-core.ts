@@ -107,6 +107,7 @@ import {
   type GameModule,
   FoodNutrition,
   type ItemType,
+  type BlockType,
   type PlaceableItemType,
   type Position,
   type ProjectileId,
@@ -1750,7 +1751,26 @@ export const CollectBrewingBottleRequestSchema: Schema.ConstraintDecoder<Collect
   bottleIndex: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2 })),
 }))
 
+export type DropSelectedItemRequest = Readonly<{
+  action: 'DropSelectedItem'
+  requestId: ItemUseRequestId
+  amount: 'one' | 'stack'
+}>
+
+export type PickBlockRequest = Readonly<{
+  action: 'PickBlock'
+  requestId: ItemUseRequestId
+  block: BlockType
+  mode: BlockPlacementMode
+}>
+
+export type HotbarItemUseResult =
+  | Readonly<{ requestId: ItemUseRequestId; action: 'DropSelectedItem'; success: boolean; outcome: 'Dropped' | 'EmptySlot'; count: number }>
+  | Readonly<{ requestId: ItemUseRequestId; action: 'PickBlock'; success: boolean; outcome: 'Selected' | 'Swapped' | 'Created' | 'MissingItem' | 'NoItemForm'; slotIndex: number }>
+
 export type ItemUseRequest =
+  | DropSelectedItemRequest
+  | PickBlockRequest
   | IgnitionItemUseRequest
   | FarmingItemUseRequest
   | FurnaceItemUseRequest
@@ -2015,6 +2035,7 @@ export type PlayerDeadItemUseResult = {
 }
 
 export type ItemUseResult =
+  | HotbarItemUseResult
   | IgnitionItemUseResult
   | FarmingItemUseResult
   | FurnaceItemUseResult
@@ -2218,6 +2239,8 @@ export type ExperienceOrbAbsorptionExecution = Readonly<{
 }>
 
 export type GameplayUnsupportedAction =
+  | 'DropSelectedItem'
+  | 'PickBlock'
   | 'MineBlock'
   | 'PlaceBlock'
   | 'VillagerTrade'
@@ -2303,6 +2326,10 @@ export type GameplayStageOperationFailure = Readonly<{
     | 'Weather'
   requestId?: string
   error:
+    | import('@nerima-games/mc-sim').ItemStackFailure
+    | import('@nerima-games/mc-sim').PlayerStorageFailure
+    | import('@nerima-games/mc-sim').CameraPoseError
+    | Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
     | Schema.SchemaError
@@ -2344,6 +2371,7 @@ export type GameplayStageOperationFailure = Readonly<{
 }>
 
 export type EntityWorldDataFaultSource =
+  | 'DroppedItemMotion'
   | 'UndeadDaylight'
   | 'MobMovement'
   | 'EndermanTeleport'
@@ -3267,6 +3295,23 @@ export const drainBlockStateRuleResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<BlockStateRuleResult>> =>
   Ref.getAndSet(state.blockStateRuleResults, [])
+
+export const requestDropSelectedItem = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  amount: DropSelectedItemRequest['amount'],
+): Effect.Effect<void> => Ref.update<ReadonlyArray<ItemUseRequest>>(state.pendingItemUses, (pending) => [
+  ...pending, { action: 'DropSelectedItem', requestId, amount },
+])
+
+export const requestPickBlock = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  block: BlockType,
+  mode: BlockPlacementMode,
+): Effect.Effect<void> => Ref.update<ReadonlyArray<ItemUseRequest>>(state.pendingItemUses, (pending) => [
+  ...pending, { action: 'PickBlock', requestId, block, mode },
+])
 
 /** Enqueue one igniting-item use without exposing the internal position encoding. */
 export const requestItemUse = (
@@ -5012,6 +5057,7 @@ export interface GameplayStageOptions {
   readonly droppedItemPickup?: boolean
 }
 export type GameplayStageCommitServices = Readonly<{
+  readonly hotbar?: Pick<import('@nerima-games/mc-sim').HotbarServiceApi, 'getSelectedSlot' | 'setSelectedSlot'>
   readonly coordinator: WorldCommitCoordinatorApi
   readonly playerOwnerId: ReplicatedOwnerId
   readonly playerStorageOwnerId: ReplicatedOwnerId
