@@ -158,9 +158,8 @@ const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   }
   if (value['_tag'] === 'HostileMob') {
     return isHostileMobSnapshot(value) &&
-      hasOnlyKeys(value, ['_tag', 'behaviour', 'movement', 'endermanAnger', 'ageTicks', 'persistent', 'named', 'tamed']) &&
-      (value.endermanAnger === undefined || (isEndermanFlinch(value.behaviour) &&
-        hasOnlyKeys(value.endermanAnger, ['target', 'stareTicks', 'attackCooldownTicks']))) &&
+      hasOnlyKeys(value, ['_tag', 'behaviour', 'movement', 'endermanAnger', 'ecosystem', 'ageTicks', 'persistent', 'named', 'tamed']) &&
+      ((value.endermanAnger === undefined && value.ecosystem === undefined) || isEndermanFlinch(value.behaviour)) &&
       !(Object.hasOwn(value, 'behaviour') && value['behaviour'] === undefined) &&
       !(Object.hasOwn(value, 'movement') && value['movement'] === undefined) &&
       (value['behaviour'] === undefined ||

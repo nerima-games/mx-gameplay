@@ -13,7 +13,8 @@ import {
   type Position,
   type ResolvedBlock,
 } from '@nerima-games/mc-kernel'
-import { Result, Schema } from 'effect'
+import { Brand, Result, Schema } from 'effect'
+import type { voxelRaycast } from '@nerima-games/mc-physics'
 import { readChunkWindowCell, type ChunkWindow, type ChunkWindowCell } from '../chunk-window.js'
 
 export type EntityWorldCellPosition = Readonly<{ x: BlockAxis; y: BlockAxis; z: BlockAxis }>
@@ -30,6 +31,11 @@ export type EntityWorldQueryFailure =
   | Readonly<{ _tag: 'EntityWorldRegistryFailure'; cell: EntityWorldCellPosition; failure: BlockRegistryResolutionFailure }>
   | Readonly<{ _tag: 'EntityWorldUnregisteredBlockId'; cell: EntityWorldCellPosition; blockId: BlockId }>
   | Readonly<{ _tag: 'EntityWorldInvalidCell'; reason: 'not-block-coordinate'; position: Position }>
+  | Readonly<{
+      _tag: 'EntityWorldRaycastFailure'
+      position: Position
+      failure: Result.Result.Failure<ReturnType<typeof voxelRaycast>>
+    }>
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === 'object' && value !== null
@@ -69,6 +75,10 @@ const isEntityWorldQueryFailure = (value: unknown): value is EntityWorldQueryFai
   if (value['_tag'] === 'EntityWorldUnregisteredBlockId') {
     return isCellPosition(value['cell']) && typeof value['blockId'] === 'number' &&
       Number.isInteger(value['blockId']) && value['blockId'] >= 0 && value['blockId'] <= 65_535
+  }
+  if (value['_tag'] === 'EntityWorldRaycastFailure') {
+    return isRecord(value['position']) &&
+      (value['failure'] instanceof Brand.BrandError || value['failure'] instanceof RangeError)
   }
   return value['_tag'] === 'EntityWorldInvalidCell' && value['reason'] === 'not-block-coordinate' && isRecord(value['position'])
 }

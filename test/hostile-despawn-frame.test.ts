@@ -10,13 +10,18 @@ import {
 } from '../src/domain/entities/mob-frame'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { RANDOM_DESPAWN_CHANCE } from '../src/domain/mob/hostile-despawn'
-import { DeltaTimeSecs, EntityHealthPoints } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, EntityHealthPoints, SimulationTick } from '@nerima-games/mc-kernel'
 import { nextRoll as nextRollResult } from '../src/domain/frame-rolls'
 import type { Position } from '@nerima-games/mc-kernel'
+import type { EntityId } from '@nerima-games/mc-sim'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 const PLAYER: Position = atPosition(0, 64, 0 )
 const AT_RANDOM_DISTANCE: Position = atPosition(40, 64, 0 )
+const NO_ENDERMAN_OBSERVATION = {
+  simulationTick: SimulationTick(0),
+  endermanGaze: { target: undefined, looking: new Set<EntityId>(), visible: new Set<EntityId>() },
+}
 const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
 
 const seedWhoseNextRollDespawns = (): number => {
@@ -40,7 +45,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       const seed = 1
       const boundary = yield* sweepMobs(
         roster.api,
-        { target: PLAYER, dt: DeltaTimeSecs(0.05) },
+        { ...NO_ENDERMAN_OBSERVATION, target: PLAYER, dt: DeltaTimeSecs(0.05) },
         seed,
       )
       expect(boundary.seed).toBe(seed)
@@ -51,7 +56,7 @@ describe('hostile despawn is part of the mob frame state', () => {
 
       const eligible = yield* sweepMobs(
         roster.api,
-        { target: PLAYER, dt: DeltaTimeSecs(0.05) },
+        { ...NO_ENDERMAN_OBSERVATION, target: PLAYER, dt: DeltaTimeSecs(0.05) },
         boundary.seed,
       )
       expect(eligible.seed).toBe(nextRoll(seed).seed)
@@ -75,7 +80,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       })
       const naturalSweep = yield* sweepMobs(
         natural.api,
-        { target: PLAYER, dt: DeltaTimeSecs(0) },
+        { ...NO_ENDERMAN_OBSERVATION, target: PLAYER, dt: DeltaTimeSecs(0) },
         seed,
       )
       expect(yield* natural.api.count).toBe(0)
@@ -90,7 +95,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       })
       const persistentSweep = yield* sweepMobs(
         persistent.api,
-        { target: PLAYER, dt: DeltaTimeSecs(0) },
+        { ...NO_ENDERMAN_OBSERVATION, target: PLAYER, dt: DeltaTimeSecs(0) },
         seed,
       )
       expect(yield* persistent.api.count).toBe(1)
@@ -105,7 +110,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       })
       const distantSweep = yield* sweepMobs(
         distant.api,
-        { target: PLAYER, dt: DeltaTimeSecs(0) },
+        { ...NO_ENDERMAN_OBSERVATION, target: PLAYER, dt: DeltaTimeSecs(0) },
         seed,
       )
       expect(yield* distant.api.count).toBe(0)
@@ -136,7 +141,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       const seed = 17
       const swept = yield* sweepMobs(
         roster.api,
-        { target: PLAYER, dt: DeltaTimeSecs(0), difficulty: 'peaceful' },
+        { ...NO_ENDERMAN_OBSERVATION, target: PLAYER, dt: DeltaTimeSecs(0), difficulty: 'peaceful' },
         seed,
       )
       expect(yield* roster.api.count).toBe(0)

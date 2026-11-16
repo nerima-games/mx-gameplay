@@ -1,31 +1,22 @@
-import { Result, Schema } from 'effect'
-
-const GazePositionSchema = Schema.Struct({ x: Schema.Finite, y: Schema.Finite, z: Schema.Finite })
-const GazeInputSchema = Schema.Struct({
-  playerFeet: GazePositionSchema,
-  yawRadians: Schema.Finite,
-  pitchRadians: Schema.Finite,
-  endermanFeet: GazePositionSchema,
-})
+import type { Position } from '@nerima-games/mc-kernel'
+import type { PlayerPose } from '@nerima-games/mc-sim'
+import { ENDERMAN_DIMENSIONS, PLAYER_DIMENSIONS } from '../entities/entity-dimensions.js'
 
 // Rule facts only: https://github.com/PaperMC/Paper/blob/ver/1.21.4/paper-server/patches/sources/net/minecraft/world/entity/monster/EnderMan.java.patch
 export const isLookingAtEnderman = (
-  playerFeet: unknown,
-  yawRadians: unknown,
-  pitchRadians: unknown,
-  endermanFeet: unknown,
-): Result.Result<boolean, 'invalid-gaze-input'> => {
-  const decoded = Schema.decodeUnknownResult(GazeInputSchema)({ playerFeet, yawRadians, pitchRadians, endermanFeet })
-  if (Result.isFailure(decoded)) return Result.fail('invalid-gaze-input')
-  const { playerFeet: player, yawRadians: yaw, pitchRadians: pitch, endermanFeet: enderman } = decoded.success
-  const dx = enderman.x - player.x
-  const dy = enderman.y - player.y
-  const dz = enderman.z - player.z
-  if (Math.hypot(dx, dy, dz) > 64) return Result.succeed(false)
-  const eyeDy = dy + 2.55 - 1.62
+  playerFeet: Position,
+  yawRadians: PlayerPose['yawRadians'],
+  pitchRadians: PlayerPose['pitchRadians'],
+  endermanFeet: Position,
+): boolean => {
+  const dx = endermanFeet.x - playerFeet.x
+  const dy = endermanFeet.y - playerFeet.y
+  const dz = endermanFeet.z - playerFeet.z
+  if (Math.hypot(dx, dy, dz) > 64) return false
+  const eyeDy = dy + ENDERMAN_DIMENSIONS.eyeHeight - PLAYER_DIMENSIONS.eyeHeight
   const distance = Math.hypot(dx, eyeDy, dz)
-  if (distance === 0) return Result.succeed(false)
-  const dot = -Math.sin(yaw) * Math.cos(pitch) * (dx / distance) -
-    Math.sin(pitch) * (eyeDy / distance) + Math.cos(yaw) * Math.cos(pitch) * (dz / distance)
-  return Result.succeed(dot > 1 - 0.025 / distance)
+  if (distance === 0) return false
+  const dot = -Math.sin(yawRadians) * Math.cos(pitchRadians) * (dx / distance) -
+    Math.sin(pitchRadians) * (eyeDy / distance) + Math.cos(yawRadians) * Math.cos(pitchRadians) * (dz / distance)
+  return dot > 1 - 0.025 / distance
 }

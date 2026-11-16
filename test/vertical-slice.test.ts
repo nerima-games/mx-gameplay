@@ -99,6 +99,7 @@ import {
   EntityHealthPoints,
   ProjectileIdSchema,
   SimulationTickSchema,
+  SimulationTick,
   PortalHeight,
   PortalWidth,
   WorldRevisionSchema,
@@ -134,7 +135,7 @@ import {
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
 import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
-import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
+import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import {
   DomainEventBus,
   EntityId,
@@ -1691,8 +1692,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         feetPosition: endermanAt,
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: hostileMobSnapshot(STEADY_ENDERMAN, { endermanAnger: {
-          target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, attackCooldownTicks: 0,
-        } }),
+          target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(1000),
+        }, ecosystem: { ...initialEcosystemMobState(), provoked: true } }),
       })
       yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
@@ -1950,8 +1951,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           feetPosition: endermanAt,
           healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
           behaviour: hostileMobSnapshot(STEADY_ENDERMAN, { endermanAnger: {
-            target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, attackCooldownTicks: 0,
-          } }),
+            target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(1000),
+          }, ecosystem: { ...initialEcosystemMobState(), provoked: true } }),
         })
         yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
         yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)

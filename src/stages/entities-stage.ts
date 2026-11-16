@@ -69,7 +69,6 @@ import {
   damageAt,
   emptyPlayerStorage,
   ARROW_PROFILE,
-  raycastArrowBlock,
   type ReplicatedOwnerCandidate,
   type PlayerStorage,
   type ProjectileLaunchRequest,
@@ -121,6 +120,7 @@ import {
   planMobExplosionRoster,
   hasMobMovementCandidates,
   planMobMovementRoster,
+  clearEndermanAnger,
   planMobRosterSweep,
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
@@ -148,7 +148,8 @@ import {
 import { mobMovementCell, mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
 import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
 import { isLookingAtEnderman } from '../domain/mob/enderman-gaze.js'
-import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND, MOB_MOVEMENT_POLICIES } from '../domain/mob/mob-ecosystem.js'
+import { BLAZE_KIND, SKELETON_KIND, MOB_MOVEMENT_POLICIES, isWithinMobMeleeRange } from '../domain/mob/mob-ecosystem.js'
+import { PLAYER_DIMENSIONS, ENDERMAN_DIMENSIONS, entityDimensionsOf } from '../domain/entities/entity-dimensions.js'
 import type { BurningActor } from '../domain/fire-lifecycle.js'
 import {
   resolveHostileContacts,
@@ -376,7 +377,7 @@ const undeadDaylightFacts = (
       const feetX = BlockAxis.result(Math.floor(entity.feetPosition.x))
       const feetY = BlockAxis.result(Math.floor(entity.feetPosition.y))
       const feetZ = BlockAxis.result(Math.floor(entity.feetPosition.z))
-      const headY = BlockAxis.result(Math.floor(entity.feetPosition.y + 1.62))
+      const headY = BlockAxis.result(Math.floor(entity.feetPosition.y + PLAYER_DIMENSIONS.eyeHeight))
       if (Result.isFailure(feetX) || Result.isFailure(feetY) || Result.isFailure(feetZ) || Result.isFailure(headY)) {
         facts.set(entity.id, { exposed: false, inWater: true })
         continue
@@ -461,18 +462,10 @@ const projectileAabb = (
   }
 }
 
-const projectileEntitySize = (kind: string): readonly [number, number] =>
-  kind === SPIDER_KIND ? [1.4, 0.9]
-    : kind === 'chicken' ? [0.4, 0.7]
-      : kind === 'cow' || kind === 'sheep' ? [0.9, 1.4]
-        : kind === 'pig' ? [0.9, 0.9]
-          : kind === 'enderman' ? [0.6, 2.9]
-            : [0.6, 1.8]
-
 type ProjectileWorldAdapter = Readonly<{
   readonly world: ProjectileWorld
   readonly queryFailure: () => EntityWorldQueryFailure | undefined
-  readonly lineOfSight: (from: Position, to: Position) => Result.Result<boolean, ProjectileLineOfSightFailure>
+  readonly lineOfSight: (from: Position, to: Position, mode: 'voxel' | 'shape', distance: BlockLength) => Result.Result<boolean, ProjectileLineOfSightFailure>
   readonly resetUnloadedCells: () => void
   readonly unloadedEntryFraction: () => number | undefined
 }>
@@ -534,13 +527,13 @@ const projectileWorldFor = (
     maxZ: projectileAxis((Math.max(...chunksZ) + 1) * CHUNK_SIZE_XZ),
   }
   const entities: ProjectileWorld['entities'][number][] = []
-  const playerBounds = projectileAabb(player, 0.6, 0.6, 1.8)
+  const playerBounds = projectileAabb(player, PLAYER_DIMENSIONS.width, PLAYER_DIMENSIONS.width, PLAYER_DIMENSIONS.height)
   entities.push({ id: PLAYER_BLAST_ENTITY_ID, bounds: playerBounds })
   for (const entity of roster.entities) {
     if (entity.dimension !== undefined && entity.dimension !== dimension) continue
     if (isMobBehaviourRepairFault(entity.behaviour)) continue
     if (isDroppedItemBehaviour(entity.behaviour)) continue
-    const [width, height] = projectileEntitySize(entity.kind)
+    const { width, height } = entityDimensionsOf(entity.kind)
     const entityBounds = projectileAabb(entity.feetPosition, width, width, height)
     entities.push({ id: entity.id, bounds: entityBounds })
   }
@@ -575,27 +568,42 @@ const projectileWorldFor = (
       /* v8 ignore stop */
     }
   }
-  const lineOfSight: ProjectileWorldAdapter['lineOfSight'] = (from, to) => {
+  const lineOfSight: ProjectileWorldAdapter['lineOfSight'] = (from, to, mode, distance) => {
     const rayFailure: { value: EntityWorldQueryFailure | undefined } = { value: undefined }
     let rayUnavailable: Extract<ProjectileLineOfSightFailure, { _tag: 'ProjectilePathUnavailable' }> | undefined
-    const ray = raycastArrowBlock(from, to, (x, y, z) => {
+    const shapes = new Map<string, NonNullable<ProjectileBlockShape>>()
+    const direction = position(PositionAxis(to.x - from.x), PositionAxis(to.y - from.y), PositionAxis(to.z - from.z))
+    const ray = voxelRaycast(from, direction, distance, (x, y, z) => {
       const result = cellAt(position(PositionAxis(x), PositionAxis(y), PositionAxis(z)))
       if (Result.isFailure(result)) {
         rayFailure.value ??= result.failure
         return true
       }
-      if (projectileRayMustDeferForCell(result.success.cell)) {
+      if (projectileRayMustDeferForCell(result.success.cell) ||
+        (mode === 'shape' && result.success.cell._tag === 'BelowWorld')) {
         rayUnavailable ??= { _tag: 'ProjectilePathUnavailable', cell: result.success.position }
         return true
       }
-      return collisionShapeAtCell(result.success.cell) !== null
-    })
+      const shape = collisionShapeAtCell(result.success.cell)
+      if (shape === null) return false
+      shapes.set(`${x},${y},${z}`, shape)
+      return true
+    }, mode === 'shape' ? (x, y, z) => {
+      const shape = shapes.get(`${x},${y},${z}`)
+      // Unavailable reads have no shape; their typed failure takes precedence below.
+      return shape === undefined ? [] : [shape]
+    } : undefined)
     if (rayFailure.value !== undefined) {
       rememberFailure(rayFailure.value)
       return Result.fail(rayFailure.value)
     }
     if (rayUnavailable !== undefined) return Result.fail(rayUnavailable)
-    return Result.succeed(Result.isSuccess(ray) && Option.isNone(ray.success))
+    if (Result.isFailure(ray)) {
+      const failure: EntityWorldQueryFailure = { _tag: 'EntityWorldRaycastFailure', position: from, failure: ray.failure }
+      rememberFailure(failure)
+      return Result.fail(failure)
+    }
+    return Result.succeed(Option.isNone(ray.success))
   }
   const world: ProjectileWorld = {
     bounds,
@@ -791,12 +799,12 @@ const launchAndStepMobProjectiles = (
     const source = sourceById.get(attack.source)
     if (source === undefined) continue
     // `stepEcosystemMob` emits projectile attacks only for skeletons and blazes.
-    const eyeY = projectileAxis(source.feetPosition.y + (source.kind === BLAZE_KIND ? 1.5 : 1.62))
-    const targetY = projectileAxis(playerPosition.y + 1.62)
+    const eyeY = projectileAxis(source.feetPosition.y + (source.kind === BLAZE_KIND ? 1.5 : PLAYER_DIMENSIONS.eyeHeight))
+    const targetY = projectileAxis(playerPosition.y + PLAYER_DIMENSIONS.eyeHeight)
     const from = position(PositionAxis(source.feetPosition.x), eyeY, PositionAxis(source.feetPosition.z))
     const to = position(PositionAxis(playerPosition.x), targetY, PositionAxis(playerPosition.z))
     // A non-empty `ranged` list opened this window above.
-    const lineOfSight = world!.lineOfSight(from, to)
+    const lineOfSight = world!.lineOfSight(from, to, 'voxel', BlockLength(Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z)))
     if (Result.isFailure(lineOfSight)) {
       if (lineOfSight.failure._tag === 'ProjectilePathUnavailable') continue
       yield* recordEntityWorldDataFault(context.state, 'ProjectileLineOfSight', lineOfSight.failure, source.id)
@@ -1679,7 +1687,11 @@ const runMobSimulation = (
   const dimension = playerSnapshot.state.pose.feetPosition.dimension
   const otherDimensionEntities = tickRoster.entities.filter((entity) =>
     entity.dimension !== undefined && entity.dimension !== dimension,
-  )
+  ).map((entity) => {
+    if (entity.kind !== 'enderman' || !isHostileMobSnapshot(entity.behaviour)) return entity
+    const behaviour = clearEndermanAnger(entity.behaviour)
+    return behaviour === entity.behaviour ? entity : { ...entity, behaviour }
+  })
   tickRoster = {
     ...tickRoster,
     entities: tickRoster.entities.filter((entity) =>
@@ -1717,62 +1729,46 @@ const runMobSimulation = (
   }
   const endermanLooking = new Set<ReturnType<typeof EntityId>>()
   const endermanVisible = new Set<ReturnType<typeof EntityId>>()
-  for (const entity of tickRoster.entities) {
-    if (entity.kind !== 'enderman') continue
-    // Both owner schemas validate finite coordinates and angles before this stage.
-    const gaze = Result.getOrThrow(isLookingAtEnderman(playerPosition, playerSnapshot.state.pose.yawRadians,
-      playerSnapshot.state.pose.pitchRadians, entity.feetPosition))
+  let endermanTarget: ReturnType<typeof EntityId> | undefined
+  const endermen = tickRoster.entities.filter(({ kind }) => kind === 'enderman')
+  if (endermen.length > 0) {
+    if (commit.vitalsOwnerId === undefined) {
+      yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+      for (const entity of endermen) faultedEntities.set(entity.id, entity)
+      tickRoster = { ...tickRoster, entities: tickRoster.entities.filter(({ id }) => !faultedEntities.has(id)) }
+    } else {
+      const vitals = yield* commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema)
+      if (vitals.revision !== expectedRevision) {
+        return yield* Effect.fail(new WorldRevisionConflict({ expected: expectedRevision, actual: vitals.revision }))
+      }
+      if (vitals.state.vitals.healthPoints > 0) endermanTarget = PLAYER_BLAST_ENTITY_ID
+    }
+  }
+  let endermanWorld: ProjectileWorldAdapter | undefined
+  for (const entity of endermen) {
+    if (endermanTarget === undefined) break
+    const gaze = isLookingAtEnderman(playerPosition, playerSnapshot.state.pose.yawRadians,
+      playerSnapshot.state.pose.pitchRadians, entity.feetPosition)
     const anger = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour.endermanAnger : undefined
     const closeAngry = anger?.stareTicks === 5 && anger.target === PLAYER_BLAST_ENTITY_ID &&
-      Math.hypot(entity.feetPosition.x - playerPosition.x, entity.feetPosition.y - playerPosition.y,
-        entity.feetPosition.z - playerPosition.z) <= 1.5
+      isWithinMobMeleeRange(entity.kind, entity.feetPosition, playerPosition)
     if (!gaze && !closeAngry) continue
-    const from = position(PositionAxis(playerPosition.x), PositionAxis(playerPosition.y + 1.62), PositionAxis(playerPosition.z))
-    const to = position(PositionAxis(entity.feetPosition.x), PositionAxis(entity.feetPosition.y + 2.55), PositionAxis(entity.feetPosition.z))
-    const cells: EntityWorldCellPosition[] = []
-    const direction = position(PositionAxis(to.x - from.x), PositionAxis(to.y - from.y), PositionAxis(to.z - from.z))
-    // The feet range is 64; the eye segment may be slightly longer than an arrow's 64-block budget.
-    const rayLength = BlockLength(Math.hypot(direction.x, direction.y, direction.z))
-    const ray = voxelRaycast(from, direction, rayLength, (x, y, z) => { cells.push({ x, y, z }); return false })
-    if (Result.isFailure(ray)) {
-      yield* recordEntityWorldDataFault(state, 'EndermanGaze', {
-        _tag: 'EntityWorldInvalidCell', reason: 'not-block-coordinate', position: from,
-      }, entity.id)
+    if (endermanWorld === undefined) {
+      // Every acquisition segment is inside the 64-block feet range; include the eye-cell margin.
+      const coords = chunkCoordsAround(playerPosition, 65)
+      const window = yield* openChunkWindow(store, coords)
+      endermanWorld = projectileWorldFor(tickRoster, playerPosition, dimension, window, coords)
+    }
+    const from = position(PositionAxis(playerPosition.x), PositionAxis(playerPosition.y + PLAYER_DIMENSIONS.eyeHeight), PositionAxis(playerPosition.z))
+    const to = position(PositionAxis(entity.feetPosition.x), PositionAxis(entity.feetPosition.y + ENDERMAN_DIMENSIONS.eyeHeight), PositionAxis(entity.feetPosition.z))
+    const visible = endermanWorld.lineOfSight(from, to, 'shape', BlockLength(Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z)))
+    if (Result.isFailure(visible)) {
+      if (visible.failure._tag === 'ProjectilePathUnavailable') continue
+      yield* recordEntityWorldDataFault(state, 'EndermanGaze', visible.failure, entity.id)
       faultedEntities.set(entity.id, entity)
       continue
     }
-    const coords = new Map<string, ReturnType<typeof chunkCoordsAround>[number]>()
-    for (const cell of cells) {
-      for (const coord of chunkCoordsAround(position(PositionAxis(cell.x), PositionAxis(cell.y), PositionAxis(cell.z)), 0)) {
-        coords.set(`${coord.cx},${coord.cz}`, coord)
-      }
-    }
-    const window = yield* openChunkWindow(store, [...coords.values()])
-    let visible = true
-    const shapes = new Map<string, NonNullable<ProjectileBlockShape>>()
-    for (const cell of cells) {
-      const reading = entityWorldCellAt(window, cell)
-      if (Result.isFailure(reading)) {
-        yield* recordEntityWorldDataFault(state, 'EndermanGaze', reading.failure, entity.id)
-        faultedEntities.set(entity.id, entity)
-        visible = false
-        break
-      }
-      if (reading.success._tag === 'Unloaded' || reading.success._tag === 'BelowWorld') {
-        visible = false
-        break
-      }
-      if (reading.success._tag !== 'Loaded') continue
-      const shape = COLLISION_SHAPE_AABBS[reading.success.properties.collisionShape]
-      if (shape === null) continue
-      shapes.set(`${cell.x},${cell.y},${cell.z}`, shape)
-    }
-    if (!visible) continue
-    const hit = voxelRaycast(from, direction, rayLength,
-      (x, y, z) => shapes.has(`${x},${y},${z}`),
-      (x, y, z) => [shapes.get(`${x},${y},${z}`)!])
-    // The same validated segment was traversed above; shapes come from the registry.
-    if (Option.isNone(Result.getOrThrow(hit))) {
+    if (visible.success) {
       endermanVisible.add(entity.id)
       if (gaze) endermanLooking.add(entity.id)
     }
@@ -1825,7 +1821,8 @@ const runMobSimulation = (
   }
   const sweep = planMobRosterSweep(tickRoster, {
     target: playerPosition,
-    endermanGaze: { target: PLAYER_BLAST_ENTITY_ID, looking: endermanLooking, visible: endermanVisible },
+    simulationTick: stageTick,
+    endermanGaze: { target: endermanTarget, looking: endermanLooking, visible: endermanVisible },
     dt,
     undeadDaylight: daylightFacts,
   }, RandomSeed(seed))
@@ -1859,7 +1856,7 @@ const runMobSimulation = (
   const movement = movementWorld === undefined
     ? { roster: teleportRoster, faults: [] as ReadonlyArray<MobMovementRosterFault> }
     : Result.getOrThrow(planMobMovementRoster(teleportRoster, playerPosition, movementWorld, stageTick, dimension,
-      { target: PLAYER_BLAST_ENTITY_ID, looking: endermanLooking }))
+      { target: endermanTarget, looking: endermanLooking, visible: endermanVisible }))
   const movementFaultEntityIds = new Set(movement.faults.map(({ entityId }) => entityId))
   for (const fault of movement.faults) {
     yield* recordMobMovementRosterFault(state, fault)

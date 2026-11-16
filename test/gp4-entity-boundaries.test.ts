@@ -239,7 +239,8 @@ describe('entity input boundaries', () => {
       ])
       for (const manager of managers) {
         const before = yield* manager.api.entities
-        const result = yield* sweepMobs(manager.api, { target: at, dt: DeltaTimeSecs(0.05) }, Number.NaN)
+        const result = yield* sweepMobs(manager.api, { target: at, dt: DeltaTimeSecs(0.05), simulationTick: SimulationTick(0),
+          endermanGaze: { target: undefined, looking: new Set(), visible: new Set() } }, Number.NaN)
         expect(result.faults).toStrictEqual([{
           _tag: 'MobFrameRuleFault', entityId: entity.id, failure: { _tag: 'InvalidFrameRollInput', field: 'seed' },
         }])

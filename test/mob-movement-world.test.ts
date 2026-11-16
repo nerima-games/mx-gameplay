@@ -18,12 +18,13 @@ import {
 } from '../src/domain/entities/mob-movement-world'
 import { ENDERMAN_KIND, PIG_KIND, SPIDER_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import { repairMobBehaviour, STEADY_ENDERMAN, hasMobMovementCandidates, planMobMovementRoster, type MobRoster } from '../src/domain/entities/mob-frame'
+import { hostileMobSnapshot, repairMobBehaviour, STEADY_ENDERMAN, hasMobMovementCandidates, planMobMovementRoster, type MobRoster } from '../src/domain/entities/mob-frame'
 import { makeChunkStoreDouble, world, STONE } from './support/chunk-store-double'
 
 const block = (x: number, y: number, z: number) => blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 const at = (x: number, y: number, z: number) => position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
 const blockId = (type: BlockType) => Option.getOrThrow(blockIdOf(type))
+const PLAYER_OBSERVATION = { target: EntityId('test:movement-player'), looking: new Set<EntityId>(), visible: new Set<EntityId>() }
 
 const makeWorldPort = (entries: ReadonlyArray<readonly [ReturnType<typeof block>, ReturnType<typeof blockId>]>, loaded = ['0,0']) =>
   Effect.gen(function* () {
@@ -377,12 +378,35 @@ describe('SM3 mob movement world', () => {
       expect(hasMobMovementCandidates(roster, 'nether', at(0.5, 64, 0.5))).toBe(true)
       let current: MobRoster = roster
       for (let tick = 1; tick <= 4; tick += 1) {
-        const planned = planMobMovementRoster(current, at(0.5, 64, 0.5), port, SimulationTick(tick), 'nether')
+        const planned = planMobMovementRoster(current, at(0.5, 64, 0.5), port, SimulationTick(tick), 'nether', PLAYER_OBSERVATION)
         expect(Result.isSuccess(planned)).toBe(true)
         if (Result.isFailure(planned)) return
         current = planned.success.roster
       }
       expect(current.entities[0]?.feetPosition.x).toBeLessThan(blaze.feetPosition.x)
+    }),
+  )
+
+  it.effect('moves an explicitly angry enderman through the existing provoked movement policy', () =>
+    Effect.gen(function* () {
+      const floor = Array.from({ length: 16 }, (_value, x) => [block(x, 63, 0), STONE] as const)
+      const port = yield* makeWorldPort(floor)
+      const enderman = {
+        id: EntityId('mob:angry-movement'), kind: ENDERMAN_KIND,
+        feetPosition: at(8.5, 64, 0.5), healthPoints: EntityHealthPoints(40),
+        behaviour: hostileMobSnapshot(STEADY_ENDERMAN, {
+          endermanAnger: { target: PLAYER_OBSERVATION.target, stareTicks: 5, expiresAt: SimulationTick(1000) },
+          ecosystem: { ...initialEcosystemMobState(), provoked: true },
+        }), dimension: 'overworld' as const,
+      }
+      const current: MobRoster = { entities: [enderman], nextSerial: EntitySerial(1) }
+      const planned = Result.getOrThrow(planMobMovementRoster(current, at(0.5, 64, 0.5), port,
+        SimulationTick(1), 'overworld', PLAYER_OBSERVATION))
+      expect(planned.faults).toEqual([])
+      expect(planned.roster.entities[0]?.feetPosition.x).toBeLessThan(8.5)
+      expect(planned.roster.entities[0]?.behaviour).toMatchObject({ ecosystem: { provoked: true }, movement: {
+        goal: { x: 0, y: 64, z: 0 }, profile: { height: 2.9 },
+      } })
     }),
   )
 
@@ -402,7 +426,7 @@ describe('SM3 mob movement world', () => {
 
       expect(hasMobMovementCandidates(roster, 'overworld', at(0.5, 64, 0.5))).toBe(false)
 
-      const planned = planMobMovementRoster(roster, at(0.5, 64, 0.5), port, SimulationTick(1), 'overworld')
+      const planned = planMobMovementRoster(roster, at(0.5, 64, 0.5), port, SimulationTick(1), 'overworld', PLAYER_OBSERVATION)
       expect(planned).toMatchObject({ _tag: 'Success', success: { faults: [] } })
       if (Result.isFailure(planned)) return
       expect(planned.success.roster.entities[0]).toBe(pig)
@@ -431,7 +455,7 @@ describe('SM3 mob movement world', () => {
         nextSerial: EntitySerial(1),
       }
 
-      const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), port, SimulationTick(1), 'overworld')
+      const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), port, SimulationTick(1), 'overworld', PLAYER_OBSERVATION)
 
       expect(planned).toMatchObject({
         _tag: 'Success',
@@ -477,6 +501,7 @@ describe('SM3 mob movement world', () => {
         port,
         SimulationTick(1),
         'overworld',
+        PLAYER_OBSERVATION,
       )
       expect(malformedPlan).toMatchObject({
         _tag: 'Success',
@@ -529,6 +554,7 @@ describe('SM3 mob movement world', () => {
         port,
         SimulationTick(1),
         'overworld',
+        PLAYER_OBSERVATION,
       )
       expect(Result.isSuccess(goalPlan)).toBe(true)
       if (Result.isFailure(goalPlan)) return
@@ -554,7 +580,7 @@ describe('SM3 mob movement world', () => {
       }))
       const roster: MobRoster = { entities, nextSerial: EntitySerial(entities.length) }
 
-      const planned = planMobMovementRoster(roster, undefined, port, SimulationTick(1), 'overworld')
+      const planned = planMobMovementRoster(roster, undefined, port, SimulationTick(1), 'overworld', PLAYER_OBSERVATION)
 
       expect(Result.isSuccess(planned)).toBe(true)
       if (Result.isFailure(planned)) return
@@ -591,7 +617,7 @@ describe('SM3 mob movement world', () => {
       }
       const roster: MobRoster = { entities: [pig], nextSerial: EntitySerial(1) }
 
-      const planned = planMobMovementRoster(roster, undefined, port, SimulationTick(1), 'overworld')
+      const planned = planMobMovementRoster(roster, undefined, port, SimulationTick(1), 'overworld', PLAYER_OBSERVATION)
 
       expect(Result.isSuccess(planned)).toBe(true)
       if (Result.isFailure(planned)) return
@@ -655,6 +681,7 @@ describe('SM3 mob movement world', () => {
         failingWorld,
         SimulationTick(1),
         'overworld',
+        PLAYER_OBSERVATION,
       )
 
       expect(planned).toMatchObject({
@@ -693,7 +720,7 @@ describe('SM3 mob movement world', () => {
         nextSerial: EntitySerial(1),
       }
 
-      const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), malformedWorld, SimulationTick(1), 'overworld')
+      const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), malformedWorld, SimulationTick(1), 'overworld', PLAYER_OBSERVATION)
 
       expect(planned).toMatchObject({
         _tag: 'Success',

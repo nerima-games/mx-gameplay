@@ -2481,6 +2481,8 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
           ? `${fault.failure._tag}:${Number(fault.failure.blockId)}`
           : fault.failure._tag === 'EntityWorldRegistryFailure'
             ? `${fault.failure._tag}:${fault.failure.failure._tag}:${'reason' in fault.failure.failure ? fault.failure.failure.reason : ''}`
+            : fault.failure._tag === 'EntityWorldRaycastFailure'
+              ? `${fault.failure._tag}:${fault.failure.failure.name}:${fault.failure.failure.message}`
             : fault.failure._tag
       return gameplayEntityStageFaultKey(`${target}:${reason}`)
     }
