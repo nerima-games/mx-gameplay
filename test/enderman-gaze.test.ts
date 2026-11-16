@@ -18,15 +18,23 @@ const tick = (current: MobRoster, looking: boolean, tickIndex: number, target = 
 }, RandomSeed(3))
 
 describe('enderman gaze', () => {
-  it('aims from the player eye to the enderman eye in the player yaw convention', () => {
-    expect(isLookingAtEnderman(at(0, 0, 0), 0, -Math.atan(0.93 / 8), at(0, 0, 8))).toBe(true)
-    expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, 0, at(0, -0.93, 8))).toBe(false)
+  it('aims at the enderman eye using the melee player look convention', () => {
+    // Melee uses (-sin(yaw) cos(pitch), +sin(pitch), -cos(yaw) cos(pitch)).
+    const pitch = Math.atan(0.93 / 8)
+    expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, pitch, at(0, 0, 8))).toBe(true)
+    expect(isLookingAtEnderman(at(0, 0, 0), 0, 0, at(0, 0, 8))).toBe(false)
     expect(isLookingAtEnderman(at(0, 0, 0), Math.PI / 2, 0, at(-8, -0.93, 0))).toBe(true)
+  })
+
+  it('misses when the player looks above or below the enderman eye', () => {
+    const pitch = Math.atan(0.93 / 8)
+    expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, pitch + Math.PI / 4, at(0, 0, 8))).toBe(false)
+    expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, pitch - Math.PI / 4, at(0, 0, 8))).toBe(false)
   })
 
   it('includes exactly 64 blocks measured between feet and excludes the next distance', () => {
     for (const distance of [63.999999, 64, 64.000001]) {
-      expect(isLookingAtEnderman(at(0, 0, 0), 0, -Math.atan(0.93 / distance), at(0, 0, distance)))
+      expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, Math.atan(0.93 / distance), at(0, 0, distance)))
         .toBe(distance <= 64)
     }
   })
@@ -34,13 +42,13 @@ describe('enderman gaze', () => {
   it('uses the strict angular boundary at an eye distance of ten blocks', () => {
     const boundary = Math.acos(0.9975)
     for (const [angle, expected] of [[boundary - 1e-7, true], [boundary, false], [boundary + 1e-7, false]] as const) {
-      expect(isLookingAtEnderman(at(0, 0, 0), angle, 0, at(0, -0.93, 10))).toBe(expected)
+      expect(isLookingAtEnderman(at(0, 0, 0), Math.PI + angle, 0, at(0, -0.93, 10))).toBe(expected)
     }
   })
 
   it('excludes the antipode exactly where the gaze cone first covers a half-turn', () => {
-    expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, 0, at(0, -0.93, 1 / 80))).toBe(false)
-    expect(isLookingAtEnderman(at(0, 0, 0), Math.PI, 0, at(0, -0.93, 1 / 80 - 1e-10))).toBe(true)
+    expect(isLookingAtEnderman(at(0, 0, 0), 0, 0, at(0, -0.93, 1 / 80))).toBe(false)
+    expect(isLookingAtEnderman(at(0, 0, 0), 0, 0, at(0, -0.93, 1 / 80 - 1e-10))).toBe(true)
   })
 
   it('does not treat coincident eyes as a viewing direction', () => {
