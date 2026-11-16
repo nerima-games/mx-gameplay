@@ -107,6 +107,7 @@ import {
   type GameModule,
   FoodNutrition,
   type ItemType,
+  type StackCount,
   type BlockType,
   type PlaceableItemType,
   type Position,
@@ -1765,8 +1766,8 @@ export type PickBlockRequest = Readonly<{
 }>
 
 export type HotbarItemUseResult =
-  | Readonly<{ requestId: ItemUseRequestId; action: 'DropSelectedItem'; success: boolean; outcome: 'Dropped' | 'EmptySlot'; count: number }>
-  | Readonly<{ requestId: ItemUseRequestId; action: 'PickBlock'; success: boolean; outcome: 'Selected' | 'Swapped' | 'Created' | 'MissingItem' | 'NoItemForm'; slotIndex: number }>
+  | Readonly<{ requestId: ItemUseRequestId; action: 'DropSelectedItem'; success: boolean; outcome: 'Dropped' | 'EmptySlot'; count: 0 | StackCount }>
+  | Readonly<{ requestId: ItemUseRequestId; action: 'PickBlock'; success: boolean; outcome: 'Selected' | 'Swapped' | 'Created' | 'MissingItem' | 'NoItemForm'; slotIndex: 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 }>
 
 export type ItemUseRequest =
   | DropSelectedItemRequest
@@ -2329,7 +2330,11 @@ export type GameplayStageOperationFailure = Readonly<{
     | import('@nerima-games/mc-sim').ItemStackFailure
     | import('@nerima-games/mc-sim').PlayerStorageFailure
     | import('@nerima-games/mc-sim').CameraPoseError
-    | Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>
+    | Readonly<{
+        _tag: 'DroppedItemMotionFailure'
+        reason: Extract<import('@nerima-games/mc-sim').Projectile, { state: 'despawned' }>['reason']
+          | 'InitialContactFaceUnavailable' | 'SegmentBudgetExceeded'
+      }>
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
     | Schema.SchemaError

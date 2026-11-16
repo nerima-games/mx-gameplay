@@ -3484,6 +3484,7 @@ const THROWN_ITEM_SPEED = 6
 const THROWN_ITEM_UPWARD_SPEED = 2
 const THROWN_ITEM_ORIGIN_HEIGHT = 1.32
 const THROWN_ITEM_PICKUP_DELAY_FRAMES = 40
+const PICKED_HOTBAR_INVENTORY_SLOT_SCHEMA = Schema.Literals([27, 28, 29, 30, 31, 32, 33, 34, 35])
 
 const processHotbarItemUse = (
   state: GameplayStageContext['state'],
@@ -3507,8 +3508,11 @@ const processHotbarItemUse = (
     const held = slots[slotIndex]
     if (request.action === 'PickBlock') {
       const item = itemOfBlock(request.block)
-      const publish = (outcome: HotbarItemUseResult & { action: 'PickBlock' }) =>
-        Ref.update(state.itemUseResults, (results) => [...results, outcome])
+      const publish = (outcome: Omit<HotbarItemUseResult & { action: 'PickBlock' }, 'slotIndex'> & { readonly slotIndex: number }) =>
+        Effect.gen(function* () {
+          const validatedSlotIndex = yield* Schema.decodeUnknownEffect(PICKED_HOTBAR_INVENTORY_SLOT_SCHEMA)(outcome.slotIndex)
+          yield* Ref.update(state.itemUseResults, (results) => [...results, { ...outcome, slotIndex: validatedSlotIndex }])
+        })
       if (item === undefined) {
         yield* publish({ requestId: request.requestId, action: 'PickBlock', success: false, outcome: 'NoItemForm', slotIndex })
         return
@@ -3581,7 +3585,7 @@ const processHotbarItemUse = (
       return yield* Effect.fail(new WorldRevisionConflict({ expected: storage.revision, actual: drops.revision !== storage.revision ? drops.revision : player.revision }))
     }
     operation = 'CandidateBuild'
-    const count = request.amount === 'stack' ? held.count : 1
+    const count = request.amount === 'stack' ? held.count : StackCount(1)
     const removed = yield* Effect.fromResult(removeItemAt(storage.state.inventory, slotIndex, held.item, count))
     const nextStorage = yield* Effect.fromResult(withInventory(storage.state, removed.inventory))
     const direction = yield* Effect.fromResult(forwardVector(player.state.pose))

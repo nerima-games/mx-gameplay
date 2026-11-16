@@ -2964,6 +2964,10 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
     }
   })
 
+type DroppedItemMotionFailure = Extract<import('./registration-core.js').GameplayStageOperationFailure['error'], {
+  readonly _tag: 'DroppedItemMotionFailure'
+}>
+
 const THROWN_ITEM_PROFILE: ProjectileProfile = {
   ...ARROW_PROFILE,
   // Vanilla item gravity is 0.04 blocks/tick² at 20 Hz.
@@ -3015,7 +3019,7 @@ const advanceThrownItems = (
       )) {
         return yield* Effect.fail({
           _tag: 'DroppedItemMotionFailure', reason: 'SegmentBudgetExceeded',
-        } satisfies Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>)
+        } satisfies DroppedItemMotionFailure)
       }
       const coords = chunkCoordsAround(drop.feetPosition, Math.hypot(dx, dz) + 1)
       const window = yield* openChunkWindow(store, coords)
@@ -3047,7 +3051,7 @@ const advanceThrownItems = (
         return yield* Effect.fail({
           _tag: 'DroppedItemMotionFailure',
           reason: stepped.projectile.reason,
-        } satisfies Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>)
+        } satisfies DroppedItemMotionFailure)
       }
       changed = true
       if (stepped.projectile.state === 'stuck') {
@@ -3072,7 +3076,7 @@ const advanceThrownItems = (
           if (face === undefined) {
             return yield* Effect.fail({
               _tag: 'DroppedItemMotionFailure', reason: 'InitialContactFaceUnavailable',
-            } satisfies Readonly<{ _tag: 'DroppedItemMotionFailure'; reason: string }>)
+            } satisfies DroppedItemMotionFailure)
           }
           normal = face.normal
         }
