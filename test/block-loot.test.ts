@@ -464,26 +464,38 @@ describe('blockLoot — fortune', () => {
 
   it.effect('Fortune I uses vanilla’s three-outcome integer roll', () =>
     Effect.sync(() => {
-      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 0)).toBe(0)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 2 / 3 - Number.EPSILON)).toBe(0)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 2 / 3)).toBe(1)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 1 - Number.EPSILON)).toBe(1)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 0)).toEqual(Result.succeed(0))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 2 / 3 - Number.EPSILON)).toEqual(Result.succeed(0))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 2 / 3)).toEqual(Result.succeed(1))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 1 - Number.EPSILON)).toEqual(Result.succeed(1))
     }),
   )
 
   it.effect('Fortune III reaches one, two, and three extra multipliers', () =>
     Effect.sync(() => {
-      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.4)).toBe(1)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.6)).toBe(2)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.8)).toBe(3)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.6 - Number.EPSILON)).toBe(1)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.4)).toEqual(Result.succeed(1))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.6)).toEqual(Result.succeed(2))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.8)).toEqual(Result.succeed(3))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.6 - Number.EPSILON)).toEqual(Result.succeed(1))
     }),
   )
 
-  it.effect('level 0 and invalid rolls add nothing', () =>
+  it.effect('level zero adds nothing for valid rolls', () =>
     Effect.sync(() => {
-      expect(rollFortuneExtraDrops(EnchantmentLevel(0), 0)).toBe(0)
-      expect(rollFortuneExtraDrops(EnchantmentLevel(3), Number.NaN)).toBe(0)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(0), 0)).toEqual(Result.succeed(0))
+      expect(rollFortuneExtraDrops(EnchantmentLevel(0), 1 - Number.EPSILON)).toEqual(Result.succeed(0))
+    }),
+  )
+
+  it.effect('rejects invalid rolls even without Fortune', () =>
+    Effect.sync(() => {
+      for (const roll of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -Number.MIN_VALUE, 1, 1 + Number.EPSILON]) {
+        for (const level of [0, 3, 255]) {
+          expect(rollFortuneExtraDrops(EnchantmentLevel(level), roll)).toEqual(
+            Result.fail({ _tag: 'InvalidFortuneRoll' }),
+          )
+        }
+      }
     }),
   )
 
