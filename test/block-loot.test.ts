@@ -542,7 +542,7 @@ describe('blockLoot — fortune', () => {
       const fortuneLevel = enchantmentLevel(component, 'fortune')
       expect(resolveBlockLoot(GRAVEL, { fortuneLevel }, [0.99, 0, 0, 0]))
         .toEqual(Result.succeed([{ item: 'flint', count: 1 }]))
-      expect(resolveBlockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, 0.009]))
+      expect(resolveBlockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, 1 / 120 - Number.EPSILON]))
         .toEqual(Result.succeed([{ item: 'apple', count: 1 }]))
     }),
   )
