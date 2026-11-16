@@ -112,7 +112,6 @@ const fishingStageHarness = (playerStorage: PlayerStorage) =>
       player.api,
       time,
       undefined,
-      undefined,
       {},
       commit,
     )

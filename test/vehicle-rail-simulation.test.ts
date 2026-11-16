@@ -307,7 +307,7 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       let maxX = Number.NEGATIVE_INFINITY
 
       for (let i = 0; i < steps; i += 1) {
-        yield* advanceVehicles(store, vehicles, dt, {})
+        yield* advanceVehicles(store, vehicles, dt, { isPoweredRailAt: () => false,})
         const current = yield* soleVehicle(vehicles)
         // The only correct path here is strictly south then east; neither
         // axis may ever regress below its own running maximum, on any tick.

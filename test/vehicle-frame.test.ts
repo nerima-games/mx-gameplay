@@ -30,7 +30,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
+    const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1, { isPoweredRailAt: () => false }))
 
     expect(Exit.isSuccess(result)).toBe(true)
     expect(updates).toStrictEqual([{ id: 'v:frame', x: 0.2 }])
@@ -56,7 +56,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       isActiveDimension: (dimension) => dimension === 'overworld',
     }))
 
@@ -84,7 +84,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromise(advanceVehicles(store, service, 1))
+    const result = await Effect.runPromise(advanceVehicles(store, service, 1, { isPoweredRailAt: () => false }))
 
     expect(result).toMatchObject([{ _tag: 'VehicleUpdateFailure', vehicleId: vehicle.id }])
     expect(updated).toEqual([nextVehicle.id])
@@ -108,7 +108,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: BlockId(65_535) }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromise(advanceVehicles(store, service, 1))
+    const result = await Effect.runPromise(advanceVehicles(store, service, 1, { isPoweredRailAt: () => false }))
 
     expect(result).toMatchObject([{
       _tag: 'VehicleWorldDataFault',
@@ -138,7 +138,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: water }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
     }))
 
@@ -180,7 +180,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    const failures = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    const failures = await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       controlsForVehicle: (vehicle) => vehicle.id === badThrottle.id
         ? { throttle: Number.NaN, steering: 0 }
         : vehicle.id === badSteering.id
@@ -217,7 +217,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    const explicitUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    const explicitUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       controlsForVehicle: undefined,
     } as unknown as Parameters<typeof advanceVehicles>[3]))
     expect(explicitUndefined).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: {
@@ -225,7 +225,7 @@ describe('vehicle frame', () => {
     } }])
     expect(updated).toStrictEqual([])
 
-    const callbackReturnsUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    const callbackReturnsUndefined = await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       controlsForVehicle: () => undefined,
     } as unknown as Parameters<typeof advanceVehicles>[3]))
     expect(callbackReturnsUndefined).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: vehicle.id, failure: {
@@ -233,7 +233,7 @@ describe('vehicle frame', () => {
     } }])
     expect(updated).toStrictEqual([])
 
-    const omittedCallback = await Effect.runPromise(advanceVehicles(store, service, 0.05))
+    const omittedCallback = await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false }))
     expect(omittedCallback).toStrictEqual([])
     expect(updated).toStrictEqual([vehicle.id])
   })
@@ -259,7 +259,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    expect(await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    expect(await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       controlsForVehicle: () => controls as unknown as VehicleControlInput,
     }))).toStrictEqual([{ _tag: 'VehicleMotionFailure', vehicleId: boat.id, failure: { _tag: 'InvalidBoatControl', field } }])
     expect(updated).toStrictEqual([])
@@ -284,7 +284,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    const result = await Effect.runPromise(advanceVehicles(store, service, 0.05, { isPoweredRailAt: () => false,
       controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
     }))
 
@@ -319,7 +319,7 @@ describe('vehicle frame', () => {
             updateState: () => Effect.sync(() => { updates += 1 }),
           } as unknown as VehicleServiceApi
           const store = { getBlock: () => Effect.succeed(reading) } as unknown as ChunkStoreApi
-          const failures = await Effect.runPromise(advanceVehicles(store, service, 0.1))
+          const failures = await Effect.runPromise(advanceVehicles(store, service, 0.1, { isPoweredRailAt: () => false }))
           const failure = failures[0]
           return failures.length === 1 &&
             failure?._tag === 'VehicleWorldUnavailable' &&
@@ -356,7 +356,7 @@ describe('vehicle frame', () => {
         : Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
-    const result = await Effect.runPromise(advanceVehicles(store, service, 0.1))
+    const result = await Effect.runPromise(advanceVehicles(store, service, 0.1, { isPoweredRailAt: () => false }))
 
     expect(result).toMatchObject([{
       _tag: 'VehicleWorldUnavailable',
@@ -385,7 +385,7 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: air }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.1))
+    await Effect.runPromise(advanceVehicles(store, service, 0.1, { isPoweredRailAt: () => false }))
 
     const velocity = next?.['velocity'] as { x: number; y: number; z: number }
     expect(velocity.x).toBeCloseTo(2, 12)
@@ -416,7 +416,7 @@ describe('vehicle frame', () => {
       ),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.1, {
+    await Effect.runPromise(advanceVehicles(store, service, 0.1, { isPoweredRailAt: () => false,
       onVehicleExit: (_vehicle, reason) => { exit = reason },
     }))
 
@@ -451,7 +451,7 @@ describe('vehicle frame', () => {
       ),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.1, {
+    await Effect.runPromise(advanceVehicles(store, service, 0.1, { isPoweredRailAt: () => false,
       onVehicleExit: (_vehicle, reason) => { exit = reason },
     }))
 
@@ -495,7 +495,7 @@ describe('vehicle frame', () => {
       ),
     } as unknown as ChunkStoreApi
 
-    return Effect.runPromise(advanceVehicles(store, service, 0.1, {
+    return Effect.runPromise(advanceVehicles(store, service, 0.1, { isPoweredRailAt: () => false,
       onVehicleExit: (_vehicle, reason) => { exit = reason },
     })).then(() => {
       expect(next?.['position']).toEqual({ x: 0.55, y: 64, z: 0 })
@@ -543,42 +543,6 @@ describe('vehicle frame', () => {
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
   })
 
-  it('reports missing power queries without updating a cart on powered rails', async () => {
-    const vehicle = {
-      id: VehicleId('v:no-power-hook'),
-      type: 'minecart' as const,
-      dimension: 'overworld' as const,
-      position: { x: 0, y: 64, z: 0 },
-      velocity: { x: 50, y: 0, z: 0 },
-      yawRadians: 0,
-    }
-    let next: Record<string, unknown> | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const stone = Option.getOrThrow(blockIdOf('stone'))
-    const poweredRail = Option.getOrThrow(blockIdOf('powered_rail'))
-    const store = {
-      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
-        position.x === 1 && position.y === 64 && position.z === 0
-          ? { _tag: 'Block' as const, block: stone }
-          : position.x === 0 && position.y === 64 && position.z === 0
-            ? { _tag: 'Block' as const, block: poweredRail }
-            : { _tag: 'Block' as const, block: AIR },
-      ),
-    } as unknown as ChunkStoreApi
-
-    const failures = await Effect.runPromise(advanceVehicles(store, service, 0.1))
-
-    expect(failures).toStrictEqual([{
-      _tag: 'VehicleEnvironmentFailure',
-      vehicleId: vehicle.id,
-      failure: { _tag: 'MissingPoweredRailQuery' },
-    }])
-    expect(next).toBeUndefined()
-  })
-
   it('records malformed delta time per active vehicle without reading terrain or updating state', async () => {
     const vehicle = {
       id: VehicleId('v:frozen'),
@@ -605,7 +569,7 @@ describe('vehicle frame', () => {
     } as unknown as ChunkStoreApi
 
     const results = await Promise.all([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.05]
-      .map((dt) => Effect.runPromise(advanceVehicles(store, service, dt, {
+      .map((dt) => Effect.runPromise(advanceVehicles(store, service, dt, { isPoweredRailAt: () => false,
         isActiveDimension: (dimension) => dimension === 'overworld',
       }))))
     for (const result of results) {

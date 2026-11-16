@@ -1079,6 +1079,25 @@ describe('dropped item entities', () => {
     )
   })
 
+  it.each([-1, 256])('rejects dropped-item enchantment level %s in the public owner codec', (level) => {
+    const item = committedDroppedItem(1)
+    const validBehaviour = {
+      ...item.behaviour,
+      item: 'bow',
+      durability: durabilityForItem('bow'),
+      enchantments: [{ id: 'power', level: 1 }],
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+      items: [{ ...item, behaviour: validBehaviour }],
+    }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+      items: [{
+        ...item,
+        behaviour: { ...validBehaviour, enchantments: [{ id: 'power', level }] },
+      }],
+    }))).toBe(true)
+  })
+
   it('strictly validates the replicated dropped-item owner with its public schema', () => {
     const validSnapshot = { items: [committedDroppedItem(1)] }
 

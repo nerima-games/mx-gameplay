@@ -173,7 +173,7 @@ import {
   screenSize,
   writeLine,
 } from './terminal'
-import { AIR_BLOCK_ID, BlockId, type BlockPositionKey } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockId, EnchantmentLevel, type BlockPositionKey } from '@nerima-games/mc-kernel'
 
 const BOUNDS = { width: 26, height: 18 }
 
@@ -545,7 +545,7 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
       case 'f':
         yield* setHeldTool(site, {
           ...site.tool,
-          fortuneLevel: cycle(FORTUNE_LEVELS, site.tool.fortuneLevel ?? 0, 0),
+          fortuneLevel: EnchantmentLevel(cycle(FORTUNE_LEVELS, site.tool.fortuneLevel ?? 0, 0)),
         })
         break
 

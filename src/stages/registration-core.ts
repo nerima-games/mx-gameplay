@@ -495,7 +495,7 @@ import {
   type EnderDragonEncounterStageApi,
 } from './ender-dragon-encounter-stage.js'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
-import { advanceVehicles, type VehicleFrameEnvironment, type VehicleFrameFailure } from '../domain/vehicle/vehicle-frame.js'
+import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
 import type { VehicleMotionFailure } from '../domain/vehicle/vehicle-motion.js'
 
 const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
@@ -2317,7 +2317,6 @@ export type GameplayStageOperationFailure = Readonly<{
     | EnchantmentTableBookshelfFailure
     | VehicleOperationError
     | VehicleMotionFailure
-    | Extract<VehicleFrameFailure, { _tag: 'VehicleEnvironmentFailure' }>['failure']
     | PrimedTntValidationFailure
     | DroppedItemPickupFailure
     | ExperienceOrbAbsorptionError
@@ -3036,7 +3035,7 @@ const invalidBlockLootContextReason = (
   if (prototype !== Object.prototype && prototype !== null) return 'InvalidBlockLootContext'
   if (Object.hasOwn(context, 'fortuneLevel')) {
     const fortuneLevel = (context as Record<string, unknown>)['fortuneLevel']
-    if (typeof fortuneLevel !== 'number' || !Number.isSafeInteger(fortuneLevel) || fortuneLevel < 0) {
+    if (typeof fortuneLevel !== 'number' || Result.isFailure(EnchantmentLevel.result(fortuneLevel))) {
       return 'InvalidBlockLootFortuneLevel'
     }
   }
@@ -5097,8 +5096,10 @@ export interface GameplayStageContext {
   readonly store: ChunkStoreApi
   readonly roster: EntityManagerApi<MobBehaviour>
   readonly time: TimeServiceApi
-  readonly vehicleService: VehicleServiceApi | undefined
-  readonly vehicleEnvironment: VehicleFrameEnvironment | undefined
+  readonly vehicles: Readonly<{
+    service: VehicleServiceApi
+    environment: VehicleFrameEnvironment
+  }> | undefined
   readonly options: GameplayStageOptions
   readonly commit: GameplayStageCommitServices | undefined
   readonly blockStateWorld: GameplayBlockStateWorldApi | undefined

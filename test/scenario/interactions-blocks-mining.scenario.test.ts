@@ -72,7 +72,6 @@ describe('mining gameplay scenario', () => {
         world.player,
         world.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -139,7 +138,6 @@ describe('mining gameplay scenario', () => {
         world.player,
         world.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -204,7 +202,6 @@ describe('mining gameplay scenario', () => {
         world.inventory,
         world.player,
         world.time,
-        undefined,
         undefined,
         {},
         commit,

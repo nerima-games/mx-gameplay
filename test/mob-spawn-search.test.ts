@@ -212,7 +212,6 @@ const makeStageHarness = (
       player.api,
       time,
       undefined,
-      undefined,
       {},
       commit,
     )
@@ -1257,7 +1256,7 @@ describe('the search inside the frame', () => {
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
       const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose })
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, {}, commit)
 
       const offeredAt: Position = atPosition(-20, 64, -20 )
       yield* time.setTimeOfDay(MIDNIGHT)

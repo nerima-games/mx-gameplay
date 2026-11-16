@@ -335,7 +335,7 @@ const slice = (
       time,
       commit,
       publishedEvents,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, {}, commit),
     }
   })
 
@@ -2438,7 +2438,6 @@ describe('the mining site slice: dig, drop, place', () => {
             player.api,
             time,
             undefined,
-            undefined,
             {},
             stageCommit,
           )
@@ -3192,7 +3191,6 @@ describe('the ignition slice: an item use reaches the world', () => {
         player.api,
         time,
         undefined,
-        undefined,
         {},
         racingCommit,
       ).filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
@@ -3218,7 +3216,6 @@ describe('the ignition slice: an item use reaches the world', () => {
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         commit,

@@ -961,7 +961,7 @@ const interactionsWithService = (
   const time = yield* TimeService
   const real = yield* makeEnchantmentTableService()
   bindEnchantmentTableService(state, { ...real, ...override(real) })
-  return interactionsOnly(gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
+  return interactionsOnly(gameplayStages(state, store, roster, undefined, undefined, time, undefined, {}, {
     coordinator,
     playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,

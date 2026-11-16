@@ -132,7 +132,6 @@ const makeSlice = (
       player.api,
       time,
       undefined,
-      undefined,
       {},
       { ...commit, statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID },
     )
@@ -264,7 +263,6 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         commit,
@@ -418,7 +416,6 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
         worldState.inventory.api,
         worldState.player.api,
         worldState.time,
-        undefined,
         undefined,
         {},
         commit,

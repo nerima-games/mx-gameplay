@@ -368,7 +368,6 @@ const makeDeadPlayerEntityScenario = (
     undefined,
     time,
     undefined,
-    undefined,
     { mobSimulation: false },
     commit,
   )

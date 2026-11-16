@@ -62,6 +62,8 @@
  */
 import { Option, Result } from 'effect'
 import {
+  EnchantmentLevel,
+  type EnchantmentLevel as EnchantmentLevelValue,
   dropOfBlockId,
   blockTypeOfId,
   type BlockDrop,
@@ -116,8 +118,8 @@ export type BlockLootFailure =
  * optional one breaks none. Absent means level 0, which means no fortune.
  */
 export type BlockLootContext = HarvestContext & {
-  /** Enchantment level of Fortune on the held tool. 0, absent or negative = none. */
-  readonly fortuneLevel?: number
+  /** Validated Fortune level on the held tool. An absent level means no Fortune. */
+  readonly fortuneLevel?: EnchantmentLevelValue
 }
 
 /** Bare hands, no enchantments — the context a player starts a world with. */
@@ -143,8 +145,8 @@ export const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number> = new Map([
  * Vanilla draws an integer from zero through the level plus one, subtracts one,
  * and clamps the result at zero.
  */
-export const rollFortuneExtraDrops = (level: number, roll: number): number => {
-  if (!Number.isSafeInteger(level) || level < 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) return 0
+export const rollFortuneExtraDrops = (level: EnchantmentLevelValue, roll: number): number => {
+  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return 0
   return Math.max(0, Math.floor(roll * (level + 2)) - 1)
 }
 
@@ -253,7 +255,7 @@ const DEFAULT_ROLLS: ReadonlyArray<number> = [0, 0, 0, 0]
  * multiplication rather than both.
  */
 const fortuneApplies = (context: BlockLootContext): boolean =>
-  context.silkTouch !== true && Number.isFinite(context.fortuneLevel ?? 0)
+  context.silkTouch !== true
 
 /**
  * The base drop with fortune folded in, or `undefined` for nothing.
@@ -284,7 +286,7 @@ const fortuneApplies = (context: BlockLootContext): boolean =>
 const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): MinedItem => {
   const extra =
     drop.affectedByFortune && fortuneApplies(context)
-      ? rollFortuneExtraDrops(context.fortuneLevel ?? 0, roll)
+      ? rollFortuneExtraDrops(context.fortuneLevel ?? EnchantmentLevel(0), roll)
       : 0
 
   return { item: drop.item, count: drop.count * (extra + 1) }
@@ -342,9 +344,7 @@ export const blockLoot = (
   const items: Array<MinedItem> = []
 
   if (drop !== undefined) {
-    const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
-      ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
-      : 0
+    const fortuneLevel = context.fortuneLevel ?? EnchantmentLevel(0)
     const chanceIndex =
       fortuneLevel < 1 ? 0 : fortuneLevel < 2 ? 1 : fortuneLevel < 3 ? 2 : 3
     const gravelFlintChance = GRAVEL_FLINT_CHANCES[chanceIndex]
@@ -371,9 +371,7 @@ export const blockLoot = (
     bonus.slice(0, MAX_BONUS_LINES).forEach((line, index) => {
       // MAX_BONUS_LINES keeps every index inside the validated roll budget.
       const bonusRoll = Option.getOrThrow(Option.fromUndefinedOr(rolls[index + 1]))
-      const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
-        ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
-        : 0
+      const fortuneLevel = context.fortuneLevel ?? EnchantmentLevel(0)
       const fortuneIndex = Math.min(fortuneLevel, LEAF_APPLE_DROP_CHANCES_BY_FORTUNE.length - 1)
       const chance = line.fortuneChances?.[fortuneIndex] ?? line.chance
       if (bonusRoll < chance) {

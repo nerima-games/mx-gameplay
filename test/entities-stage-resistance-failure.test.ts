@@ -92,8 +92,7 @@ const makeHarness = () => Effect.gen(function* () {
     store: store.api,
     roster,
     time,
-    vehicleService: undefined,
-    vehicleEnvironment: undefined,
+    vehicles: undefined,
     options: {},
     commit: {
       coordinator,

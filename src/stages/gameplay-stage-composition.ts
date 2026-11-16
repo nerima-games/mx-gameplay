@@ -111,7 +111,7 @@ const makeGameplayStageRegistrations = (
   const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID)
   bindEnchantmentTableService(state, enchantmentTableService)
 
-  const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
+  const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, {}, {
     coordinator,
     playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,

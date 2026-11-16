@@ -28,6 +28,7 @@ import {
   blockPosition,
   blockPositionKeyOf,
   DeltaTimeSecs,
+  EnchantmentLevel,
   HARVEST_TIERS,
   MAX_STACK_COUNT,
   type BlockPositionKey,
@@ -1174,9 +1175,9 @@ const lootTable = Effect.sync(() => {
       (loot) => loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' ') || '-',
     )
   const glowstoneBare = yield* glowstone({})
-  const glowstoneFortuneI = yield* glowstone({ fortuneLevel: 1 })
-  const glowstoneFortuneIII = yield* glowstone({ fortuneLevel: 3 })
-  const glowstoneFortuneSilk = yield* glowstone({ fortuneLevel: 3, silkTouch: true })
+  const glowstoneFortuneI = yield* glowstone({ fortuneLevel: EnchantmentLevel(1) })
+  const glowstoneFortuneIII = yield* glowstone({ fortuneLevel: EnchantmentLevel(3) })
+  const glowstoneFortuneSilk = yield* glowstone({ fortuneLevel: EnchantmentLevel(3), silkTouch: true })
   lines.push(`  glowstone, bare hands            ${glowstoneBare}`)
   lines.push(`  glowstone, fortune I             ${glowstoneFortuneI}`)
   lines.push(`  glowstone, fortune III           ${glowstoneFortuneIII}`)

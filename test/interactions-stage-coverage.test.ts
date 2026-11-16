@@ -541,7 +541,6 @@ describe('production interactions-stage coverage', () => {
           undefined,
           time,
           undefined,
-          undefined,
           {},
           commit,
         )

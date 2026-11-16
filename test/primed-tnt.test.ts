@@ -78,7 +78,6 @@ const makeTntItemUseHarness = (
         player.api,
         time,
         undefined,
-        undefined,
         {},
         { ...commit, ...overrides },
       )

@@ -51,7 +51,6 @@ describe('player damage gameplay scenario', () => {
         player.api,
         time,
         undefined,
-        undefined,
         {},
         commit,
       )

@@ -1,5 +1,6 @@
 import { describe, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel'
 import { rollFortuneExtraDrops } from '../../src/domain/interactions/block-loot'
 
 describe('block loot properties', () => {
@@ -13,11 +14,11 @@ describe('block loot properties', () => {
         (level, firstRoll, secondRoll) => {
           const lowRoll = Math.min(firstRoll, secondRoll)
           const highRoll = Math.max(firstRoll, secondRoll)
-          const atLowRoll = rollFortuneExtraDrops(level, lowRoll)
-          const atHighRoll = rollFortuneExtraDrops(level, highRoll)
-          const atNextLevel = rollFortuneExtraDrops(level + 1, lowRoll)
-          const atZeroRoll = rollFortuneExtraDrops(level, 0)
-          const atHighestRoll = rollFortuneExtraDrops(level, 1 - Number.EPSILON)
+          const atLowRoll = rollFortuneExtraDrops(EnchantmentLevel(level), lowRoll)
+          const atHighRoll = rollFortuneExtraDrops(EnchantmentLevel(level), highRoll)
+          const atNextLevel = rollFortuneExtraDrops(EnchantmentLevel(level + 1), lowRoll)
+          const atZeroRoll = rollFortuneExtraDrops(EnchantmentLevel(level), 0)
+          const atHighestRoll = rollFortuneExtraDrops(EnchantmentLevel(level), 1 - Number.EPSILON)
 
           return [atLowRoll, atHighRoll, atNextLevel].every(
             (count) => Number.isInteger(count) && count >= 0,

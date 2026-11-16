@@ -54,7 +54,6 @@ const makePortalScenario = (
       undefined,
       time,
       undefined,
-      undefined,
       {},
       commit,
     )

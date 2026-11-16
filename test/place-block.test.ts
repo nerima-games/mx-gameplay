@@ -1200,7 +1200,6 @@ const stagedSlice = (
         player.api,
         time,
         undefined,
-        undefined,
         {},
         commit,
       ),

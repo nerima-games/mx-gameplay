@@ -124,7 +124,6 @@ const makePlayerSystemsSlice = (options: Readonly<{
     world.player,
     world.time,
     undefined,
-    undefined,
     {},
     commit,
   )

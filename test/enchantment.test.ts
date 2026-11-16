@@ -662,6 +662,24 @@ describe('enchantment table offers and transaction', () => {
     })
   })
 
+  it.each([-1, 256])('rejects legacy offer level %s before looking for an item', (level) => {
+    const offer = compatibleOffer('diamond_sword')
+    const state = {
+      seed: offer.seed,
+      bookshelfCount: offer.bookshelfCount,
+      playerLevel: 30,
+      lapis: 3,
+      item: null,
+    }
+    expect(applyEnchantmentOffer(state, offer)).toEqual({ ok: false, state, reason: 'no_item' })
+    const rejected = applyEnchantmentOffer(state, {
+      ...offer,
+      enchantment: { ...offer.enchantment, level },
+    })
+    expect(rejected).toEqual({ ok: false, state, reason: 'invalid_offer' })
+    expect(rejected.state).toBe(state)
+  })
+
   it('rejects no item, forged offers, incompatible items and insufficient resources without mutation', () => {
     const swordOffer = compatibleOffer('diamond_sword')
     const base = {
@@ -936,9 +954,6 @@ describe('enchantment derivations', () => {
     expect(enchantmentLevel(component([['power', 2]]), 'power')).toBe(2)
     expect(enchantmentLevel(component([['power', 0]]), 'power')).toBe(0)
     expect(enchantmentLevel(component([['power', 255]]), 'power')).toBe(255)
-    for (const level of [-1, 0.5, 256, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(Result.isFailure(EnchantmentLevel.result(level))).toBe(true)
-    }
   })
 
   it('builds kernel components through the checked enchantment constructor', () => {
