@@ -140,14 +140,22 @@ export const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number> = new Map([
   [5, 22 / 7],
 ])
 
+export type FortuneRollFailure = Readonly<{ _tag: 'InvalidFortuneRoll' }>
+
+const fortuneExtraDrops = (level: EnchantmentLevelValue, roll: number): number =>
+  Math.max(0, Math.floor(roll * (level + 2)) - 1)
+
 /**
  * Returns the random integer multiplier minus one for Fortune's level roll.
  * Vanilla draws an integer from zero through the level plus one, subtracts one,
  * and clamps the result at zero.
  */
-export const rollFortuneExtraDrops = (level: EnchantmentLevelValue, roll: number): number => {
-  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return 0
-  return Math.max(0, Math.floor(roll * (level + 2)) - 1)
+export const rollFortuneExtraDrops = (
+  level: EnchantmentLevelValue,
+  roll: number,
+): Result.Result<number, FortuneRollFailure> => {
+  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return Result.fail({ _tag: 'InvalidFortuneRoll' })
+  return Result.succeed(fortuneExtraDrops(level, roll))
 }
 
 // ---------------------------------------------------------------------------
@@ -283,10 +291,14 @@ const fortuneApplies = (context: BlockLootContext): boolean =>
  * It cost the caller a check too — `blockLoot` had to ask `base !== undefined`
  * about a value that was never undefined.
  */
-const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): MinedItem => {
+const withFortune = (
+  drop: BlockDrop,
+  context: BlockLootContext,
+  roll: number,
+): MinedItem => {
   const extra =
     drop.affectedByFortune && fortuneApplies(context)
-      ? rollFortuneExtraDrops(context.fortuneLevel ?? EnchantmentLevel(0), roll)
+      ? fortuneExtraDrops(context.fortuneLevel ?? EnchantmentLevel(0), roll)
       : 0
 
   return { item: drop.item, count: drop.count * (extra + 1) }
