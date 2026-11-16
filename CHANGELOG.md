@@ -1,5 +1,15 @@
 # @nerima-games/mx-gameplay
 
+## 0.12.0
+
+### Minor Changes
+
+- [#86](https://github.com/nerima-games/mx-gameplay/pull/86) [`d1b71d7`](https://github.com/nerima-games/mx-gameplay/commit/d1b71d702b5505f9a3b44ff03ae0fff49daa724a) Thanks [@takeokunn](https://github.com/takeokunn)! - Export `mobMovementWorldFromChunkWindow` and the `MobMovementWorldAdapter`, `MobMovementWorldCell`, and `MobMovementWorldFailure` types.
+
+- [#76](https://github.com/nerima-games/mx-gameplay/pull/76) [`26c1c50`](https://github.com/nerima-games/mx-gameplay/commit/26c1c50a8db0e55f2b885332e021c9b97956635b) Thanks [@takeokunn](https://github.com/takeokunn)! - Add stateful block interactions and growth for crops and saplings.
+  
+  Breaking for hosts: `gameplayModule` and `makeGameplayStages` now require the `GameplayBlockStateWorld` service. The host must bind its `BlockStateWorldPort` to the C7 `WorldWritePort` so state edits and optional owner changes commit together.
+
 ## 0.11.0
 
 ### Minor Changes
