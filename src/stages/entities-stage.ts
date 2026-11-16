@@ -570,6 +570,10 @@ const projectileWorldFor = (
     }
   }
   const lineOfSight: ProjectileWorldAdapter['lineOfSight'] = (from, to, mode, distance) => {
+    // mc-sim's private MAX_ARROW_RAYCAST_DISTANCE is a visibility limit, not a world fault.
+    if (mode === 'voxel' && Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z) > 64) {
+      return Result.succeed(false)
+    }
     const rayFailure: { value: EntityWorldQueryFailure | undefined } = { value: undefined }
     let rayUnavailable: Extract<ProjectileLineOfSightFailure, { _tag: 'ProjectilePathUnavailable' }> | undefined
     const shapes = new Map<string, NonNullable<ProjectileBlockShape>>()

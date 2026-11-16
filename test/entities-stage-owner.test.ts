@@ -3003,18 +3003,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     ))
     expect(projectiles.state.projectiles).toHaveLength(launches ? 1 : 0)
     const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
-    if (launches) {
-      expect(faults).toEqual([])
-    } else {
-      expect(faults).toContainEqual(expect.objectContaining({
-        _tag: 'EntityWorldDataFault', source: 'ProjectileLineOfSight',
-        target: { _tag: 'Entity', entityId: source.id },
-        failure: expect.objectContaining({
-          _tag: 'EntityWorldRaycastFailure',
-          failure: expect.objectContaining({ name: 'RangeError', message: 'Arrow raycast distance exceeds 64 blocks' }),
-        }),
-      }))
-    }
+    expect(faults).toEqual([])
   })
 
   it('continues a saved arrow when another mob exceeds the projectile line of sight limit', async () => {
@@ -3031,11 +3020,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     await harness.run(makeDeltaTimeSecs(0.05))
 
     const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
-    expect(faults).toContainEqual(expect.objectContaining({
-      _tag: 'EntityWorldDataFault', source: 'ProjectileLineOfSight',
-      target: { _tag: 'Entity', entityId: source.id },
-      failure: expect.objectContaining({ _tag: 'EntityWorldRaycastFailure', failure: expect.any(RangeError) }),
-    }))
+    expect(faults).toEqual([])
     const snapshot = await Effect.runPromise(harness.coordinator.snapshot(
       PROJECTILE_REPLICATED_OWNER_ID, ProjectileServiceSnapshotSchema,
     ))
