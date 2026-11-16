@@ -100,7 +100,6 @@ const makeTradeStageHarness = (options: Readonly<{
     undefined,
     time,
     undefined,
-    undefined,
     {},
     commit,
   ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)!

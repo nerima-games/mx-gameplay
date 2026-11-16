@@ -274,7 +274,6 @@ const makeRuntimeFromWorld = (
     world.player,
     world.time,
     undefined,
-    undefined,
     { mobSimulation: true },
     commit,
   )

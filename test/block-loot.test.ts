@@ -40,6 +40,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Brand, Effect, Option, Result } from 'effect'
 import {
+  EnchantmentLevel,
   blockIdOf,
   blockTypeOfId,
   BLOCK_TYPES,
@@ -61,9 +62,9 @@ import {
   LEAF_STICK_DROP_CHANCE,
   NO_TOOL,
   rollFortuneExtraDrops,
-  type MinedItem,
 } from '../src/domain/interactions/block-loot'
 import { BlockId, ITEM_TYPES } from '@nerima-games/mc-kernel'
+import { enchantmentComponentOf, enchantmentLevel } from '../src/domain/enchantment'
 
 const blockLoot = (...args: Parameters<typeof resolveBlockLoot>) =>
   Result.getOrThrow(resolveBlockLoot(...args))
@@ -383,14 +384,14 @@ describe('blockLoot — the deterministic half', () => {
   it.effect('sand and unsuccessful gravel rolls yield themselves', () =>
     Effect.sync(() => {
       expect(blockLoot(SAND, NO_TOOL)).toStrictEqual([{ item: 'sand', count: 1 }])
-      expect(blockLoot(GRAVEL, NO_TOOL, [0.1])).toStrictEqual([{ item: 'gravel', count: 1 }])
+      expect(blockLoot(GRAVEL, NO_TOOL, [0.1, 0, 0, 0])).toStrictEqual([{ item: 'gravel', count: 1 }])
     }),
   )
 
   it.effect('gravel replaces itself with flint below the vanilla chance boundary', () =>
     Effect.sync(() => {
-      expect(blockLoot(GRAVEL, NO_TOOL, [0.099999])).toStrictEqual([{ item: 'flint', count: 1 }])
-      expect(blockLoot(GRAVEL, NO_TOOL, [0.1])).toStrictEqual([{ item: 'gravel', count: 1 }])
+      expect(blockLoot(GRAVEL, NO_TOOL, [0.099999, 0, 0, 0])).toStrictEqual([{ item: 'flint', count: 1 }])
+      expect(blockLoot(GRAVEL, NO_TOOL, [0.1, 0, 0, 0])).toStrictEqual([{ item: 'gravel', count: 1 }])
     }),
   )
 
@@ -398,7 +399,7 @@ describe('blockLoot — the deterministic half', () => {
   // reference's example; this build has none, and it has six others.
   it.effect('the count-zero rows yield nothing to anyone, whatever the tool', () =>
     Effect.sync(() => {
-      const best = { heldTier: 'diamond', silkTouch: true, fortuneLevel: 3 } as const
+      const best = { heldTier: 'diamond', silkTouch: true, fortuneLevel: EnchantmentLevel(3) } as const
       for (const id of [AIR, WATER, LAVA, OAK_LEAVES]) {
         expect(
           blockLoot(id, best, ALL_LUCK).filter((drop) => drop.item === Result.getOrThrow(blockTypeOfId(id))),
@@ -463,28 +464,26 @@ describe('blockLoot — fortune', () => {
 
   it.effect('Fortune I uses vanilla’s three-outcome integer roll', () =>
     Effect.sync(() => {
-      expect(rollFortuneExtraDrops(1, 0)).toBe(0)
-      expect(rollFortuneExtraDrops(1, 2 / 3 - Number.EPSILON)).toBe(0)
-      expect(rollFortuneExtraDrops(1, 2 / 3)).toBe(1)
-      expect(rollFortuneExtraDrops(1, 1 - Number.EPSILON)).toBe(1)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 0)).toBe(0)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 2 / 3 - Number.EPSILON)).toBe(0)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 2 / 3)).toBe(1)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(1), 1 - Number.EPSILON)).toBe(1)
     }),
   )
 
   it.effect('Fortune III reaches one, two, and three extra multipliers', () =>
     Effect.sync(() => {
-      expect(rollFortuneExtraDrops(3, 0.4)).toBe(1)
-      expect(rollFortuneExtraDrops(3, 0.6)).toBe(2)
-      expect(rollFortuneExtraDrops(3, 0.8)).toBe(3)
-      expect(rollFortuneExtraDrops(3, 0.6 - Number.EPSILON)).toBe(1)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.4)).toBe(1)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.6)).toBe(2)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.8)).toBe(3)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), 0.6 - Number.EPSILON)).toBe(1)
     }),
   )
 
-  it.effect('level 0 and invalid inputs add nothing', () =>
+  it.effect('level 0 and invalid rolls add nothing', () =>
     Effect.sync(() => {
-      expect(rollFortuneExtraDrops(0, 0)).toBe(0)
-      expect(rollFortuneExtraDrops(-1, 0)).toBe(0)
-      expect(rollFortuneExtraDrops(1.5, 0)).toBe(0)
-      expect(rollFortuneExtraDrops(3, Number.NaN)).toBe(0)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(0), 0)).toBe(0)
+      expect(rollFortuneExtraDrops(EnchantmentLevel(3), Number.NaN)).toBe(0)
     }),
   )
 
@@ -496,7 +495,7 @@ describe('blockLoot — fortune', () => {
         { item: 'glowstone_dust', count: 2 },
       ])
       // A 0.4 roll selects two times the base count for Fortune III.
-      expect(blockLoot(GLOWSTONE, { fortuneLevel: 3 }, [0.4])).toStrictEqual([
+      expect(blockLoot(GLOWSTONE, { fortuneLevel: EnchantmentLevel(3) }, [0.4, 0, 0, 0])).toStrictEqual([
         { item: 'glowstone_dust', count: 4 },
       ])
     }),
@@ -504,7 +503,7 @@ describe('blockLoot — fortune', () => {
 
   it.effect('a block with no fortune flag is untouched by a fortune tool', () =>
     Effect.sync(() => {
-      expect(blockLoot(SAND, { fortuneLevel: 3 }, ALL_LUCK)).toStrictEqual([
+      expect(blockLoot(SAND, { fortuneLevel: EnchantmentLevel(3) }, ALL_LUCK)).toStrictEqual([
         { item: 'sand', count: 1 },
       ])
     }),
@@ -512,40 +511,70 @@ describe('blockLoot — fortune', () => {
 
   it.effect('gravel applies the vanilla Fortune replacement chances and Silk Touch override', () =>
     Effect.sync(() => {
-      expect(blockLoot(GRAVEL, { fortuneLevel: 1 }, [0.14285714])).toStrictEqual([
+      expect(blockLoot(GRAVEL, { fortuneLevel: EnchantmentLevel(1) }, [0.14285714, 0, 0, 0])).toStrictEqual([
         { item: 'flint', count: 1 },
       ])
-      expect(blockLoot(GRAVEL, { fortuneLevel: 1 }, [0.14285715])).toStrictEqual([
+      expect(blockLoot(GRAVEL, { fortuneLevel: EnchantmentLevel(1) }, [0.14285715, 0, 0, 0])).toStrictEqual([
         { item: 'gravel', count: 1 },
       ])
-      expect(blockLoot(GRAVEL, { fortuneLevel: 2 }, [0.249999])).toStrictEqual([
+      expect(blockLoot(GRAVEL, { fortuneLevel: EnchantmentLevel(2) }, [0.249999, 0, 0, 0])).toStrictEqual([
         { item: 'flint', count: 1 },
       ])
-      expect(blockLoot(GRAVEL, { fortuneLevel: 2 }, [0.25])).toStrictEqual([
+      expect(blockLoot(GRAVEL, { fortuneLevel: EnchantmentLevel(2) }, [0.25, 0, 0, 0])).toStrictEqual([
         { item: 'gravel', count: 1 },
       ])
-      expect(blockLoot(GRAVEL, { fortuneLevel: 3 }, [0.999999])).toStrictEqual([
+      expect(blockLoot(GRAVEL, { fortuneLevel: EnchantmentLevel(3) }, [0.999999, 0, 0, 0])).toStrictEqual([
         { item: 'flint', count: 1 },
       ])
-      expect(blockLoot(GRAVEL, { fortuneLevel: 3, silkTouch: true }, [0])).toStrictEqual([
+      expect(blockLoot(GRAVEL, { fortuneLevel: EnchantmentLevel(3), silkTouch: true }, [0, 0, 0, 0])).toStrictEqual([
         { item: 'gravel', count: 1 },
       ])
     }),
   )
 
-  it.effect('a non-finite fortuneLevel is treated as 0 rather than propagating NaN', () =>
+  it.effect('uses decoded Fortune levels for block loot', () =>
     Effect.sync(() => {
-      // Gravel's flint replacement and oak leaves' apple chance both use this
-      // clamp. A non-finite level follows Fortune 0 at each exact boundary.
-      expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.099999])).toStrictEqual([
+      const component = Result.getOrThrow(enchantmentComponentOf({
+        item: 'diamond_pickaxe',
+        durability: null,
+        enchantments: [{ id: 'fortune', level: 3 }],
+      }))
+      const fortuneLevel = enchantmentLevel(component, 'fortune')
+      expect(resolveBlockLoot(GRAVEL, { fortuneLevel }, [0.99, 0, 0, 0]))
+        .toEqual(Result.succeed([{ item: 'flint', count: 1 }]))
+      expect(resolveBlockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, 1 / 120 - Number.EPSILON]))
+        .toEqual(Result.succeed([{ item: 'apple', count: 1 }]))
+    }),
+  )
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0.5, 256])(
+    'rejects raw Fortune level %s before resolving block loot',
+    (level) => {
+      const loot = Result.gen(function* () {
+        const component = yield* enchantmentComponentOf({
+          item: 'diamond_pickaxe',
+          durability: null,
+          enchantments: [{ id: 'fortune', level }],
+        })
+        return yield* resolveBlockLoot(GRAVEL, {
+          fortuneLevel: enchantmentLevel(component, 'fortune'),
+        }, [0.99, 0, 0, 0])
+      })
+      expect(Result.isFailure(loot)).toBe(true)
+    },
+  )
+
+  it.effect('uses Fortune 0 only when the context omits a level', () =>
+    Effect.sync(() => {
+      expect(blockLoot(GRAVEL, {}, [0.099999, 0, 0, 0])).toStrictEqual([
         { item: 'flint', count: 1 },
       ])
-      expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.1])).toStrictEqual([
+      expect(blockLoot(GRAVEL, {}, [0.1, 0, 0, 0])).toStrictEqual([
         { item: 'gravel', count: 1 },
       ])
-      expect(blockLoot(OAK_LEAVES, { fortuneLevel: Number.NaN }, [0.5, 0.5, 0.5, 1 / 200 - Number.EPSILON]))
+      expect(blockLoot(OAK_LEAVES, {}, [0.5, 0.5, 0.5, 1 / 200 - Number.EPSILON]))
         .toStrictEqual([{ item: 'apple', count: 1 }])
-      expect(blockLoot(OAK_LEAVES, { fortuneLevel: Number.NaN }, [0.5, 0.5, 0.5, 1 / 200]))
+      expect(blockLoot(OAK_LEAVES, {}, [0.5, 0.5, 0.5, 1 / 200]))
         .toStrictEqual([])
     }),
   )
@@ -557,9 +586,9 @@ describe('blockLoot — fortune', () => {
     Effect.sync(() => {
       // count: 2, not 1 — see the note on 'silk touch substitutes the
       // harvested block for its normal drop' above. What this test still
-      // proves: fortuneLevel: 3 added nothing beyond the row's own base
+      // proves: Fortune III added nothing beyond the row's own base
       // count, because `fortuneApplies` refuses whenever `silkTouch` is true.
-      expect(blockLoot(GLOWSTONE, { fortuneLevel: 3, silkTouch: true }, [0.4])).toStrictEqual([
+      expect(blockLoot(GLOWSTONE, { fortuneLevel: EnchantmentLevel(3), silkTouch: true }, [0.4, 0, 0, 0])).toStrictEqual([
         { item: 'glowstone', count: 2 },
       ])
     }),
@@ -697,9 +726,9 @@ describe('blockLoot — bonus lines', () => {
       expect(BLOCK_TYPES).not.toContain('dark_oak_leaves')
 
       wikiRates.forEach((chance, fortuneLevel) => {
-        expect(blockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, chance - Number.EPSILON]))
+        expect(blockLoot(OAK_LEAVES, { fortuneLevel: EnchantmentLevel(fortuneLevel) }, [0.5, 0.5, 0.5, chance - Number.EPSILON]))
           .toStrictEqual([{ item: 'apple', count: 1 }])
-        expect(blockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, chance]))
+        expect(blockLoot(OAK_LEAVES, { fortuneLevel: EnchantmentLevel(fortuneLevel) }, [0.5, 0.5, 0.5, chance]))
           .toStrictEqual([])
       })
     }),
@@ -710,14 +739,14 @@ describe('blockLoot — bonus lines', () => {
       expect(ITEM_TYPES).toContain('wheat_seeds')
       expect(UNITEMISED_BLOCK_TYPES).not.toContain('tall_grass')
       expect(UNITEMISED_BLOCK_TYPES).not.toContain('fern')
-      expect(blockLoot(TALL_GRASS, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE - Number.EPSILON])).toStrictEqual([
+      expect(blockLoot(TALL_GRASS, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE - Number.EPSILON, 0, 0])).toStrictEqual([
         { item: 'wheat_seeds', count: 1 },
       ])
-      expect(blockLoot(FERN, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE - Number.EPSILON])).toStrictEqual([
+      expect(blockLoot(FERN, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE - Number.EPSILON, 0, 0])).toStrictEqual([
         { item: 'wheat_seeds', count: 1 },
       ])
-      expect(blockLoot(TALL_GRASS, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE])).toStrictEqual([])
-      expect(blockLoot(FERN, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE])).toStrictEqual([])
+      expect(blockLoot(TALL_GRASS, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE, 0, 0])).toStrictEqual([])
+      expect(blockLoot(FERN, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE, 0, 0])).toStrictEqual([])
     }),
   )
 
@@ -741,31 +770,26 @@ describe('blockLoot — the roll budget', () => {
     }),
   )
 
-  // A short array reads as zeros, which PASS a chance gate. The rule's header
-  // argues that direction deliberately: the only caller draws its budget, so an
-  // all-zeros array means a test wrote one on purpose.
-  it.effect('a missing roll reads as zero, which is the luckiest answer', () =>
+  it.effect('rejects a short roll budget without awarding chance-gated drops', () =>
     Effect.sync(() => {
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [])).toStrictEqual([
-        { item: 'stick', count: 1 },
-        { item: 'sapling', count: 1 },
-        { item: 'apple', count: 1 },
-      ])
+      for (const rolls of [[], [0], [0, 0], [0, 0, 0]]) {
+        expect(resolveBlockLoot(OAK_LEAVES, NO_TOOL, rolls)).toEqual(
+          Result.fail({ _tag: 'InvalidBlockLootRoll', index: rolls.length }),
+        )
+      }
     }),
   )
 
-  // A count that is not a number must never reach an inventory. This is the
-  // preview's finding F5 asked of a second arithmetic path.
-  it.effect('REGRESSION: a NaN roll cannot produce a stack whose size is not a number', () =>
+  it.effect('rejects invalid rolls in every budget slot', () =>
     Effect.sync(() => {
-      const drops: ReadonlyArray<MinedItem> = blockLoot(
-        GLOWSTONE,
-        { fortuneLevel: 3 },
-        [Number.NaN, Number.NaN, Number.NaN, Number.NaN],
-      )
-      for (const drop of drops) {
-        expect(Number.isInteger(drop.count)).toBe(true)
-        expect(drop.count).toBeGreaterThan(0)
+      for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.1, 1]) {
+        for (let index = 0; index < BLOCK_LOOT_ROLLS; index += 1) {
+          const rolls = [0, 0, 0, 0]
+          rolls[index] = invalid
+          expect(resolveBlockLoot(GLOWSTONE, { fortuneLevel: EnchantmentLevel(3) }, rolls)).toEqual(
+            Result.fail({ _tag: 'InvalidBlockLootRoll', index }),
+          )
+        }
       }
     }),
   )

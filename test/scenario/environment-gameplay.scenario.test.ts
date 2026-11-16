@@ -87,7 +87,6 @@ const environmentSlice = (
       player.api,
       time,
       undefined,
-      undefined,
       {},
       commit,
     )

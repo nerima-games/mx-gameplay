@@ -35,7 +35,7 @@ const at = (x: number, y: number) => blockPosition(BlockAxis(x), BlockAxis(y), B
 const dirtDropFromLootRules = () => {
   const loot = blockLoot(DIRT)
   if (Result.isFailure(loot)) {
-    throw new Error(`browser-debug: block loot registry lookup failed (${loot.failure.lookup})`)
+    throw new Error(`browser-debug: block loot resolution failed (${loot.failure._tag})`)
   }
   const drop = loot.success.find(({ item }) => item === 'dirt')
   if (drop === undefined) throw new Error('browser-debug: dirt loot rule does not yield dirt')

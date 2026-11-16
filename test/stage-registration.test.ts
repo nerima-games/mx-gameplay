@@ -419,7 +419,7 @@ const builtStages = Effect.gen(function* () {
     player,
     time,
     commit,
-    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, {}, commit),
   }
 })
 
@@ -559,7 +559,7 @@ const builtStagesInWorld = (
       failSnapshotOwnerId,
       failObserveOwnerId,
       publishedEvents,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, stageCommit),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, {}, stageCommit),
     }
   })
 
@@ -730,7 +730,7 @@ describe('fire lifecycle stage integration', () => {
         ...store.api,
         getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
       }
-      const stages = gameplayStages(state, brokenStore, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+      const stages = gameplayStages(state, brokenStore, roster.api, inventory.api, player.api, time, undefined, {}, commit)
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
 
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
@@ -2364,7 +2364,6 @@ describe('stage behaviour', () => {
         player.api,
         time,
         undefined,
-        undefined,
         { mobSimulation: false },
       )
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
@@ -2405,7 +2404,6 @@ describe('stage behaviour', () => {
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         { droppedItemPickup: false },
       )
@@ -2957,7 +2955,6 @@ describe('the module contract has caught up with this file’s shape', () => {
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -3423,7 +3420,6 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         harness.commit,
       )
@@ -3500,7 +3496,6 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         { ...commit, coordinator: blockedCoordinator },
       )
@@ -3551,7 +3546,6 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         { ...commit, coordinator: blockedCoordinator },
@@ -3615,7 +3609,6 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         { ...commit, coordinator: blockedCoordinator },
       )
@@ -3668,7 +3661,6 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         { ...commit, coordinator: rejectingCoordinator },
       )
@@ -3705,7 +3697,6 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         { ...commit, coordinator: blockedCoordinator },
@@ -4237,7 +4228,6 @@ describe('the targeted-block family resolves through the same raycast as placeme
         unsupportedRead.player.api,
         unsupportedRead.time,
         undefined,
-        undefined,
         {},
         unsupportedRead.commit,
         {
@@ -4756,7 +4746,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -4964,7 +4953,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         commit,
       ).find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
@@ -5029,7 +5017,6 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         racyCommit,
@@ -5423,7 +5410,6 @@ describe('villager trades commit gameplay owners atomically', () => {
         player.api,
         time,
         undefined,
-        undefined,
         {},
         { ...commit, coordinator: racingCoordinator },
       )
@@ -5629,7 +5615,6 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
               harness.player.api,
               harness.time,
               undefined,
-              undefined,
               {},
               commit,
             )
@@ -5733,7 +5718,6 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         commit,
@@ -6194,7 +6178,6 @@ describe('EnderPearl uses the public enqueue route and commits registered owners
           harness.player.api,
           harness.time,
           undefined,
-          undefined,
           {},
           commit,
         )
@@ -6515,7 +6498,6 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
         player.api,
         time,
         undefined,
-        undefined,
         {},
         { ...commit, coordinator: blockedCoordinator },
       )
@@ -6741,7 +6723,6 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         { ...harness.commit, coordinator },
       )
@@ -6802,7 +6783,6 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -6843,7 +6823,6 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         harness.commit,
@@ -6886,7 +6865,6 @@ describe('portal rechecks cancel travel after the player moves or the chunk unlo
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         harness.commit,
       )
@@ -6926,7 +6904,6 @@ describe('block placement commit rejection preserves the registered owner and wo
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         harness.commit,
@@ -7011,7 +6988,6 @@ describe('block placement commit rejection preserves the registered owner and wo
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         { ...harness.commit, coordinator: racingCoordinator },
@@ -7132,7 +7108,7 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
         inventory.api,
         player.api,
         time,
-        vehicleService,
+        { service: vehicleService, environment: { isPoweredRailAt: () => false } },
       )
       const vehicles = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.vehicles)!
 
@@ -7164,7 +7140,7 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
         inventory.api,
         player.api,
         time,
-        vehicleService,
+        { service: vehicleService, environment: { isPoweredRailAt: () => false } },
       )
       const vehicles = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.vehicles)!
 
@@ -7377,7 +7353,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         { ...commit, coordinator: capturingCoordinator },
@@ -7763,7 +7738,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -8022,7 +7996,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -8101,7 +8074,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -8171,7 +8143,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         commit,
@@ -8386,7 +8357,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         { ...harness.commit, coordinator: racingCoordinator },
       )
@@ -8571,7 +8541,6 @@ describe('farming and food item uses through the full interactions stage', () =>
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         commit,
@@ -9097,7 +9066,6 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         commit,

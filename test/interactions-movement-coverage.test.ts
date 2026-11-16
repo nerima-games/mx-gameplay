@@ -86,7 +86,6 @@ const makeHarness = (
     player.api,
     time,
     undefined,
-    undefined,
     {},
     commit,
   ).find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)

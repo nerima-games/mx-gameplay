@@ -28,6 +28,7 @@ import {
   blockPosition,
   blockPositionKeyOf,
   DeltaTimeSecs,
+  EnchantmentLevel,
   HARVEST_TIERS,
   MAX_STACK_COUNT,
   type BlockPositionKey,
@@ -1174,15 +1175,15 @@ const lootTable = Effect.sync(() => {
       (loot) => loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' ') || '-',
     )
   const glowstoneBare = yield* glowstone({})
-  const glowstoneFortuneI = yield* glowstone({ fortuneLevel: 1 })
-  const glowstoneFortuneIII = yield* glowstone({ fortuneLevel: 3 })
-  const glowstoneFortuneSilk = yield* glowstone({ fortuneLevel: 3, silkTouch: true })
+  const glowstoneFortuneI = yield* glowstone({ fortuneLevel: EnchantmentLevel(1) })
+  const glowstoneFortuneIII = yield* glowstone({ fortuneLevel: EnchantmentLevel(3) })
+  const glowstoneFortuneSilk = yield* glowstone({ fortuneLevel: EnchantmentLevel(3), silkTouch: true })
   lines.push(`  glowstone, bare hands            ${glowstoneBare}`)
   lines.push(`  glowstone, fortune I             ${glowstoneFortuneI}`)
   lines.push(`  glowstone, fortune III           ${glowstoneFortuneIII}`)
   lines.push(`  glowstone, fortune III + silk    ${glowstoneFortuneSilk}`)
-  const glassBareHands = yield* blockLoot(BlockId(13), {}, [])
-  const glassSilkTouch = yield* blockLoot(BlockId(13), { silkTouch: true }, [])
+  const glassBareHands = yield* blockLoot(BlockId(13), {})
+  const glassSilkTouch = yield* blockLoot(BlockId(13), { silkTouch: true })
   const luckyLeaves = yield* blockLoot(BlockId(10), {}, [0, 0, 0, 0])
   lines.push(`  glass,     bare hands            ${glassBareHands.length === 0 ? '-' : 'glass'}`)
   lines.push(`  glass,     silk touch            ${glassSilkTouch.map((drop) => drop.item).join(' ')}`)
@@ -1202,12 +1203,11 @@ const lootTable = Effect.sync(() => {
   return Result.isFailure(evaluated)
     ? {
         id: 'F-loot-registry',
-        title: 'block loot registry lookup failed',
+        title: 'block loot resolution failed',
         finding: true,
         lines: [
-          '  A typed kernel registry failure interrupted the loot table report.',
-          `  block=${String(evaluated.failure.block)} lookup=${evaluated.failure.lookup} ` +
-            `failure=${evaluated.failure.failure._tag}`,
+          '  A typed loot failure interrupted the loot table report.',
+          `  ${JSON.stringify(evaluated.failure)}`,
         ],
       }
     : evaluated.success

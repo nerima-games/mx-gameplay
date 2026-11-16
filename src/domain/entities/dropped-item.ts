@@ -299,7 +299,9 @@ type DroppedItemEnchantmentEncoded = Readonly<{ id: Enchantment['id']; level: nu
 const DroppedItemEnchantmentSchema: Schema.Codec<Enchantment, DroppedItemEnchantmentEncoded> = strictCodec(
   Schema.Struct({
     id: Schema.Literals(ENCHANTMENT_IDS),
-    level: Schema.Int,
+    level: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 255 })).pipe(
+      Schema.brand('EnchantmentLevel'),
+    ),
   }),
 )
 

@@ -261,10 +261,7 @@ export type SpawnCandidate = {
  * only the second is findable. `apps/preview-mining-site`'s arena screen prints
  * this word.
  *
- * `unmeasurable` is the refusal for an absent measurement, such as having no
- * player distance to compare. A present but malformed numeric reading is a
- * typed input failure; `NaN > 7` must not make invalid light look like pitch
- * dark and spawn a mob in daylight.
+ * Missing or malformed measurements are typed input failures.
  */
 export type SpawnRefusal =
   | 'daylight'
@@ -273,7 +270,6 @@ export type SpawnRefusal =
   | 'not-a-surface'
   | 'obstructed'
   | 'too-bright'
-  | 'unmeasurable'
   | 'wrong-dimension'
   | 'wrong-biome'
 
@@ -290,10 +286,9 @@ const REFUSED = (reason: SpawnRefusal): SpawnVerdict => ({ _tag: 'Refused', reas
 const isLightLevel = (value: number): boolean => Number.isInteger(value) && value >= 0 && value <= 15
 const invalidMeasurement = (
   candidate: SpawnCandidate,
-): SpawnVerdict | HostileSpawnInputFailure | undefined => {
+): HostileSpawnInputFailure | undefined => {
   const fields = ['distanceToPlayerBlocksXZ', 'blockLight', 'skyLight'] as const
   for (const field of fields) {
-    if (!Object.hasOwn(candidate, field)) return REFUSED('unmeasurable')
     const value = candidate[field]
     const valid = field === 'distanceToPlayerBlocksXZ'
       ? Number.isFinite(value) && value >= 0

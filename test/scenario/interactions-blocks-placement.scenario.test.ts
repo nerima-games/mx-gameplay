@@ -49,7 +49,6 @@ const placementSlice = () =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         commit,
       ),

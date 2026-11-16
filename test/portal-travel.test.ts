@@ -275,7 +275,7 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
     return {
       commit,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, undefined, {}, commit),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, {}, commit),
     }
   })
 
@@ -347,7 +347,7 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       })
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, undefined, {}, commit)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, {}, commit)
       const before = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
 
       yield* runFrames(stages, 600, DeltaTimeSecs(0.016))
@@ -370,7 +370,7 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       })
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, undefined, {}, commit)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, {}, commit)
 
       yield* runFrames(stages, 300, DeltaTimeSecs(0.016))
 

@@ -71,8 +71,7 @@ const makeScenarioRig = (
     inventory.api,
     undefined,
     time,
-    vehicles,
-    vehicleEnvironment,
+    { service: vehicles, environment: vehicleEnvironment },
     {},
     commit,
   )
@@ -95,7 +94,7 @@ describe('vehicle scenarios through gameplayStages', () => {
       for (let z = -5; z <= 0; z += 1) track.push([blockPosition(0, 64, z), RAIL])
       for (let x = 0; x <= 8; x += 1) track.push([blockPosition(x, 64, 0), RAIL])
 
-      const rig = yield* makeScenarioRig(worldWith(track), {})
+      const rig = yield* makeScenarioRig(worldWith(track), { isPoweredRailAt: () => false })
       const cart = yield* rig.vehicles.spawn('minecart', 'overworld', position(0.5, 64, -5), AngleRadians(0))
       const rider = OccupantId('scenario:minecart-rider')
       yield* rig.vehicles.mount(cart.id, rider)
@@ -131,7 +130,7 @@ describe('vehicle scenarios through gameplayStages', () => {
       for (let z = 1; z <= 5; z += 1) slope.push([blockPosition(0, 64, z), RAIL])
       const trackCells = new Set(slope.map(([cell]) => cellKey(cell)))
 
-      const rig = yield* makeScenarioRig(worldWith(slope), {})
+      const rig = yield* makeScenarioRig(worldWith(slope), { isPoweredRailAt: () => false })
       const cart = yield* rig.vehicles.spawn('minecart', 'overworld', position(0.5, 64, -3), AngleRadians(0))
       yield* rig.vehicles.updateVelocity(cart.id, vehicleVelocity(0, 0, 2))
 
@@ -195,6 +194,7 @@ describe('vehicle scenarios through gameplayStages', () => {
       }
 
       const rig = yield* makeScenarioRig(worldWith(water), {
+        isPoweredRailAt: () => false,
         controlsForVehicle: () => ({ throttle: 1, steering: 1 }),
       })
       const boat = yield* rig.vehicles.spawn('boat', 'overworld', position(0.5, 64, 0.5), AngleRadians(0))

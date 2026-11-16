@@ -1061,7 +1061,7 @@ const scene = (
       inventory,
       player,
       commit,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, {}, commit),
     }
   })
 

@@ -147,8 +147,7 @@ const replay = (seed: number, frames = REPLAY_FRAMES, reorder = false) =>
       inventory.api,
       player.api,
       time,
-      vehicles,
-      undefined,
+      { service: vehicles, environment: { isPoweredRailAt: () => false } },
       {},
       commit,
     )

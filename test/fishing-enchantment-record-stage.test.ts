@@ -203,7 +203,6 @@ const scene = (options: SceneOptions) =>
         player.api,
         time,
         undefined,
-        undefined,
         {},
         stageCommit,
       )

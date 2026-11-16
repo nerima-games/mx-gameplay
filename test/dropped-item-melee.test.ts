@@ -14,7 +14,7 @@ import {
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Result, Schema } from 'effect'
-import { AttackRangeDistance, DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel, AttackRangeDistance, DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, WorldRevisionConflict } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
@@ -135,7 +135,7 @@ describe('dropped item entities', () => {
         durability: durabilityForItem('wooden_pickaxe'),
         eligibleFromFrame: 10,
         customName: 'Field pickaxe',
-        enchantments: [{ id: 'unbreaking', level: 1 }],
+        enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
       },
     ], expectedRevision)
     expect(Result.isSuccess(outcome)).toBe(true)
@@ -158,7 +158,7 @@ describe('dropped item entities', () => {
       durability: durabilityForItem('wooden_pickaxe'),
       eligibleFromFrame: 10,
       customName: 'Field pickaxe',
-      enchantments: [{ id: 'unbreaking', level: 1 }],
+      enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
     })
   })
 
@@ -1077,6 +1077,25 @@ describe('dropped item entities', () => {
       ),
       { numRuns: 50, seed: 70303 },
     )
+  })
+
+  it.each([-1, 256])('rejects dropped-item enchantment level %s in the public owner codec', (level) => {
+    const item = committedDroppedItem(1)
+    const validBehaviour = {
+      ...item.behaviour,
+      item: 'bow',
+      durability: durabilityForItem('bow'),
+      enchantments: [{ id: 'power', level: 1 }],
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+      items: [{ ...item, behaviour: validBehaviour }],
+    }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+      items: [{
+        ...item,
+        behaviour: { ...validBehaviour, enchantments: [{ id: 'power', level }] },
+      }],
+    }))).toBe(true)
   })
 
   it('strictly validates the replicated dropped-item owner with its public schema', () => {

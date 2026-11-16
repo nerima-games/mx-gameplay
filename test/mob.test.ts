@@ -597,7 +597,7 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
     }),
   )
 
-  it.effect('a malformed measurement is typed, while a missing measurement stays unmeasurable', () =>
+  it.effect('malformed and missing measurements are typed input failures', () =>
     Effect.sync(() => {
       expect(canHostileSpawnAt(candidate({ blockLight: Number.NaN }))).toStrictEqual({
         _tag: 'InvalidSpawnCandidate',
@@ -614,8 +614,8 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
       const { distanceToPlayerBlocksXZ: presentDistance, ...absentDistance } = candidate()
       expect(presentDistance).toBe(30)
       expect(canHostileSpawnAt(absentDistance as SpawnCandidate)).toStrictEqual({
-        _tag: 'Refused',
-        reason: 'unmeasurable',
+        _tag: 'InvalidSpawnCandidate',
+        field: 'distanceToPlayerBlocksXZ',
       })
       for (const field of ['distanceToPlayerBlocksXZ', 'blockLight', 'skyLight'] as const) {
         const malformed = { ...candidate(), [field]: undefined } as unknown as SpawnCandidate

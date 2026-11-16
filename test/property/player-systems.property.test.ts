@@ -1,7 +1,7 @@
 import { describe, it } from '@effect/vitest'
 import { Result } from 'effect'
 import * as FastCheck from 'fast-check'
-import { DeltaTimeSecs, type ItemType } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel, DeltaTimeSecs, type ItemType } from '@nerima-games/mc-kernel'
 import { durabilityForItem } from '@nerima-games/mc-sim'
 import {
   BREWING_DURATION_SECS,
@@ -73,7 +73,7 @@ const ironPickaxeWith = (
 ): EnchantedItem => ({
   item: 'iron_pickaxe',
   durability: durabilityForItem('iron_pickaxe'),
-  enchantments: [{ id, level }],
+  enchantments: [{ id, level: EnchantmentLevel(level) }],
 })
 
 describe('player systems properties', () => {

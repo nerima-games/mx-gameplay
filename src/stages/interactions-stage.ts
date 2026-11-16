@@ -180,10 +180,9 @@ import {
   applyStatusEffectToValidatedState,
   persistentStatusEffectApplicationFromValidatedFields,
   statusEffectModifiers,
-  StatusEffectStateSchema,
   ValidatedStatusEffectStateSchema,
   type AttackDamageBonus,
-  type StatusEffectState,
+  type ValidatedStatusEffectState,
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
 import {
@@ -294,7 +293,7 @@ const invalidBlockLootContextReason = (
   if (prototype !== Object.prototype && prototype !== null) return 'InvalidBlockLootContext'
   if (Object.hasOwn(context, 'fortuneLevel')) {
     const fortuneLevel = (context as Record<string, unknown>)['fortuneLevel']
-    if (typeof fortuneLevel !== 'number' || !Number.isSafeInteger(fortuneLevel) || fortuneLevel < 0) {
+    if (typeof fortuneLevel !== 'number' || Result.isFailure(EnchantmentLevel.result(fortuneLevel))) {
       return 'InvalidBlockLootFortuneLevel'
     }
   }
@@ -910,10 +909,16 @@ const processBowShot = (
       yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'InvalidBowChargeSecs')
       return
     }
-    if (Object.hasOwn(request, 'powerLevel') &&
-      (typeof request.powerLevel !== 'number' || !Number.isSafeInteger(request.powerLevel) || request.powerLevel < 0)) {
-      yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'InvalidBowPowerLevel')
-      return
+    let powerLevel: EnchantmentLevelValue | undefined
+    if (Object.hasOwn(request, 'powerLevel')) {
+      const decoded = Schema.decodeUnknownResult(
+        Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 255 })).pipe(Schema.brand('EnchantmentLevel')),
+      )(request.powerLevel)
+      if (Result.isFailure(decoded)) {
+        yield* recordGameplayRequestFault(state, 'ItemUse', request.requestId, 'InvalidBowPowerLevel')
+        return
+      }
+      powerLevel = decoded.success
     }
     const result = (outcome: 'Fired' | 'Undercharged' | 'DuplicateRequest' | 'PlayerDead' | 'InventoryUnavailable') => {
       if (request.requestId === undefined) return Effect.void
@@ -1083,9 +1088,9 @@ const processBowShot = (
         return
       }
       if (!blocked) {
-        const damageEnchantments: EnchantmentSource = request.powerLevel === undefined
+        const damageEnchantments: EnchantmentSource = powerLevel === undefined
           ? bowEnchantments
-          : [{ id: 'power', level: request.powerLevel }]
+          : [{ id: 'power', level: powerLevel }]
         // The request decoder bounds charge and enchantment levels before this finite calculation.
         const amount = DamageAmount(bowDamageWithEnchantments(
           bowDamage(bowCharge(request.chargeSecs)),
@@ -2120,7 +2125,7 @@ const processBrewingItemUse = (
       }
       const drinkPlan = planned.success
       const plans: Array<WorldCommitPlanFragment<unknown>> = [drinkPlan]
-      let statusCandidate: Schema.Schema.Type<typeof StatusEffectStateSchema> | undefined
+      let statusCandidate: Schema.Schema.Type<typeof ValidatedStatusEffectStateSchema> | undefined
       if (drinkPlan.result._tag === 'Consumed') {
         if (context.statusEffectsOwnerId === undefined) {
           yield* recordGameplayUnsupportedOperation(state, {
@@ -4787,7 +4792,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 let statusEffectCandidate: ReplicatedOwnerCandidate | undefined
-                let nextStatusEffectState: StatusEffectState | undefined
+                let nextStatusEffectState: ValidatedStatusEffectState | undefined
                 if (outcome.effects.length > 0) {
                   const statusEffectsOwnerId = commit.statusEffectsOwnerId
                   if (statusEffectsOwnerId === undefined) {

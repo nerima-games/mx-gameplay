@@ -111,7 +111,6 @@ describe('mob entity gameplay scenarios', () => {
         world.player,
         world.time,
         undefined,
-        undefined,
         {},
         commit,
       )

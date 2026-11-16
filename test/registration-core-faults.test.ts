@@ -78,7 +78,6 @@ const stageFor = (harness: Harness, id: string, store: ChunkStoreApi = harness.s
     harness.player.api,
     harness.time,
     undefined,
-    undefined,
     {},
     harness.commit,
   ).find((candidate) => candidate.id === id)

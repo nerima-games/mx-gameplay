@@ -214,6 +214,7 @@ import {
   SPEED_MOVEMENT_MULTIPLIER,
   applyStatusEffectToValidatedState,
   statusEffectModifiers,
+  emptyStatusEffectState,
   validateStatusEffectApplication,
   StatusEffectStateSchema,
   ValidatedStatusEffectStateSchema,
@@ -2644,7 +2645,7 @@ const makeGameplayFrameStateWithOptions = (
   const damageImmunity = yield* Ref.make<DamageImmunityState | null>(null)
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
-  const playerStatusEffectModifiers = yield* Ref.make(statusEffectModifiers({ effects: [] }))
+  const playerStatusEffectModifiers = yield* Ref.make(statusEffectModifiers(emptyStatusEffectState()))
   const fireLifecycle = yield* Ref.make<FireLifecycleState>({ fires: [], seed: DEFAULT_ROLL_SEED })
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
@@ -3034,7 +3035,7 @@ const invalidBlockLootContextReason = (
   if (prototype !== Object.prototype && prototype !== null) return 'InvalidBlockLootContext'
   if (Object.hasOwn(context, 'fortuneLevel')) {
     const fortuneLevel = (context as Record<string, unknown>)['fortuneLevel']
-    if (typeof fortuneLevel !== 'number' || !Number.isSafeInteger(fortuneLevel) || fortuneLevel < 0) {
+    if (typeof fortuneLevel !== 'number' || Result.isFailure(EnchantmentLevel.result(fortuneLevel))) {
       return 'InvalidBlockLootFortuneLevel'
     }
   }
@@ -3554,7 +3555,7 @@ const invalidBowShotInputReason = (
     return 'InvalidBowChargeSecs'
   }
   if (Object.hasOwn(request, 'powerLevel') &&
-    (typeof request.powerLevel !== 'number' || !Number.isSafeInteger(request.powerLevel) || request.powerLevel < 0)) {
+    (typeof request.powerLevel !== 'number' || Result.isFailure(EnchantmentLevel.result(request.powerLevel)))) {
     return 'InvalidBowPowerLevel'
   }
   return undefined
@@ -3756,7 +3757,7 @@ export const getPlayerStatusEffectModifiers = (
 export const applyStatusEffectInstantEffects = (
   vitals: Vitals,
   effects: ReadonlyArray<StatusEffectInstantEffect>,
-  damageMultiplier: DamageTakenMultiplier = statusEffectModifiers({ effects: [] }).damageTakenMultiplier,
+  damageMultiplier: DamageTakenMultiplier = statusEffectModifiers(emptyStatusEffectState()).damageTakenMultiplier,
 ): Result.Result<Vitals, never> => {
   // Bounded amplifiers keep these quantities finite. The damage multiplier is
   // in [0, 1] and reaches 0 at Resistance V, which absorbs Instant Damage
@@ -3803,7 +3804,7 @@ export const restoreStatusEffects = (
 ): Effect.Effect<void, WorldCommitCoordinatorError | Schema.SchemaError> =>
   Effect.gen(function* () {
     const ownerId = commit.statusEffectsOwnerId ?? GAMEPLAY_STATUS_EFFECTS_OWNER_ID
-    const decoded = yield* Effect.fromResult(Schema.decodeUnknownResult(StatusEffectStateSchema)(snapshot))
+    const decoded = yield* Effect.fromResult(Schema.decodeUnknownResult(ValidatedStatusEffectStateSchema)(snapshot))
     const observed = yield* commit.coordinator.observe(ownerId, StatusEffectStateSchema, [])
     yield* commit.coordinator.commit({
       expectedRevision: observed.revision,
@@ -3903,7 +3904,7 @@ const stepStatusEffects = (
     const current = observed.success.state
     if (applications.length === 0 && current.effects.length === 0) {
       yield* Ref.set(state.playerMovementSpeedMultiplier, 1)
-      yield* Ref.set(state.playerStatusEffectModifiers, statusEffectModifiers({ effects: [] }))
+      yield* Ref.set(state.playerStatusEffectModifiers, statusEffectModifiers(emptyStatusEffectState()))
       return
     }
     let applied = current
@@ -5095,8 +5096,10 @@ export interface GameplayStageContext {
   readonly store: ChunkStoreApi
   readonly roster: EntityManagerApi<MobBehaviour>
   readonly time: TimeServiceApi
-  readonly vehicleService: VehicleServiceApi | undefined
-  readonly vehicleEnvironment: VehicleFrameEnvironment | undefined
+  readonly vehicles: Readonly<{
+    service: VehicleServiceApi
+    environment: VehicleFrameEnvironment
+  }> | undefined
   readonly options: GameplayStageOptions
   readonly commit: GameplayStageCommitServices | undefined
   readonly blockStateWorld: GameplayBlockStateWorldApi | undefined

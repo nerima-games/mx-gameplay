@@ -124,7 +124,6 @@ const makeHarness = (
     player.api,
     time,
     undefined,
-    undefined,
     {},
     commit,
   ).find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
@@ -133,7 +132,7 @@ const makeHarness = (
 })
 
 type Harness = Effect.Success<ReturnType<typeof makeHarness>>
-type GameplayStageCommitServices = NonNullable<Parameters<typeof gameplayStages>[9]>
+type GameplayStageCommitServices = NonNullable<Parameters<typeof gameplayStages>[8]>
 
 const interactionsWithCommit = (
   harness: Harness,
@@ -146,7 +145,6 @@ const interactionsWithCommit = (
     harness.inventory.api,
     harness.player.api,
     harness.time,
-    undefined,
     undefined,
     {},
     commit,
@@ -165,7 +163,6 @@ const fireStageWithCommit = (
   harness.inventory.api,
   harness.player.api,
   harness.time,
-  undefined,
   undefined,
   {},
   commit,
@@ -971,7 +968,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         undefined,
       )
@@ -999,7 +995,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         registered.inventory.api,
         registered.player.api,
         registered.time,
-        undefined,
         undefined,
         {},
         mismatched,
@@ -1029,7 +1024,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         undefined,
@@ -1062,7 +1056,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         harness.commit,
@@ -1162,7 +1155,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         withoutEntitiesOwner,
       ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.fire)
@@ -1206,7 +1198,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         harness.inventory.api,
         harness.player.api,
         harness.time,
-        undefined,
         undefined,
         {},
         withUnknownEntitiesOwner,
@@ -1252,7 +1243,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         harness.player.api,
         harness.time,
         undefined,
-        undefined,
         {},
         withMismatchedEntitiesOwner,
       ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.fire)
@@ -1297,7 +1287,6 @@ describe('registration-core public paths omitted from focused coverage', () => {
         inventory.api,
         player.api,
         time,
-        undefined,
         undefined,
         {},
         commit,

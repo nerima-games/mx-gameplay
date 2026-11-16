@@ -19,8 +19,6 @@ import type {
   MobBehaviour,
   PlayerServiceApi,
   TimeServiceApi,
-  VehicleFrameEnvironment,
-  VehicleServiceApi,
   ChunkStoreApi,
 } from './registration-core.js'
 
@@ -31,8 +29,7 @@ export const gameplayStages = (
   _inventory: InventoryServiceApi | undefined,
   _player: PlayerServiceApi | undefined,
   time: TimeServiceApi,
-  vehicleService?: VehicleServiceApi,
-  vehicleEnvironment?: VehicleFrameEnvironment,
+  vehicles?: GameplayStageContext['vehicles'],
   options: GameplayStageOptions = {},
   commit?: GameplayStageCommitServices,
   blockStateWorld?: GameplayBlockStateWorldApi,
@@ -42,8 +39,7 @@ export const gameplayStages = (
     store,
     roster,
     time,
-    vehicleService,
-    vehicleEnvironment,
+    vehicles,
     options,
     commit,
     blockStateWorld,

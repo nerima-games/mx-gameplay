@@ -138,7 +138,6 @@ const makeHarness = (
       player.api,
       time,
       undefined,
-      undefined,
       {},
       gameplayCommit,
     )

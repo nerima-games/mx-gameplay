@@ -183,12 +183,13 @@ export const advanceSleep = (
   connectedSurvivalPlayers: number,
   requiredRatio: number,
   delaySecs: number,
-): Result.Result<SleepAdvance, 'invalid-sleep-ratio'> => {
+): Result.Result<SleepAdvance, 'invalid-sleep-ratio' | 'invalid-sleep-delta'> => {
+  if (!Number.isFinite(deltaSecs) || deltaSecs < 0) return Result.fail('invalid-sleep-delta')
   const required = requiredSleeperCount(connectedSurvivalPlayers, requiredRatio)
   if (Result.isFailure(required)) return Result.fail(required.failure)
   const sleepers = state.sleepers.map((sleeper) => ({
     ...sleeper,
-    elapsedSecs: sleeper.elapsedSecs + Math.max(0, deltaSecs),
+    elapsedSecs: sleeper.elapsedSecs + deltaSecs,
   }))
   const enoughPlayers = sleepers.length >= required.success
   const waitedLongEnough = sleepers.some((sleeper) => sleeper.elapsedSecs >= delaySecs)

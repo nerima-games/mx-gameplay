@@ -9,6 +9,7 @@ import {
   BlockId,
   DimensionIdSchema,
   type Dimension,
+  EnchantmentLevel,
   EntityHealthPoints,
   EntitySerial,
   PositionAxis,
@@ -451,7 +452,6 @@ const makeHarness = (options: Readonly<{
       undefined,
       time,
       undefined,
-      undefined,
       {},
       { ...commit, coordinator: selectedCoordinator },
     ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)!
@@ -462,7 +462,6 @@ const makeHarness = (options: Readonly<{
     undefined,
     undefined,
     time,
-    undefined,
     undefined,
     {},
     undefined,
@@ -475,7 +474,6 @@ const makeHarness = (options: Readonly<{
     undefined,
     time,
     undefined,
-    undefined,
     {},
     undefined,
   )
@@ -486,7 +484,6 @@ const makeHarness = (options: Readonly<{
     undefined,
     undefined,
     time,
-    undefined,
     undefined,
     {},
     commit,
@@ -7069,6 +7066,7 @@ describe('schema-valid interaction edge paths', () => {
     const validBoundary = blockPosition(BlockAxis(12), BlockAxis(64), BlockAxis(1))
     const validUpper = blockPosition(BlockAxis(13), BlockAxis(64), BlockAxis(1))
     const injectedInvalid = blockPosition(BlockAxis(14), BlockAxis(64), BlockAxis(1))
+    const invalidOverflow = blockPosition(BlockAxis(15), BlockAxis(64), BlockAxis(1))
     const dirt = Option.getOrThrow(blockIdOf('dirt'))
     const harness = await Effect.runPromise(makeHarness({
       blocks: [
@@ -7081,24 +7079,28 @@ describe('schema-valid interaction edge paths', () => {
         validBoundary,
         validUpper,
         injectedInvalid,
+        invalidOverflow,
       ]
         .map((miningPosition) => [miningPosition, dirt] as const),
     }))
-    const explicitUndefinedFortune = {}
-    Object.defineProperty(explicitUndefinedFortune, 'fortuneLevel', { value: undefined, enumerable: true })
+    const malformedFortune = (value: unknown) => {
+      const context = {}
+      Object.defineProperty(context, 'fortuneLevel', { value, enumerable: true })
+      return context
+    }
+    const explicitUndefinedFortune = malformedFortune(undefined)
 
     await Effect.runPromise(requestBlockBreak(harness.state, invalidUndefined, explicitUndefinedFortune))
     await Effect.runPromise(requestBlockBreak(harness.state, invalidUndefined, explicitUndefinedFortune))
-    await Effect.runPromise(requestBlockBreak(harness.state, invalidNaN, { fortuneLevel: Number.NaN }))
-    await Effect.runPromise(requestBlockBreak(harness.state, invalidNegative, { fortuneLevel: -1 }))
-    await Effect.runPromise(requestBlockBreak(harness.state, invalidFraction, { fortuneLevel: 1.5 }))
-    await Effect.runPromise(requestBlockBreak(harness.state, invalidUnsafe, {
-      fortuneLevel: Number.MAX_SAFE_INTEGER + 1,
-    }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidNaN, malformedFortune(Number.NaN)))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidNegative, malformedFortune(-1)))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidFraction, malformedFortune(1.5)))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidUnsafe, malformedFortune(Number.MAX_SAFE_INTEGER + 1)))
     await Effect.runPromise(requestBlockBreak(harness.state, invalidShape, null as never))
-    await Effect.runPromise(requestBlockBreak(harness.state, validBoundary, { fortuneLevel: 0 }))
+    await Effect.runPromise(requestBlockBreak(harness.state, invalidOverflow, malformedFortune(256)))
+    await Effect.runPromise(requestBlockBreak(harness.state, validBoundary, { fortuneLevel: EnchantmentLevel(0) }))
     await Effect.runPromise(requestBlockBreak(harness.state, validUpper, {
-      fortuneLevel: Number.MAX_SAFE_INTEGER,
+      fortuneLevel: EnchantmentLevel(255),
     }))
 
     expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks))).toStrictEqual([
@@ -7106,7 +7108,7 @@ describe('schema-valid interaction edge paths', () => {
       blockPositionKeyOf(validUpper),
     ])
 
-    await Effect.runPromise(Ref.set(harness.state.heldTool, { fortuneLevel: 1.5 }))
+    await Effect.runPromise(Ref.set(harness.state.heldTool, malformedFortune(1.5)))
     await Effect.runPromise(Ref.update(harness.state.pendingBreaks, (pending) => [
       ...pending,
       blockPositionKeyOf(injectedInvalid),
@@ -7128,7 +7130,7 @@ describe('schema-valid interaction edge paths', () => {
           requestId: blockPositionKeyOf(invalidNaN),
           reason: 'InvalidBlockLootFortuneLevel',
         },
-        ...[invalidNegative, invalidFraction, invalidUnsafe].map((miningPosition) => ({
+        ...[invalidNegative, invalidFraction, invalidUnsafe, invalidOverflow].map((miningPosition) => ({
           _tag: 'GameplayRequestFault',
           source: 'Mining',
           requestId: blockPositionKeyOf(miningPosition),
@@ -7158,6 +7160,7 @@ describe('schema-valid interaction edge paths', () => {
     expect(await Effect.runPromise(harness.store.blockAt(invalidNegative))).toBe(dirt)
     expect(await Effect.runPromise(harness.store.blockAt(invalidFraction))).toBe(dirt)
     expect(await Effect.runPromise(harness.store.blockAt(invalidUnsafe))).toBe(dirt)
+    expect(await Effect.runPromise(harness.store.blockAt(invalidOverflow))).toBe(dirt)
     expect(await Effect.runPromise(harness.store.blockAt(invalidShape))).toBe(dirt)
     expect(await Effect.runPromise(harness.store.blockAt(injectedInvalid))).toBe(dirt)
     expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks))).toStrictEqual([])
@@ -7194,6 +7197,11 @@ describe('schema-valid interaction edge paths', () => {
       chargeSecs: BOW_MIN_CHARGE_SECS,
       powerLevel: 1.5,
     }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-power-overflow', {
+      ...shot,
+      chargeSecs: BOW_MIN_CHARGE_SECS,
+      powerLevel: 256,
+    }))
     await Effect.runPromise(requestBowShot(harness.state, 'bow-valid-boundary', {
       ...shot,
       chargeSecs: BOW_MIN_CHARGE_SECS,
@@ -7215,6 +7223,7 @@ describe('schema-valid interaction edge paths', () => {
       ...pending,
       stageInvalidCharge,
       stageInvalidPower,
+      { ...shot, requestId: 'bow-power-stage-overflow', chargeSecs: BOW_MIN_CHARGE_SECS, powerLevel: 256 },
     ]))
     await harness.run()
 
@@ -7227,6 +7236,8 @@ describe('schema-valid interaction edge paths', () => {
         { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-fraction', reason: 'InvalidBowPowerLevel' },
         { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-charge-stage-injected', reason: 'InvalidBowChargeSecs' },
         { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-stage-injected', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-overflow', reason: 'InvalidBowPowerLevel' },
+        { _tag: 'GameplayRequestFault', source: 'ItemUse', requestId: 'bow-power-stage-overflow', reason: 'InvalidBowPowerLevel' },
       ]),
     )
     expect(faults.filter((fault) =>

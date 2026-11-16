@@ -14,6 +14,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { durabilityForItem } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel'
 import {
   droppedItemMetadataFromBehaviour,
   isDroppedItemPickupEligible,
@@ -85,14 +86,14 @@ describe('droppedItemMetadataFromBehaviour', () => {
       count: 1,
       durability,
       customName: 'Old Faithful',
-      enchantments: [{ id: 'unbreaking', level: 1 }],
+      enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
     }
     expect(droppedItemMetadataFromBehaviour(behaviour)).toStrictEqual({
       customName: 'Old Faithful',
       enchantedItem: {
         item: 'wooden_pickaxe',
         durability,
-        enchantments: [{ id: 'unbreaking', level: 1 }],
+        enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
       },
     })
   })
@@ -114,7 +115,7 @@ describe('droppedItemMetadataFromBehaviour', () => {
         count: 1,
         at: origin,
         customName: 'Old Faithful',
-        enchantments: [{ id: 'unbreaking', level: 1 }],
+        enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
       })
 
       expect(droppedItemMetadataFromBehaviour(spawned.behaviour)).toStrictEqual({
@@ -122,7 +123,7 @@ describe('droppedItemMetadataFromBehaviour', () => {
         enchantedItem: {
           item: 'wooden_pickaxe',
           durability,
-          enchantments: [{ id: 'unbreaking', level: 1 }],
+          enchantments: [{ id: 'unbreaking', level: EnchantmentLevel(1) }],
         },
       })
     }),

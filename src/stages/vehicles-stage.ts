@@ -13,10 +13,10 @@ import type {
 } from './registration-core.js'
 
 export const makeVehiclesStage = (context: GameplayStageContext): StageRegistration => {
-  const { store, vehicleService, vehicleEnvironment } = context
+  const { store, vehicles } = context
   const runVehicles = (dt: Parameters<StageRegistration['run']>[0]) => Effect.gen(function* () {
-    if (vehicleService === undefined) return
-    const failures = yield* advanceVehicles(store, vehicleService, dt, vehicleEnvironment)
+    if (vehicles === undefined) return
+    const failures = yield* advanceVehicles(store, vehicles.service, dt, vehicles.environment)
     for (const failure of failures) {
       if (failure._tag === 'VehicleWorldDataFault') {
         yield* recordGameplayEntityWorldDataFault(context.state, 'VehicleMovement', failure.failure)

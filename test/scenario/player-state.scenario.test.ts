@@ -52,7 +52,6 @@ describe('player state gameplay scenarios', () => {
         world.player,
         world.time,
         undefined,
-        undefined,
         {},
         commit,
       )

@@ -37,7 +37,7 @@ const fluidSlice = Effect.gen(function* () {
     coordinator: commit.coordinator,
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
   })
-  const stages = gameplayStages(state, unavailableStore, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+  const stages = gameplayStages(state, unavailableStore, roster.api, inventory.api, player.api, time, undefined, {}, commit)
   const fluidStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
   if (fluidStage === undefined) throw new Error('the fluid stage was not registered')
   return { state, stages, fluidStage }

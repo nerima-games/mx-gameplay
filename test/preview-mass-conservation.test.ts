@@ -17,7 +17,7 @@ const expectedItemCount = (cells: WorldSpec['cells']): number => {
 
   return targets.reduce(
     (total, [, , block]) =>
-      total + blockLoot(block, NO_TOOL, [0.1]).reduce((count, item) => count + item.count, 0),
+      total + blockLoot(block, NO_TOOL, [0.1, 0, 0, 0]).reduce((count, item) => count + item.count, 0),
     0,
   )
 }
@@ -51,7 +51,7 @@ describe('preview mining mass conservation', () => {
 
   it('counts inventory and dropped-item sinks and rejects a deliberately lost sand block', () => {
     const sandItems = blockLoot(SAND, NO_TOOL).reduce((total, item) => total + item.count, 0)
-    const gravelItems = blockLoot(GRAVEL, NO_TOOL, [0.1]).reduce((total, item) => total + item.count, 0)
+    const gravelItems = blockLoot(GRAVEL, NO_TOOL, [0.1, 0, 0, 0]).reduce((total, item) => total + item.count, 0)
 
     expect([sandItems, gravelItems]).toStrictEqual([1, 1])
     expect(isFallingMassConserved({ before: sandItems, after: 0, inventory: sandItems, dropped: 0 })).toBe(true)

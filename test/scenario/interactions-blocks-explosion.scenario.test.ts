@@ -80,7 +80,6 @@ const makeCraterScenario = () =>
       player.api,
       time,
       undefined,
-      undefined,
       {},
       commit,
     )

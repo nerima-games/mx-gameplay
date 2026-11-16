@@ -114,7 +114,6 @@ const killZombieWithLootingSword = (level: number, seed: number) =>
       world.player,
       world.time,
       undefined,
-      undefined,
       {},
       commit,
     )
@@ -161,7 +160,6 @@ const mineWithEquippedPickaxe = (
       world.player,
       world.time,
       undefined,
-      undefined,
       {},
       commit,
     )
@@ -207,7 +205,6 @@ describe('block loot gameplay scenarios', () => {
         world.player,
         world.time,
         undefined,
-        undefined,
         {},
         commit,
       )
@@ -243,7 +240,7 @@ describe('block loot gameplay scenarios', () => {
         gravel,
         storageWithEnchantedDiamondPickaxe('fortune', 3),
         undefined,
-        { fortuneLevel: 0 },
+        { fortuneLevel: EnchantmentLevel(0) },
       )
 
       expect(itemCount(storage, 'flint')).toBe(1)

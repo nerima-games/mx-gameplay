@@ -50,7 +50,7 @@ describe('vehicles stage fault recording', () => {
       undefined,
       undefined,
       time,
-      vehicleService,
+      { service: vehicleService, environment: { isPoweredRailAt: () => false } },
     ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.vehicles)
 
     if (stage === undefined) throw new Error('vehicles stage was not registered')
@@ -122,10 +122,9 @@ describe('vehicles stage fault recording', () => {
       undefined,
       undefined,
       time,
-      vehicleService,
-      { controlsForVehicle: (vehicle) => vehicle.id === brokenBoat.id
+      { service: vehicleService, environment: { isPoweredRailAt: () => false, controlsForVehicle: (vehicle) => vehicle.id === brokenBoat.id
         ? controls as unknown as VehicleControlInput
-        : { throttle: 1, steering: 0 } },
+        : { throttle: 1, steering: 0 } } },
     ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.vehicles)
 
     if (stage === undefined) throw new Error('vehicles stage was not registered')

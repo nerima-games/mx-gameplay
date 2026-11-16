@@ -60,8 +60,10 @@
  * budget makes the sequence depend only on HOW MANY blocks were broken, which is
  * `../frame-rolls`' rule that it depend on what happened.
  */
-import { Result } from 'effect'
+import { Option, Result } from 'effect'
 import {
+  EnchantmentLevel,
+  type EnchantmentLevel as EnchantmentLevelValue,
   dropOfBlockId,
   blockTypeOfId,
   type BlockDrop,
@@ -93,12 +95,14 @@ export type MinedItem = {
   readonly count: number
 }
 
-export type BlockLootFailure = Readonly<{
-  _tag: 'BlockLootRegistryFailure'
-  block: BlockId
-  lookup: 'drop' | 'type'
-  failure: BlockRegistryResolutionFailure
-}>
+export type BlockLootFailure =
+  | Readonly<{
+      _tag: 'BlockLootRegistryFailure'
+      block: BlockId
+      lookup: 'drop' | 'type'
+      failure: BlockRegistryResolutionFailure
+    }>
+  | Readonly<{ _tag: 'InvalidBlockLootRoll'; index: 0 | 1 | 2 | 3 }>
 
 /**
  * Everything about the tool, as far as the loot is concerned.
@@ -114,8 +118,8 @@ export type BlockLootFailure = Readonly<{
  * optional one breaks none. Absent means level 0, which means no fortune.
  */
 export type BlockLootContext = HarvestContext & {
-  /** Enchantment level of Fortune on the held tool. 0, absent or negative = none. */
-  readonly fortuneLevel?: number
+  /** Validated Fortune level on the held tool. An absent level means no Fortune. */
+  readonly fortuneLevel?: EnchantmentLevelValue
 }
 
 /** Bare hands, no enchantments — the context a player starts a world with. */
@@ -141,8 +145,8 @@ export const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number> = new Map([
  * Vanilla draws an integer from zero through the level plus one, subtracts one,
  * and clamps the result at zero.
  */
-export const rollFortuneExtraDrops = (level: number, roll: number): number => {
-  if (!Number.isSafeInteger(level) || level < 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) return 0
+export const rollFortuneExtraDrops = (level: EnchantmentLevelValue, roll: number): number => {
+  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return 0
   return Math.max(0, Math.floor(roll * (level + 2)) - 1)
 }
 
@@ -239,6 +243,7 @@ export const BLOCK_LOOT_ROLLS = 4
 const MAX_BONUS_LINES = BLOCK_LOOT_ROLLS - 1
 
 const NO_LOOT: ReadonlyArray<never> = []
+const DEFAULT_ROLLS: ReadonlyArray<number> = [0, 0, 0, 0]
 
 /**
  * Is the Fortune level on this tool worth consulting?
@@ -250,7 +255,7 @@ const NO_LOOT: ReadonlyArray<never> = []
  * multiplication rather than both.
  */
 const fortuneApplies = (context: BlockLootContext): boolean =>
-  context.silkTouch !== true && Number.isFinite(context.fortuneLevel ?? 0)
+  context.silkTouch !== true
 
 /**
  * The base drop with fortune folded in, or `undefined` for nothing.
@@ -281,7 +286,7 @@ const fortuneApplies = (context: BlockLootContext): boolean =>
 const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): MinedItem => {
   const extra =
     drop.affectedByFortune && fortuneApplies(context)
-      ? rollFortuneExtraDrops(context.fortuneLevel ?? 0, roll)
+      ? rollFortuneExtraDrops(context.fortuneLevel ?? EnchantmentLevel(0), roll)
       : 0
 
   return { item: drop.item, count: drop.count * (extra + 1) }
@@ -302,16 +307,21 @@ const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): 
  *   - air, water, lava, bedrock, snow and leaves yield nothing to anyone
  *     (`count: 0` in kernel's table).
  *
- * `rolls` shorter than `BLOCK_LOOT_ROLLS` reads as zeros, the lowest result for
- * variable-count rolls. Zero also passes chance gates, which keeps deterministic
- * fixtures able to exercise every bonus line. The stage draws the full budget
- * from `../frame-rolls`; tests pass explicit rolls when checking probabilities.
+ * The first four explicit rolls must be finite values in [0, 1).
+ * Omitting rolls selects a deterministic all-zero budget.
  */
 export const blockLoot = (
   block: BlockId,
   context: BlockLootContext = NO_TOOL,
-  rolls: ReadonlyArray<number> = NO_LOOT,
+  rolls: ReadonlyArray<number> = DEFAULT_ROLLS,
 ): Result.Result<ReadonlyArray<MinedItem>, BlockLootFailure> => {
+  const rollIndices: readonly [0, 1, 2, 3] = [0, 1, 2, 3]
+  for (const index of rollIndices) {
+    const roll = rolls[index]
+    if (roll === undefined || !Number.isFinite(roll) || roll < 0 || roll >= 1) {
+      return Result.fail({ _tag: 'InvalidBlockLootRoll', index })
+    }
+  }
   let lookup: 'drop' | 'type' = 'drop'
   const resolved = Result.gen(function* () {
     const drop = yield* dropOfBlockId(block, context)
@@ -328,21 +338,19 @@ export const blockLoot = (
     })
   }
   const { drop, type } = resolved.success
-  const roll = rolls[0] ?? 0
+  // The full roll budget was validated before registry resolution.
+  const roll = Option.getOrThrow(Option.fromUndefinedOr(rolls[0]))
 
   const items: Array<MinedItem> = []
 
   if (drop !== undefined) {
-    const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
-      ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
-      : 0
+    const fortuneLevel = context.fortuneLevel ?? EnchantmentLevel(0)
     const chanceIndex =
       fortuneLevel < 1 ? 0 : fortuneLevel < 2 ? 1 : fortuneLevel < 3 ? 2 : 3
     const gravelFlintChance = GRAVEL_FLINT_CHANCES[chanceIndex]
     const mined =
       type === 'gravel' &&
       context.silkTouch !== true &&
-      Number.isFinite(roll) &&
       roll < gravelFlintChance
         ? { item: 'flint' as const, count: 1 }
         : withFortune(drop, context, roll)
@@ -361,10 +369,9 @@ export const blockLoot = (
   const bonus = type === undefined || context.silkTouch === true ? undefined : BONUS_DROPS.get(type)
   if (bonus !== undefined) {
     bonus.slice(0, MAX_BONUS_LINES).forEach((line, index) => {
-      const bonusRoll = rolls[index + 1] ?? 0
-      const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
-        ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
-        : 0
+      // MAX_BONUS_LINES keeps every index inside the validated roll budget.
+      const bonusRoll = Option.getOrThrow(Option.fromUndefinedOr(rolls[index + 1]))
+      const fortuneLevel = context.fortuneLevel ?? EnchantmentLevel(0)
       const fortuneIndex = Math.min(fortuneLevel, LEAF_APPLE_DROP_CHANCES_BY_FORTUNE.length - 1)
       const chance = line.fortuneChances?.[fortuneIndex] ?? line.chance
       if (bonusRoll < chance) {

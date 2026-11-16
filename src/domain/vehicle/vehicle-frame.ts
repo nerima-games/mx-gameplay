@@ -23,7 +23,7 @@ export type VehicleControlInput = Readonly<{
 
 export type VehicleFrameEnvironment = Readonly<{
   isActiveDimension?: (dimension: Dimension) => boolean
-  isPoweredRailAt?: (dimension: Dimension, position: BlockPosition) => boolean
+  isPoweredRailAt: (dimension: Dimension, position: BlockPosition) => boolean
   controlsForVehicle?: (vehicle: Vehicle) => VehicleControlInput
   onVehicleExit?: (vehicle: Vehicle, reason: VehicleExitReason) => void
 }>
@@ -229,11 +229,12 @@ const stepVehicle = (
   const kind = railKindAt(readings, position)
   const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, blockPositionAt(x, y, z)) !== 'none'
   const shape = yield* Effect.fromResult(resolveRailShape(isRailAt, position.x, position.y, position.z))
+  const powered = kind === 'powered' && environment.isPoweredRailAt(vehicle.dimension, position)
   const track = {
     kind,
     shape,
     ascendingAhead: isAscendingAhead(isRailAt, position.x, position.y, position.z, vehicle.velocity.x, vehicle.velocity.z),
-    powered: kind === 'powered' && (environment.isPoweredRailAt?.(vehicle.dimension, position) ?? false),
+    powered,
   } as const
   const transition = yield* Effect.fromResult(stepMinecart(vehicle, {
     ...track,
@@ -253,7 +254,7 @@ export const advanceVehicles = (
   store: ChunkStoreApi,
   vehicleService: VehicleServiceApi,
   dt: number,
-  environment: VehicleFrameEnvironment = {},
+  environment: VehicleFrameEnvironment,
 ): Effect.Effect<ReadonlyArray<VehicleFrameFailure>> => Effect.gen(function* () {
   const elapsed = elapsedFor(dt)
   if (elapsed === 0) return []

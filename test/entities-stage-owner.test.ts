@@ -514,8 +514,7 @@ const makeHarness = (options: Readonly<{
     store: observedStoreApi,
     roster,
     time,
-    vehicleService: undefined,
-    vehicleEnvironment: undefined,
+    vehicles: undefined,
     options: {},
     commit: {
       coordinator,
