@@ -35,6 +35,8 @@ import {
   ENDERMAN_MAX_HEALTH,
   experienceOfCasualties,
   hostileMobSnapshot,
+  clearEndermanAnger,
+  hasMobMovementCandidates,
   HOSTILE_KINDS,
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
@@ -44,6 +46,7 @@ import {
   planMobBlastRoster,
   planMobDamageRoster,
   planMobExplosionRoster,
+  planMobRosterSweep,
   planSpawnAttemptsOnRoster,
   PRIMED_TNT_KIND,
   repairMobBehaviour,
@@ -76,7 +79,7 @@ import {
   dropRollsNeededForTable,
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
-import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
+import { BLAZE_KIND, COW_KIND, SKELETON_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import {
   CREEPER_EXPLOSION_POWER,
   explosionDamageAmount as explosionDamageAmountResult,
@@ -86,7 +89,7 @@ import { isPrimedTnt } from '../src/domain/mob/primed-tnt'
 import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
-import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick, RandomSeed } from '@nerima-games/mc-kernel'
 import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import { durabilityForItem, EntityId, EntityKind, MobMovementStateSchema, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
@@ -137,6 +140,10 @@ const blockPosition = (x: number, y: number, z: number) =>
   makeBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 
 const ORIGIN: Position = atPosition(0, 64, 0 )
+const NO_ENDERMAN_OBSERVATION = {
+  simulationTick: SimulationTick(0),
+  endermanGaze: { target: undefined, looking: new Set<EntityId>(), visible: new Set<EntityId>() },
+}
 
 /** A creeper's blast, at the origin. The only explosion source this build has. */
 const CREEPER_BLAST: Blast = {
@@ -933,7 +940,7 @@ describe('sweepMobs: TNT belongs to its replicated owner', () => {
       const tnt = yield* roster.api.spawn({
         kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
-      const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(1) }, 1)
+      const swept = yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(1) }, 1)
       expect(swept.blasts).toStrictEqual([])
       const after = yield* roster.api.entities
       expect(after).toHaveLength(1)
@@ -948,7 +955,7 @@ describe('sweepMobs: TNT belongs to its replicated owner', () => {
       yield* roster.api.spawn({
         kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
-      yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0) }, 1)
+      yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0) }, 1)
       const after = yield* roster.api.entities
       expect(after[0]?.behaviour).toBe(FRESH_PRIMED_TNT)
     }),
@@ -960,7 +967,7 @@ describe('sweepMobs: TNT belongs to its replicated owner', () => {
       const tnt = yield* roster.api.spawn({
         kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
-      const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(5) }, 1)
+      const swept = yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(5) }, 1)
       expect(swept.blasts).toStrictEqual([])
       expect(yield* roster.api.entities).toStrictEqual([tnt])
     }),
@@ -972,7 +979,7 @@ describe('sweepMobs: TNT belongs to its replicated owner', () => {
       yield* roster.api.spawn({
         kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
-      const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(1) }, 1)
+      const swept = yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(1) }, 1)
       expect(swept.blasts).toStrictEqual([])
       const after = yield* roster.api.entities
       expect(after[0]?.behaviour).toBeUndefined()
@@ -987,7 +994,7 @@ describe('sweepMobs: zombie movement is owned by SM3', () => {
       yield* roster.api.spawn({
         kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
-      yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
       expect(after[0]?.feetPosition).toStrictEqual(ORIGIN)
       expect(after[0]?.behaviour).toMatchObject({ _tag: 'EcosystemMob', motionPhase: 1 })
@@ -1000,7 +1007,7 @@ describe('sweepMobs: zombie movement is owned by SM3', () => {
       yield* roster.api.spawn({
         kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
-      yield* sweepMobs(roster.api, { target: away(10), dt: DeltaTimeSecs(0.05) }, 1)
+      yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: away(10), dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
       expect(after[0]?.feetPosition).toStrictEqual(ORIGIN)
       expect(after[0]?.behaviour).toMatchObject({ _tag: 'EcosystemMob', movementGoal: away(10) })
@@ -1020,7 +1027,7 @@ describe('sweepMobs: zombie movement is owned by SM3', () => {
         nextSerial: EntitySerial(1),
       })
 
-      const firstSweep = yield* sweepMobs(firstRoster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      const firstSweep = yield* sweepMobs(firstRoster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       expect(firstSweep.faults).toStrictEqual([])
       const [afterFirstTick] = yield* firstRoster.api.entities
       expect(afterFirstTick?.behaviour).toMatchObject({ _tag: 'EcosystemMob', motionPhase: 1 })
@@ -1036,7 +1043,7 @@ describe('sweepMobs: zombie movement is owned by SM3', () => {
         nextSerial: EntitySerial(1),
       })
 
-      const secondSweep = yield* sweepMobs(restoredRoster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      const secondSweep = yield* sweepMobs(restoredRoster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       expect(secondSweep.faults).toStrictEqual([])
       const [afterSecondTick] = yield* restoredRoster.api.entities
       expect(afterSecondTick?.behaviour).toMatchObject({
@@ -1060,7 +1067,7 @@ describe('sweepMobs: an ecosystem hostile close enough to attack', () => {
       })
       // 10 blocks: inside the blaze's [8, 24] projectile band.
       const target = away(10)
-      const swept = yield* sweepMobs(roster.api, { target, dt: DeltaTimeSecs(0.05) }, 1)
+      const swept = yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target, dt: DeltaTimeSecs(0.05) }, 1)
       expect(swept.attacks).toStrictEqual([
         {
           _tag: 'MobAttack',
@@ -1082,7 +1089,7 @@ describe('sweepMobs: a dormant creeper truly idle', () => {
       const creeper = yield* roster.api.spawn({
         kind: CREEPER_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH), behaviour: DORMANT_FUSE,
       })
-      yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
       expect(after[0]).toBe(creeper)
     }),
@@ -1096,7 +1103,7 @@ describe('sweepMobs: an enderman with nothing to chase and no blow to answer', (
       const enderman = yield* roster.api.spawn({
         kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH), behaviour: STEADY_ENDERMAN,
       })
-      yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
+      yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
       expect(after[0]).toBe(enderman)
     }),
@@ -1112,7 +1119,7 @@ describe('sweepMobs: an enderman with nothing to chase and no blow to answer', (
         behaviour: hostileMobSnapshot(STEADY_ENDERMAN, { ageTicks: 3 }),
       })
       const seed = 1
-      const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, seed)
+      const swept = yield* sweepMobs(roster.api, { ...NO_ENDERMAN_OBSERVATION, target: undefined, dt: DeltaTimeSecs(0.05) }, seed)
       expect(swept.seed).toBe(seed)
       const after = yield* roster.api.entities
       expect(after[0]?.behaviour).toStrictEqual({
@@ -1121,6 +1128,203 @@ describe('sweepMobs: an enderman with nothing to chase and no blow to answer', (
       })
     }),
   )
+})
+
+describe('enderman hostility lifecycle', () => {
+  const actor = EntityId('test:enderman-player')
+  const id = EntityId('test:angry-enderman')
+  const ecosystem = { ...initialEcosystemMobState(), provoked: true }
+  const angry = { target: actor, stareTicks: 5 as const, expiresAt: SimulationTick(1000) }
+  const initial = (feet = atPosition(0, 64, 8), behaviour: MobBehaviour = hostileMobSnapshot(STEADY_ENDERMAN, {
+    endermanAnger: angry, ecosystem,
+  })): MobRoster => ({ entities: [{ id, kind: ENDERMAN_KIND, feetPosition: feet,
+    healthPoints: EntityHealthPoints(40), behaviour }], nextSerial: EntitySerial(1) })
+
+  it.each([CREEPER_KIND, ZOMBIE_KIND, SKELETON_KIND, BLAZE_KIND, COW_KIND])('labels foreign enderman metadata with the actual kind %s', (kind) => {
+    const base = hostileMobSnapshot(kind === CREEPER_KIND ? DORMANT_FUSE : initialEcosystemMobState())
+    for (const metadata of [{ endermanAnger: angry }, { ecosystem }]) {
+      const repaired = repairMobBehaviour(kind, { ...base, ...metadata })
+      expect(repaired).toStrictEqual({ _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind },
+      })
+      expect(isMobBehaviourRepairFault(repaired)).toBe(true)
+    }
+  })
+
+  it('keeps invalid enderman metadata labelled as enderman and rejects malformed fault kinds', () => {
+    expect(repairMobBehaviour(ENDERMAN_KIND, { ...hostileMobSnapshot(STEADY_ENDERMAN), endermanAnger: null }))
+      .toStrictEqual({ _tag: 'MobBehaviourRepairFault', failure: { _tag: 'MobBehaviourStateRepairFailure', kind: ENDERMAN_KIND } })
+    for (const kind of ['', '   ', null, 1]) {
+      expect(isMobBehaviourRepairFault({ _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobBehaviourStateRepairFailure', kind },
+      })).toBe(false)
+    }
+  })
+
+  it('clears target and combat provocation once while preserving flinch and metadata', () => {
+    const neutral = hostileMobSnapshot(STEADY_ENDERMAN)
+    expect(clearEndermanAnger(neutral)).toBe(neutral)
+    const previous = hostileMobSnapshot(STRUCK_ENDERMAN, { ageTicks: 23, named: true,
+      endermanAnger: angry, ecosystem: { ...ecosystem, attackCooldownTicks: 12 },
+    })
+    const cleared = clearEndermanAnger(previous)
+    expect(cleared).not.toHaveProperty('endermanAnger')
+    expect(cleared).toMatchObject({ behaviour: STRUCK_ENDERMAN, ageTicks: 23, named: true,
+      ecosystem: { provoked: false, attackCooldownTicks: 0 },
+    })
+    expect(previous.endermanAnger).toBe(angry)
+    expect(previous.ecosystem?.attackCooldownTicks).toBe(12)
+    expect(clearEndermanAnger(cleared)).toBe(cleared)
+  })
+
+  it('preserves a companion ecosystem when migrating an omitted legacy flinch', () => {
+    const companion = initialEcosystemMobState()
+    const saved = { _tag: 'HostileMob', ageTicks: 7, persistent: false, named: false, tamed: false,
+      endermanAnger: { target: actor, stareTicks: 2 }, ecosystem: companion,
+    }
+    const repaired = repairMobBehaviour(ENDERMAN_KIND, saved)
+    expect(repaired).toEqual({ ...saved, behaviour: STEADY_ENDERMAN })
+    expect(isHostileMobSnapshot(repaired)).toBe(true)
+    if (!isHostileMobSnapshot(repaired)) return
+    expect(repaired.ecosystem).toBe(companion)
+  })
+
+  it('rejects malformed or noncanonical companion ecosystems at the persisted-state boundary', () => {
+    const base = hostileMobSnapshot(STEADY_ENDERMAN)
+    for (const companion of [null, undefined, { ...ecosystem, attackCooldownTicks: -1 },
+      { ...ecosystem, motionPhase: 0.5 }, { ...ecosystem, unknownField: true }]) {
+      const saved = { ...base, ecosystem: companion }
+      expect(isHostileMobSnapshot(saved)).toBe(false)
+      expect(repairMobBehaviour(ENDERMAN_KIND, saved)).toMatchObject({ _tag: 'MobBehaviourRepairFault' })
+    }
+  })
+
+  it('derives movement provocation from anger rather than a stale companion flag', () => {
+    const neutral = hostileMobSnapshot(STEADY_ENDERMAN, { ecosystem })
+    expect(isHostileMobSnapshot(neutral)).toBe(true)
+    expect(clearEndermanAnger(neutral)).toBe(neutral)
+    expect(hasMobMovementCandidates(initial(atPosition(0, 64, 8), neutral), 'overworld', ORIGIN)).toBe(false)
+  })
+
+  it('replaces a previous angry target with a fresh candidate when another player looks', () => {
+    const replacement = EntityId('test:replacement-player')
+    const stepped = planMobRosterSweep(initial(), { target: ORIGIN,
+      simulationTick: SimulationTick(1), dt: DeltaTimeSecs(0.05),
+      endermanGaze: { target: replacement, looking: new Set([id]), visible: new Set([id]) },
+    }, RandomSeed(7))
+    expect(stepped.roster.entities[0]?.behaviour).toMatchObject({
+      endermanAnger: { target: replacement, stareTicks: 1 }, ecosystem: { provoked: false },
+    })
+    expect(stepped.roster.entities[0]?.behaviour).not.toHaveProperty('endermanAnger.expiresAt')
+    expect(stepped.seed).toBe(7)
+  })
+
+  it.effect('preserves a mature candidate and records the typed failure when its anger roll seed is invalid', () =>
+    Effect.gen(function* () {
+      const manager = yield* makeEntityManagerDouble<MobBehaviour>()
+      const spawned = yield* manager.api.spawn({ kind: ENDERMAN_KIND, feetPosition: atPosition(0, 64, 8),
+        healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot(STEADY_ENDERMAN, {
+          endermanAnger: { target: actor, stareTicks: 4 }, ecosystem: initialEcosystemMobState(),
+        }),
+      })
+      const stepped = yield* sweepMobs(manager.api, { target: ORIGIN,
+        simulationTick: SimulationTick(1), dt: DeltaTimeSecs(0.05),
+        endermanGaze: { target: actor, looking: new Set([spawned.id]), visible: new Set([spawned.id]) },
+      }, Number.NaN)
+      expect(stepped.faults).toEqual([{
+        _tag: 'MobFrameRuleFault', entityId: spawned.id, failure: { _tag: 'InvalidFrameRollInput', field: 'seed' },
+      }])
+      expect((yield* manager.api.entities)[0]).toBe(spawned)
+      expect(stepped.attacks).toEqual([])
+      expect(stepped.teleports).toEqual([])
+    }),
+  )
+
+  it('retains anger and ecosystem references while idle, preserving the existing age tick', () => {
+    const before = initial()
+    const stepped = planMobRosterSweep(before, { target: ORIGIN, simulationTick: SimulationTick(999), dt: DeltaTimeSecs(5),
+      endermanGaze: { target: actor, looking: new Set([id]), visible: new Set([id]) },
+    }, RandomSeed(7))
+    const state = stepped.roster.entities[0]?.behaviour
+    expect(isHostileMobSnapshot(state)).toBe(true)
+    if (!isHostileMobSnapshot(state)) return
+    expect(state.endermanAnger).toBe(angry)
+    expect(state.ecosystem).toBe(ecosystem)
+    expect(state.ageTicks).toBe(1)
+    expect(stepped.seed).toBe(7)
+    expect(stepped.attacks).toEqual([])
+    expect(stepped.teleports).toEqual([])
+  })
+
+  it.each([1000, 1001])('clears anger at and after its absolute expiry tick (%s)', (tick) => {
+    const stepped = planMobRosterSweep(initial(), { target: ORIGIN, simulationTick: SimulationTick(tick), dt: DeltaTimeSecs(0),
+      endermanGaze: { target: actor, looking: new Set(), visible: new Set() },
+    }, RandomSeed(7))
+    expect(stepped.roster.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    expect(stepped.roster.entities[0]?.behaviour).toMatchObject({ ecosystem: { provoked: false } })
+    expect(stepped.seed).toBe(7)
+  })
+
+  it.each([64, 64.000001])('uses the inclusive follow range when retaining an angry target (%s)', (distance) => {
+    const stepped = planMobRosterSweep(initial(atPosition(0, 64, distance)), {
+      target: ORIGIN, simulationTick: SimulationTick(1), dt: DeltaTimeSecs(0.05),
+      endermanGaze: { target: actor, looking: new Set(), visible: new Set() },
+    }, RandomSeed(100000))
+    if (distance === 64) expect(stepped.roster.entities[0]?.behaviour).toHaveProperty('endermanAnger', angry)
+    else expect(stepped.roster.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+  })
+
+  it.each([undefined, EntityId('test:another-player')])('clears anger when the target is absent or replaced (%s)', (observedTarget) => {
+    const stepped = planMobRosterSweep(initial(), { target: ORIGIN, simulationTick: SimulationTick(1), dt: DeltaTimeSecs(0.05),
+      endermanGaze: { target: observedTarget, looking: new Set(), visible: new Set() },
+    }, RandomSeed(7))
+    expect(stepped.roster.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    expect(stepped.seed).toBe(7)
+  })
+
+  it('handles a hit before a simultaneously available melee attack', () => {
+    const stepped = planMobRosterSweep(initial(atPosition(0, 64, 1), hostileMobSnapshot(STRUCK_ENDERMAN, {
+      endermanAnger: angry, ecosystem,
+    })), { target: ORIGIN, simulationTick: SimulationTick(1), dt: DeltaTimeSecs(0.05),
+      endermanGaze: { target: actor, looking: new Set(), visible: new Set([id]) },
+    }, RandomSeed(1))
+    expect(stepped.attacks).toEqual([])
+    expect(stepped.teleports).toHaveLength(1)
+    expect(stepped.teleports[0]).toMatchObject({ entityId: id, anchor: atPosition(0, 64, 1) })
+    expect(stepped.roster.entities[0]?.behaviour).toMatchObject({ behaviour: STEADY_ENDERMAN })
+  })
+
+  it.each([
+    { seed: 1, expiresAt: 410, nextSeed: 16807 },
+    { seed: 400, expiresAt: 411, nextSeed: 6722800 },
+    { seed: 64000, expiresAt: 600, nextSeed: 1075648000 },
+    { seed: 127700, expiresAt: 790, nextSeed: 2146253900 },
+  ])('samples the inclusive tick range on acquisition ($seed gives expiry $expiresAt)', ({ seed, expiresAt, nextSeed }) => {
+    const candidate = initial(atPosition(0, 64, 8), hostileMobSnapshot(STEADY_ENDERMAN, {
+      endermanAnger: { target: actor, stareTicks: 4 }, ecosystem: initialEcosystemMobState(),
+    }))
+    const stepped = planMobRosterSweep(candidate, { target: ORIGIN, simulationTick: SimulationTick(10), dt: DeltaTimeSecs(0.05),
+      endermanGaze: { target: actor, looking: new Set([id]), visible: new Set([id]) },
+    }, RandomSeed(seed))
+    expect(stepped.roster.entities[0]?.behaviour).toMatchObject({
+      endermanAnger: { target: actor, stareTicks: 5, expiresAt }, ecosystem: { provoked: true },
+    })
+    expect(stepped.seed).toBe(nextSeed)
+  })
+
+  it('records a typed fault when the absolute expiry exceeds the safe tick range', () => {
+    const candidate = initial(atPosition(0, 64, 8), hostileMobSnapshot(STEADY_ENDERMAN, {
+      endermanAnger: { target: actor, stareTicks: 4 }, ecosystem: initialEcosystemMobState(),
+    }))
+    const stepped = planMobRosterSweep(candidate, { target: ORIGIN,
+      simulationTick: SimulationTick(Number.MAX_SAFE_INTEGER), dt: DeltaTimeSecs(0.05),
+      endermanGaze: { target: actor, looking: new Set([id]), visible: new Set([id]) },
+    }, RandomSeed(1))
+    expect(stepped.faults).toEqual([{
+      _tag: 'MobFrameRuleFault', entityId: id, failure: { _tag: 'EndermanAngerTimeFailure', field: 'expiresAt' },
+    }])
+    expect(stepped.roster).toBe(candidate)
+  })
 })
 
 describe('resolveEndermanTeleportProbes: validating a candidate against the store', () => {
@@ -2182,7 +2386,7 @@ describe('self-destruct drops and non-AI roster entries', () => {
         behaviour: { _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null },
       })
 
-      const swept = yield* sweepMobs(manager.api, { target: ORIGIN, dt: DeltaTimeSecs(0.05) }, 42)
+      const swept = yield* sweepMobs(manager.api, { ...NO_ENDERMAN_OBSERVATION, target: ORIGIN, dt: DeltaTimeSecs(0.05) }, 42)
 
       expect(swept.seed).toBe(42)
       expect((yield* manager.api.entities)[0]).toBe(dropped)

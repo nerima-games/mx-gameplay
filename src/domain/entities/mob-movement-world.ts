@@ -17,6 +17,7 @@ import {
   type MobPathProfile,
 } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
+import { entityMovementDimensionsOf } from './entity-dimensions.js'
 import type { ChunkWindow } from '../chunk-window.js'
 import {
   entityWorldAirBlockDataAt,
@@ -25,14 +26,9 @@ import {
   type EntityWorldQueryFailure,
 } from './entity-world-cell.js'
 import {
-  CHICKEN_KIND,
-  COW_KIND,
-  PIG_KIND,
   PASSIVE_MOB_KINDS,
-  SHEEP_KIND,
   SPIDER_KIND,
 } from '../mob/mob-ecosystem.js'
-import { ZOMBIE_KIND } from '../mob/hostile-combat.js'
 
 export type MobMovementWorldFailure = EntityWorldQueryFailure
 
@@ -95,17 +91,7 @@ export const mobMovementPhysicsSampleForCell = (
 }
 
 const profileForKind = (kind: EntityKind): MobPathProfile => {
-  const [width, height] = kind === SPIDER_KIND
-    ? [1.4, 0.9]
-    : kind === CHICKEN_KIND
-      ? [0.4, 0.7]
-      : kind === COW_KIND || kind === SHEEP_KIND
-        ? [0.9, 1.4]
-        : kind === PIG_KIND
-          ? [0.9, 0.9]
-          : kind === ZOMBIE_KIND || kind === 'skeleton' || kind === 'zombified_piglin'
-            ? [0.6, 1.95]
-            : [0.6, 1.8]
+  const { width, height } = entityMovementDimensionsOf(kind)
   const raw = kind === SPIDER_KIND
     ? { kind: 'spider', width, height }
     : { kind: 'ground', width, height, canJump: true }

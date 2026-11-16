@@ -99,6 +99,7 @@ import {
   EntityHealthPoints,
   ProjectileIdSchema,
   SimulationTickSchema,
+  SimulationTick,
   PortalHeight,
   PortalWidth,
   WorldRevisionSchema,
@@ -134,7 +135,7 @@ import {
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
 import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
-import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
+import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import {
   DomainEventBus,
   EntityId,
@@ -1690,7 +1691,9 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         kind: ENDERMAN_KIND,
         feetPosition: endermanAt,
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
-        behaviour: STEADY_ENDERMAN,
+        behaviour: hostileMobSnapshot(STEADY_ENDERMAN, { endermanAnger: {
+          target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(1000),
+        }, ecosystem: { ...initialEcosystemMobState(), provoked: true } }),
       })
       yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
@@ -1728,22 +1731,17 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // `resolveBlasts` damages a bystander and arms its flinch, and the NEXT
       // sweep reads the flinch, rolls the 30%, and moves the mob. Two stages of
       // one frame plus one more frame, none of it re-implemented here.
-      // Frame 1's roll must MISS the 5% chase gate (the enderman is Steady and
-      // has a target, so it consults the rule before the blast reaches it), and
-      // frame 2's must PASS the 30% damage gate and then find an offset.
+      // A neutral enderman draws no chase roll before the blast. Its first draw
+      // on the next frame must pass the 30% damage gate and find an offset.
       const seed = seedSuchThat((candidate) => {
-        const chase = nextRoll(candidate)
-        if (chase.roll < ENDERMAN_CHASE_TELEPORT_CHANCE) {
-          return false
-        }
-        const flee = nextRoll(chase.seed)
+        const flee = nextRoll(candidate)
         return (
           flee.roll < ENDERMAN_DAMAGE_TELEPORT_CHANCE &&
           endermanTeleportCandidates(endermanAt, endermanAt, drawRolls(flee.seed, ENDERMAN_TELEPORT_ROLLS).rolls)
             .length >= 2
         )
       })
-      const flee = nextRoll(nextRoll(seed).seed)
+      const flee = nextRoll(seed)
       const terrain = teleportTerrain(
         endermanAt,
         endermanAt,
@@ -1850,23 +1848,10 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
 
   it.effect('REGRESSION: endermen that stay cost one shared step object', () =>
     Effect.gen(function* () {
-      // The mob-side allocation property, extended to the behaviour that arrived
-      // with a random number generator attached. A rule that consults a roll is
-      // the obvious place for an idle frame to start allocating again — one
-      // `RollDraw` per mob per frame is DN-GP-1's mistake made out of objects —
-      // so this seed makes every chase roll say Stay and isolates allocation.
+      // Neutral endermen do not chase, allocate chase steps, or draw chase rolls.
       const { roster, state, stages, commit } = yield* slice(world([]))
 
-      const draws = 3 * 10
-      const seed = seedSuchThat((candidate) => {
-        let cursor = candidate
-        for (let index = 0; index < draws; index += 1) {
-          const draw = nextRoll(cursor)
-          if (draw.roll < ENDERMAN_CHASE_TELEPORT_CHANCE) return false
-          cursor = draw.seed
-        }
-        return true
-      })
+      const seed = 7
       yield* Ref.set(state.rollSeed, seed)
 
       yield* Effect.forEach([0, 1, 2], (index) =>
@@ -1889,7 +1874,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       const calls = yield* roster.calls
       expect(calls.distinctStepObjects).toBe(0)
       expect(calls.sweeps).toBe(0)
-      expect(yield* Ref.get(state.rollSeed)).toBe(drawRolls(seed, draws).seed)
+      expect(yield* Ref.get(state.rollSeed)).toBe(seed)
     }),
   )
 
@@ -1965,7 +1950,9 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           kind: ENDERMAN_KIND,
           feetPosition: endermanAt,
           healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
-          behaviour: STEADY_ENDERMAN,
+          behaviour: hostileMobSnapshot(STEADY_ENDERMAN, { endermanAnger: {
+            target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(1000),
+          }, ecosystem: { ...initialEcosystemMobState(), provoked: true } }),
         })
         yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
         yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)

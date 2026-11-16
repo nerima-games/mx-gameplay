@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as fc from 'fast-check'
-import { Effect, Option, Ref, Result, Schema, Stream } from 'effect'
+import { Brand, Effect, Option, Ref, Result, Schema, Stream } from 'effect'
+import { EntityWorldQueryFailureSchema } from '../src/domain/entities/entity-world-cell.js'
 import { MIN_SPAWN_DISTANCE_BLOCKS, SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_INSET_BLOCKS } from '../src/domain/entities/mob-spawn-search'
 import {
@@ -744,6 +745,420 @@ const spiderAtUnsafeMovementX = (movement?: Schema.Schema.Type<typeof MobMovemen
 })
 
 describe('entities stage owner-backed MobSimulation', () => {
+  it('commits enderman hostility after five visible gaze ticks, freezes while watched, and pursues the same player afterward', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-gaze'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const feet = position(PositionAxis(4), PositionAxis(64), PositionAxis(0))
+    const floor = Array.from({ length: 16 }, (_, z) =>
+      [blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(z)), STONE] as const)
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: feet, yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+      blocks: floor,
+    }))
+    await Effect.runPromise(Effect.gen(function* () {
+      for (let tick = 1; tick <= 5; tick += 1) {
+        yield* Ref.set(harness.state.tickCount, SimulationTick(tick - 1))
+        yield* harness.stage.run(makeDeltaTimeSecs(tick === 1 ? 0 : 0.05)).pipe(Effect.provide(FrameServicesLayer))
+        const saved = yield* strictRoster(harness.coordinator)
+        expect(saved.state.entities[0]?.behaviour).toMatchObject({ endermanAnger: {
+          target: 'mx-gameplay:player-avatar', stareTicks: tick,
+        } })
+        expect(saved.state.entities[0]?.feetPosition).toEqual(enderman.feetPosition)
+      }
+    }))
+    const player = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema))
+    await Effect.runPromise(harness.coordinator.commit({ expectedRevision: player.revision, expectedDimensions: [],
+      changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: { ...player.state,
+        pose: { ...player.state.pose, yawRadians: Math.PI },
+      } }],
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(5)))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const chasing = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(chasing.state.entities[0]?.behaviour).toMatchObject({ endermanAnger: { stareTicks: 5 }, movement: {
+      goal: { x: 4, y: 64, z: 0 }, profile: { height: 2.9 },
+    } })
+    expect(chasing.state.entities[0]?.feetPosition.z).toBeLessThan(8)
+  })
+
+  it.each(['stone', 'glass', 'torch', 'stone_slab'] as const)('checks enderman gaze against the %s collision shape', async (block) => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-obstruction'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+      block: { position: blockPosition(BlockAxis(4), BlockAxis(66), BlockAxis(4)), id: Option.getOrThrow(blockIdOf(block)) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    if (block === 'stone' || block === 'glass' || block === 'stone_slab') {
+      expect(saved.state.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    } else {
+      expect(saved.state.entities[0]?.behaviour).toMatchObject({ endermanAnger: { stareTicks: 1 } })
+    }
+  })
+
+  it('resets enderman warmup when the owner pose turns away, and routes an angry enderman hit through armor and vitals', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-hit'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(1)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 4 },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+        yawRadians: Math.PI, pitchRadians: 0 },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    await Effect.runPromise(harness.coordinator.commit({ expectedRevision: saved.revision, expectedDimensions: [], changes: [{
+      ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state: { ...saved.state, entities: [{ ...enderman, dimension: INITIAL_DIMENSION,
+        behaviour: hostileMobSnapshot({ _tag: 'Steady' }, { endermanAnger: {
+          target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400),
+        } }),
+      }] },
+    }] }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const vitals = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema))
+    expect(vitals.state.vitals.healthPoints).toBe(13)
+    const after = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(after.state.entities[0]?.behaviour).toMatchObject({
+      endermanAnger: { stareTicks: 5 }, ecosystem: { attackCooldownTicks: 20 },
+    })
+  })
+
+  it('resets an enderman gaze candidate when its eye ray enters an unloaded chunk', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-unloaded'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(20)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 4 },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman, loadedChunks: ['0,0'],
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 20) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toEqual([])
+  })
+
+  it('preserves a gaze-faulted enderman and drains the corrupt cell reason only once', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-corrupt'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 4 },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman, shortChunkBuffer: true,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities[0]).toMatchObject(enderman)
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toMatchObject([{
+      _tag: 'EntityWorldDataFault', source: 'EndermanGaze', target: { _tag: 'Cell' },
+      failure: { _tag: 'EntityWorldCorruptBuffer' },
+    }])
+    await harness.run(makeDeltaTimeSecs(0.05))
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toEqual([])
+  })
+
+  it('allows a watched angry enderman twenty blocks away to approach', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-far-stare'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(20)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman, loadedChunks: ['0,0', '0,1'],
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 20) },
+      blocks: Array.from({ length: 24 }, (_, z) => [blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(z)), STONE] as const),
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 100000))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities[0]?.feetPosition.z).toBeLessThan(20)
+  })
+
+  it.each(['cactus', 'torch'] as const)('requires a clear eye segment before an angry enderman attacks across %s', async (obstruction) => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-melee-los'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(1.24), PositionAxis(64), PositionAxis(0.5)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const id = Option.getOrThrow(blockIdOf(obstruction))
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman, loadedChunks: ['-1,0', '0,0'],
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(-0.24), PositionAxis(64), PositionAxis(0.5)),
+        yawRadians: Math.PI, pitchRadians: 0 },
+      blocks: [[blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0)), id],
+        [blockPosition(BlockAxis(0), BlockAxis(65), BlockAxis(0)), id]],
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const vitals = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema))
+    expect(vitals.state.vitals.healthPoints).toBe(obstruction === 'cactus' ? 20 : 13)
+  })
+
+  it.each([-4, 300])('observes an enderman eye segment at world height %s without inventing loaded cells', async (y) => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-world-height'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(y), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(y), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    if (y < 0) expect(saved.state.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    else expect(saved.state.entities[0]?.behaviour).toMatchObject({ endermanAnger: { stareTicks: 1 } })
+  })
+
+  it('records an enderman eye ray whose origin cannot be represented as a block cell', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-unrepresentable-ray'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(Number.MAX_SAFE_INTEGER), PositionAxis(64), PositionAxis(0)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(2 ** 53), PositionAxis(64), PositionAxis(0)),
+        yawRadians: Math.PI / 2, pitchRadians: -Math.atan(0.93) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toContainEqual(expect.objectContaining({
+      source: 'EndermanGaze', failure: expect.objectContaining({
+        _tag: 'EntityWorldRaycastFailure',
+        failure: expect.objectContaining({ _tag: 'BrandError', message: expect.any(String), issue: expect.any(Object) }),
+      }),
+    }))
+    expect((await Effect.runPromise(strictRoster(harness.coordinator))).state.entities[0]).toMatchObject(enderman)
+  })
+
+  it('retains either physics failure type when decoding a recorded raycast fault', () => {
+    const brandFailure = Option.getOrThrow(Result.getFailure(BlockAxis.result(2 ** 53)))
+    const failures = [brandFailure, new RangeError('ray traversal bound exceeded')]
+    for (const failure of failures) {
+      const fault = { _tag: 'EntityWorldRaycastFailure', position: INITIAL_PLAYER_POSE.feetPosition, failure }
+      expect(Schema.decodeUnknownSync(EntityWorldQueryFailureSchema)(fault)).toBe(fault)
+    }
+    expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({
+      _tag: 'EntityWorldRaycastFailure', position: INITIAL_PLAYER_POSE.feetPosition, failure: 'unreadable',
+    }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(EntityWorldQueryFailureSchema)({
+      _tag: 'EntityWorldRaycastFailure', position: null, failure: brandFailure,
+    }))).toBe(true)
+    expect(brandFailure).toBeInstanceOf(Brand.BrandError)
+  })
+
+  it('acquires an enderman at the feet range boundary even when its eye segment exceeds 64 blocks', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-range-edge'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(64)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      loadedChunks: ['0,0', '0,1', '0,2', '0,3', '0,4'],
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 64) },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities[0]?.behaviour).toMatchObject({ endermanAnger: { stareTicks: 1 } })
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toEqual([])
+  })
+
+  it('uses one shared gaze window for two endermen in the same loaded region', async () => {
+    const first: MobEntity = {
+      id: EntityId('test:enderman-shared-window-a'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const second: MobEntity = { ...first, id: EntityId('test:enderman-shared-window-b'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(9)) }
+    let singlePeeks = 0
+    let pairPeeks = 0
+    const playerPose = { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+      yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) }
+    const single = await Effect.runPromise(makeHarness({ entities: [first], playerPose,
+      onChunkPeek: () => { singlePeeks += 1 } }))
+    const pair = await Effect.runPromise(makeHarness({ entities: [first, second], playerPose,
+      onChunkPeek: () => { pairPeeks += 1 } }))
+    await single.run(makeDeltaTimeSecs(0.05))
+    await pair.run(makeDeltaTimeSecs(0.05))
+    expect(singlePeeks).toBeGreaterThan(0)
+    expect(pairPeeks).toBe(singlePeeks)
+    const saved = await Effect.runPromise(strictRoster(pair.coordinator))
+    expect(saved.state.entities).toHaveLength(2)
+    expect(saved.state.entities.map(({ behaviour }) => behaviour)).toMatchObject([
+      { endermanAnger: { stareTicks: 1 } }, { endermanAnger: { stareTicks: 1 } },
+    ])
+  })
+
+  it('uses the shared horizontal melee range for an angry enderman above the player', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-elevated-melee'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(0), PositionAxis(66), PositionAxis(1)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+        yawRadians: Math.PI, pitchRadians: 0 },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const vitals = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema))
+    expect(vitals.state.vitals.healthPoints).toBe(13)
+  })
+
+  it('clears enderman anger on player death and does not restore it when that player revives', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-dead-target'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman,
+      vitals: { ...SPAWN_VITALS, healthPoints: EntityHealthPoints(0) },
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
+        yawRadians: Math.PI, pitchRadians: 0 },
+    }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    expect((await Effect.runPromise(strictRoster(harness.coordinator))).state.entities[0]?.behaviour)
+      .not.toHaveProperty('endermanAnger')
+    const vitals = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema))
+    await Effect.runPromise(harness.coordinator.commit({ expectedRevision: vitals.revision, expectedDimensions: [], changes: [{
+      ownerId: GAMEPLAY_VITALS_OWNER_ID, state: { vitals: SPAWN_VITALS },
+    }] }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    expect((await Effect.runPromise(strictRoster(harness.coordinator))).state.entities[0]?.behaviour)
+      .not.toHaveProperty('endermanAnger')
+  })
+
+  it('clears the angry target of an enderman left in another dimension without ticking that mob', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-other-dimension'), kind: EntityKind('enderman'), dimension: 'nether',
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        ageTicks: 40,
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman }))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities[0]?.behaviour).not.toHaveProperty('endermanAnger')
+    expect(saved.state.entities[0]?.behaviour).toMatchObject({ ageTicks: 40 })
+    expect(saved.state.entities[0]?.feetPosition).toEqual(enderman.feetPosition)
+    expect(saved.state.entities[0]?.healthPoints).toBe(enderman.healthPoints)
+  })
+
+  it('keeps an already neutral enderman in another dimension unchanged', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-neutral-other-dimension'), kind: EntityKind('enderman'), dimension: 'nether',
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, { ageTicks: 40 }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman }))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(before)
+    expect(harness.commits()).toBe(0)
+  })
+
+  it('preserves enderman anger when the vitals owner is unavailable and continues other mobs', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-missing-vitals'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const cow: MobEntity = {
+      id: EntityId('test:cow-with-unavailable-enderman-vitals'), kind: COW_KIND,
+      feetPosition: position(PositionAxis(6), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(10), behaviour: initialBehaviourOfKind(COW_KIND),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entities: [enderman, cow] }))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+    const commit = harness.context.commit
+    if (commit === undefined) throw new Error('the harness must provide commit services')
+    const { vitalsOwnerId, ...withoutVitals } = commit
+    expect(vitalsOwnerId).toBe(GAMEPLAY_VITALS_OWNER_ID)
+    const context = { ...harness.context, commit: withoutVitals }
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities.find(({ id }) => id === enderman.id)).toEqual(before.state.entities[0])
+    expect(saved.state.entities.find(({ id }) => id === cow.id)?.behaviour).toMatchObject({ ageTicks: 1 })
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual({
+      _tag: 'Unsupported', action: 'MobSimulation', reason: 'OwnerRegistrationUnavailable',
+    })
+  })
+
+  it('leaves enderman anger unchanged when the observed vitals revision differs', async () => {
+    const enderman: MobEntity = {
+      id: EntityId('test:enderman-vitals-revision'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: hostileMobSnapshot({ _tag: 'Steady' }, {
+        endermanAnger: { target: EntityId('mx-gameplay:player-avatar'), stareTicks: 5, expiresAt: SimulationTick(400) },
+      }),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity: enderman }))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+    harness.mismatchNextSnapshot(GAMEPLAY_VITALS_OWNER_ID)
+    await harness.run(makeDeltaTimeSecs(0.05))
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(before)
+    expect(harness.commits()).toBe(0)
+    await expectEntityStageExecutionFailure(harness.state, 'WorldRevisionConflict')
+  })
+
+  it('preserves one gaze-faulted enderman while another acquires the player through the shared window', async () => {
+    const faulted: MobEntity = {
+      id: EntityId('test:enderman-isolated-gaze-fault'), kind: EntityKind('enderman'),
+      feetPosition: position(PositionAxis(4.9), PositionAxis(64), PositionAxis(8)),
+      healthPoints: EntityHealthPoints(40), behaviour: initialBehaviourOfKind(EntityKind('enderman')),
+    }
+    const visible: MobEntity = { ...faulted, id: EntityId('test:enderman-isolated-gaze-success'),
+      feetPosition: position(PositionAxis(5.3), PositionAxis(64), PositionAxis(8)) }
+    const harness = await Effect.runPromise(makeHarness({ entities: [faulted, visible],
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4.9), PositionAxis(64), PositionAxis(0)),
+        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+    }))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+    const invalidCell = blockPosition(BlockAxis(4), BlockAxis(66), BlockAxis(4))
+    await Effect.runPromise(injectRawBlockId(harness.store.api, invalidCell, BlockId(60_000)))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    const saved = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(saved.state.entities.find(({ id }) => id === faulted.id)).toEqual(before.state.entities[0])
+    expect(saved.state.entities.find(({ id }) => id === visible.id)?.behaviour).toMatchObject({
+      endermanAnger: { target: 'mx-gameplay:player-avatar', stareTicks: 1 },
+    })
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toEqual([{
+      _tag: 'EntityWorldDataFault', source: 'EndermanGaze', target: { _tag: 'Cell', cell: invalidCell },
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: invalidCell, blockId: BlockId(60_000) },
+    }])
+  })
+
   it('maps every typed mob movement fault to its stage fault', () => {
     const entityId = EntityId('test:movement-fault-mapping')
     const simulationFailure = {
@@ -2563,6 +2978,58 @@ describe('entities stage owner-backed MobSimulation', () => {
     await expectEntityStageExecutionFailure(harness.state, 'MobProjectilePreviewMismatch')
   })
 
+  it.each([SKELETON_KIND, BLAZE_KIND].flatMap((kind) => [
+    { kind, boundary: 'at 64 blocks', playerY: 125.38, launches: true },
+    { kind, boundary: 'just beyond 64 blocks', playerY: 125.38000009999999, launches: false },
+    { kind, boundary: 'with an 80-block eye height difference', playerY: 142.38, launches: false },
+  ]))('keeps the $kind projectile line of sight limit $boundary', async ({ kind, playerY, launches }) => {
+    const sourceY = kind === BLAZE_KIND ? 62.5 : 62.38
+    const source = ecosystemMobAt(`test:bounded-ray:${String(kind)}`, kind, 0, sourceY)
+    const horizontal = Math.sqrt(127)
+    const harness = await Effect.runPromise(makeHarness({ entity: source, projectileService: true,
+      playerPose: { ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(horizontal), PositionAxis(playerY), PositionAxis(0)),
+      },
+    }))
+    // The source eye is y=64; sqrt(127)^2 + 63^2 is 64^2, inside the ranged horizontal band.
+    const length = Math.hypot(horizontal, playerY + 1.62 - 64)
+    if (launches) expect(length).toBe(64)
+    else expect(length).toBeGreaterThan(64)
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID, ProjectileServiceSnapshotSchema,
+    ))
+    expect(projectiles.state.projectiles).toHaveLength(launches ? 1 : 0)
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual([])
+  })
+
+  it('continues a saved arrow when another mob exceeds the projectile line of sight limit', async () => {
+    const source = ecosystemMobAt('test:bounded-ray-with-saved-arrow', SKELETON_KIND, 0, 62.38)
+    const projectileId = 'mx-gameplay:mob:arrow:test:previous-flight:0'
+    const harness = await Effect.runPromise(makeHarness({ entity: source, projectileService: true,
+      playerPose: { ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(Math.sqrt(127)), PositionAxis(142.38), PositionAxis(0)),
+      },
+    }))
+    await seedFlyingMobProjectile(harness.coordinator, projectileId,
+      position(PositionAxis(0), PositionAxis(100), PositionAxis(4)), { x: 2, y: 0, z: 0 })
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+    expect(faults).toEqual([])
+    const snapshot = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID, ProjectileServiceSnapshotSchema,
+    ))
+    const arrow = snapshot.state.projectiles.find(({ id }) => String(id) === projectileId)
+    expect(arrow?.projectile.position.x).toBeGreaterThan(0)
+    expect(arrow?.projectile.ageSeconds).toBe(0.05)
+    expect(faults.filter((fault) => fault._tag === 'EntityWorldDataFault' && fault.source === 'ProjectileStep')).toEqual([])
+  })
+
   it('treats an unrepresentable ranged ray as blocked at the stage boundary', async () => {
     const edge = 2 ** 53
     const sourceChunkX = Math.floor(Number.MAX_SAFE_INTEGER / 16)
@@ -2598,6 +3065,13 @@ describe('entities stage owner-backed MobSimulation', () => {
     const roster = await Effect.runPromise(strictRoster(harness.coordinator))
     const afterSkeleton = roster.state.entities.find(({ id }) => id === skeleton.id)
     expect(projectiles.state.projectiles).toStrictEqual([])
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(expect.objectContaining({
+      _tag: 'EntityWorldDataFault', source: 'ProjectileLineOfSight',
+      failure: expect.objectContaining({
+        _tag: 'EntityWorldRaycastFailure',
+        failure: expect.objectContaining({ _tag: 'BrandError', message: expect.any(String), issue: expect.any(Object) }),
+      }),
+    }))
     const hostileSnapshot = afterSkeleton?.behaviour
     expect(hostileSnapshot?._tag).toBe('HostileMob')
     if (hostileSnapshot?._tag !== 'HostileMob') return
@@ -3069,6 +3543,8 @@ describe('entities stage owner-backed MobSimulation', () => {
     const expectedSeedFlowFor = (frameSeed: number) => {
       const sweep = planMobRosterSweep(initialRoster.state, {
         target: playerPose.feetPosition,
+        simulationTick: SimulationTick(1),
+        endermanGaze: { target: EntityId('mx-gameplay:player-avatar'), looking: new Set(), visible: new Set() },
         dt: makeDeltaTimeSecs(0.02),
       }, RandomSeed(frameSeed))
       const blast = planMobBlastRoster(

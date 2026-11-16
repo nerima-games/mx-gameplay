@@ -30,7 +30,7 @@ const motionPhaseTicks = (phase: number): number => Math.ceil(phase)
 
 export type MobStateRepairFailure =
   | Readonly<{ _tag: 'MobMovementStateRepairFailure' }>
-  | Readonly<{ _tag: 'MobBehaviourStateRepairFailure'; kind: 'creeper' | 'enderman' | 'zombie' | 'primed-tnt' | 'dropped-item' }>
+  | Readonly<{ _tag: 'MobBehaviourStateRepairFailure'; kind: EntityKind | 'creeper' | 'enderman' | 'zombie' | 'primed-tnt' | 'dropped-item' }>
   | Readonly<{
       _tag: 'EcosystemMobStateRepairFailure'
       field: '_tag' | 'attackCooldownTicks' | 'attackCooldownSecs' | 'motionPhase' | 'provoked' | 'movementGoal' | 'movement' | 'hasHeadProtection' | 'burningTicks'
@@ -126,6 +126,7 @@ export const MOB_MOVEMENT_POLICIES: ReadonlyMap<EntityKind, MobMovementPolicy> =
   [SKELETON_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(16), followRange: mobMovementDistance(16) }],
   [BLAZE_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(24), followRange: mobMovementDistance(48) }],
   [ZOMBIFIED_PIGLIN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(35) }],
+  [ENDERMAN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(64) }],
   [ENDERMITE_KIND, { _tag: 'Approach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(16) }],
   [VILLAGER_KIND, VILLAGER_MOVEMENT_POLICY],
 ])
@@ -314,6 +315,38 @@ export const movementGoalForEcosystemMob = (
   }
 }
 
+const MOB_MELEE_DAMAGE: ReadonlyMap<EntityKind, number> = new Map([
+  [SPIDER_KIND, SPIDER_ATTACK_DAMAGE],
+  [ZOMBIE_KIND, 3],
+  [ZOMBIFIED_PIGLIN_KIND, 5],
+  [ENDERMAN_KIND, 7],
+])
+
+export const isWithinMobMeleeRange = (kind: EntityKind, self: Position, target: Position): boolean => {
+  const policy = movementPolicyFor(kind)
+  return MOB_MELEE_DAMAGE.has(kind) && policy !== undefined &&
+    (policy._tag === 'Approach' || policy._tag === 'ProvokedApproach') &&
+    distanceXZ(self, target) <= policy.attackDistance
+}
+
+export const stepMobMeleeAttack = (
+  kind: EntityKind,
+  state: EcosystemMobState,
+  self: Position,
+  target: Position | undefined,
+  canAttack: boolean,
+): Readonly<{ state: EcosystemMobState; attack: EcosystemAttack | undefined }> => {
+  const cooldown = Math.max(0, state.attackCooldownTicks - 1)
+  const next = cooldown === state.attackCooldownTicks ? state : { ...state, attackCooldownTicks: cooldown }
+  const damage = MOB_MELEE_DAMAGE.get(kind)
+  if (!canAttack || cooldown !== 0 || target === undefined || damage === undefined ||
+    !isWithinMobMeleeRange(kind, self, target)) return { state: next, attack: undefined }
+  return {
+    state: { ...next, attackCooldownTicks: MELEE_ATTACK_INTERVAL_TICKS },
+    attack: { _tag: 'MobAttack', attackerKind: kind, mode: 'melee', damage },
+  }
+}
+
 export const stepEcosystemMob = (
   kind: EntityKind,
   state: EcosystemMobState,
@@ -321,7 +354,10 @@ export const stepEcosystemMob = (
   target: Position | undefined,
   _deltaSecs: number,
 ): EcosystemMobStep => {
-  const cooldown = Math.max(0, state.attackCooldownTicks - 1)
+  const policy = movementPolicyFor(kind)
+  const melee = stepMobMeleeAttack(kind, state, self, target,
+    policy?._tag !== 'ProvokedApproach' || state.provoked)
+  const cooldown = melee.state.attackCooldownTicks
   const currentPhase = motionPhaseTicks(state.motionPhase)
   const phase = NonNegativeTickCount(currentPhase === Number.MAX_SAFE_INTEGER ? currentPhase : currentPhase + 1)
   const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
@@ -341,7 +377,6 @@ export const stepEcosystemMob = (
     return { state: nextState(), feetPosition: self, jumping: false }
   }
   if (target === undefined) return { state: nextState(), feetPosition: self, jumping: false }
-  const policy = movementPolicyFor(kind)
   if (policy === undefined) return { state: nextState(), feetPosition: self, jumping: false }
   if (policy._tag === 'ProvokedApproach' && !state.provoked) return { state: nextState(), feetPosition: self, jumping: false }
   if (policy._tag === 'RangedSpacing' && cooldown === 0 && distance >= policy.minDistance && distance <= policy.maxDistance)
@@ -350,12 +385,9 @@ export const stepEcosystemMob = (
       kind === BLAZE_KIND ? 6 : SKELETON_ATTACK_DAMAGE,
       kind === BLAZE_KIND ? BLAZE_ATTACK_INTERVAL_TICKS : SKELETON_ATTACK_INTERVAL_TICKS,
     )
-  if ((kind === SPIDER_KIND || kind === ZOMBIE_KIND || kind === ZOMBIFIED_PIGLIN_KIND) && cooldown === 0 && distance <= 1.5)
-    return attack(
-      'melee',
-      kind === SPIDER_KIND ? SPIDER_ATTACK_DAMAGE : kind === ZOMBIE_KIND ? 3 : 5,
-      MELEE_ATTACK_INTERVAL_TICKS,
-    )
+  if (melee.attack !== undefined) return {
+    state: nextState(), feetPosition: self, jumping: kind === SPIDER_KIND, attack: melee.attack,
+  }
   return { state: nextState(), feetPosition: self, jumping: kind === SPIDER_KIND && distance > 1.5 }
 }
 
