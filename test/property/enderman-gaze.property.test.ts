@@ -13,8 +13,8 @@ const pitch = fc.double({ min: -Math.PI / 2, max: Math.PI / 2, noNaN: true, noDe
 const eyeOffset = ENDERMAN_DIMENSIONS.eyeHeight - PLAYER_DIMENSIONS.eyeHeight
 
 const aim = (player: Position, mob: Position) => ({
-  yaw: Math.atan2(player.x - mob.x, mob.z - player.z),
-  pitch: -Math.atan2(mob.y - player.y + eyeOffset, Math.hypot(mob.x - player.x, mob.z - player.z)),
+  yaw: Math.atan2(player.x - mob.x, player.z - mob.z),
+  pitch: Math.atan2(mob.y - player.y + eyeOffset, Math.hypot(mob.x - player.x, mob.z - player.z)),
 })
 
 const scene = fc.record({
@@ -26,8 +26,8 @@ const scene = fc.record({
 }).map(({ player, distance, bearing, elevation, away }) => {
   const mob = feet(
     player.x - Math.sin(bearing) * Math.cos(elevation) * distance,
-    player.y - Math.sin(elevation) * distance,
-    player.z + Math.cos(bearing) * Math.cos(elevation) * distance,
+    player.y + Math.sin(elevation) * distance,
+    player.z - Math.cos(bearing) * Math.cos(elevation) * distance,
   )
   const view = aim(player, mob)
   return { player, mob, yaw: view.yaw + (away ? Math.PI : 0), pitch: away ? -view.pitch : view.pitch, away }
@@ -61,7 +61,7 @@ describe('enderman gaze properties', () => {
     })
     fc.assert(fc.property(eyeDistance, yaw, (distance, bearing) => {
       const player = feet(0, 0, 0)
-      const mob = feet(-Math.sin(bearing) * distance, -eyeOffset, Math.cos(bearing) * distance)
+      const mob = feet(-Math.sin(bearing) * distance, -eyeOffset, -Math.cos(bearing) * distance)
       // The specification gives cos(halfAngle) = 1 - 1/(40*d); expected sides are fixed booleans.
       const halfAngle = Math.acos(1 - 1 / (40 * distance))
       const margin = 1e-7 + 64 * Number.EPSILON * 64 / distance
@@ -98,7 +98,7 @@ describe('enderman gaze properties', () => {
         Math.sin(rotation) * point.x + Math.cos(rotation) * point.z,
       )
       expect(isLookingAtEnderman(original.player, original.yaw, original.pitch, original.mob)).toBe(!original.away)
-      expect(isLookingAtEnderman(rotate(original.player), original.yaw + rotation, original.pitch, rotate(original.mob)))
+      expect(isLookingAtEnderman(rotate(original.player), original.yaw - rotation, original.pitch, rotate(original.mob)))
         .toBe(!original.away)
     }))
   })

@@ -755,7 +755,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     const floor = Array.from({ length: 16 }, (_, z) =>
       [blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(z)), STONE] as const)
     const harness = await Effect.runPromise(makeHarness({ entity: enderman,
-      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: feet, yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+      playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: feet, yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 8) },
       blocks: floor,
     }))
     await Effect.runPromise(Effect.gen(function* () {
@@ -772,7 +772,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     const player = await Effect.runPromise(harness.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema))
     await Effect.runPromise(harness.coordinator.commit({ expectedRevision: player.revision, expectedDimensions: [],
       changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: { ...player.state,
-        pose: { ...player.state.pose, yawRadians: Math.PI },
+        pose: { ...player.state.pose, yawRadians: 0 },
       } }],
     }))
     await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
@@ -793,7 +793,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({ entity: enderman,
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 8) },
       block: { position: blockPosition(BlockAxis(4), BlockAxis(66), BlockAxis(4)), id: Option.getOrThrow(blockIdOf(block)) },
     }))
     await harness.run(makeDeltaTimeSecs(0.05))
@@ -846,7 +846,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({ entity: enderman, loadedChunks: ['0,0'],
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 20) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 20) },
     }))
     await harness.run(makeDeltaTimeSecs(0.05))
     const saved = await Effect.runPromise(strictRoster(harness.coordinator))
@@ -864,7 +864,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({ entity: enderman, shortChunkBuffer: true,
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 8) },
     }))
     await harness.run(makeDeltaTimeSecs(0.05))
     const saved = await Effect.runPromise(strictRoster(harness.coordinator))
@@ -887,7 +887,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({ entity: enderman, loadedChunks: ['0,0', '0,1'],
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 20) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 20) },
       blocks: Array.from({ length: 24 }, (_, z) => [blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(z)), STONE] as const),
     }))
     await Effect.runPromise(Ref.set(harness.state.rollSeed, 100000))
@@ -924,7 +924,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({ entity: enderman,
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(y), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 8) },
     }))
     await harness.run(makeDeltaTimeSecs(0.05))
     const saved = await Effect.runPromise(strictRoster(harness.coordinator))
@@ -940,7 +940,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({ entity: enderman,
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(2 ** 53), PositionAxis(64), PositionAxis(0)),
-        yawRadians: Math.PI / 2, pitchRadians: -Math.atan(0.93) },
+        yawRadians: Math.PI / 2, pitchRadians: Math.atan(0.93) },
     }))
     await harness.run(makeDeltaTimeSecs(0.05))
     const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
@@ -978,7 +978,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     const harness = await Effect.runPromise(makeHarness({ entity: enderman,
       loadedChunks: ['0,0', '0,1', '0,2', '0,3', '0,4'],
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 64) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 64) },
     }))
     await harness.run(makeDeltaTimeSecs(0.05))
     const saved = await Effect.runPromise(strictRoster(harness.coordinator))
@@ -997,7 +997,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     let singlePeeks = 0
     let pairPeeks = 0
     const playerPose = { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4), PositionAxis(64), PositionAxis(0)),
-      yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) }
+      yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 8) }
     const single = await Effect.runPromise(makeHarness({ entities: [first], playerPose,
       onChunkPeek: () => { singlePeeks += 1 } }))
     const pair = await Effect.runPromise(makeHarness({ entities: [first, second], playerPose,
@@ -1142,7 +1142,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       feetPosition: position(PositionAxis(5.3), PositionAxis(64), PositionAxis(8)) }
     const harness = await Effect.runPromise(makeHarness({ entities: [faulted, visible],
       playerPose: { ...INITIAL_PLAYER_POSE, feetPosition: position(PositionAxis(4.9), PositionAxis(64), PositionAxis(0)),
-        yawRadians: 0, pitchRadians: -Math.atan(0.93 / 8) },
+        yawRadians: Math.PI, pitchRadians: Math.atan(0.93 / 8) },
     }))
     const before = await Effect.runPromise(strictRoster(harness.coordinator))
     const invalidCell = blockPosition(BlockAxis(4), BlockAxis(66), BlockAxis(4))

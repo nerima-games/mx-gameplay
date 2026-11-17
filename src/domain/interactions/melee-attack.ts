@@ -33,6 +33,7 @@ import {
   resolveDamageWithInvulnerability,
   type DamageImmunityState,
 } from '../mob/hostile-combat.js'
+import { playerLookVector } from '../player-look-vector.js'
 import { knockbackDirection, KnockbackDirectionSchema, type KnockbackDirection } from './knockback.js'
 import { shotTargetWithCandidate, type ShotHit } from './bow-shot.js'
 
@@ -368,11 +369,7 @@ export const prepareMeleeAttack = (
     PositionAxis(eyeY),
     PositionAxis(pose.feetPosition.z),
   )
-  const direction = position(
-    PositionAxis(-Math.sin(pose.yawRadians) * Math.cos(pose.pitchRadians)),
-    PositionAxis(Math.sin(pose.pitchRadians)),
-    PositionAxis(-Math.cos(pose.yawRadians) * Math.cos(pose.pitchRadians)),
-  )
+  const direction = playerLookVector(pose.yawRadians, pose.pitchRadians)
   const match = meleeTargetMatch(input.entities, {
     origin,
     direction,

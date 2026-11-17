@@ -1,6 +1,7 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import type { PlayerPose } from '@nerima-games/mc-sim'
 import { ENDERMAN_DIMENSIONS, PLAYER_DIMENSIONS } from '../entities/entity-dimensions.js'
+import { playerLookVector } from '../player-look-vector.js'
 
 // Rule facts only: https://github.com/PaperMC/Paper/blob/ver/1.21.4/paper-server/patches/sources/net/minecraft/world/entity/monster/EnderMan.java.patch
 export const isLookingAtEnderman = (
@@ -16,7 +17,8 @@ export const isLookingAtEnderman = (
   const eyeDy = dy + ENDERMAN_DIMENSIONS.eyeHeight - PLAYER_DIMENSIONS.eyeHeight
   const distance = Math.hypot(dx, eyeDy, dz)
   if (distance === 0) return false
-  const dot = -Math.sin(yawRadians) * Math.cos(pitchRadians) * (dx / distance) -
-    Math.sin(pitchRadians) * (eyeDy / distance) + Math.cos(yawRadians) * Math.cos(pitchRadians) * (dz / distance)
+  const lookVector = playerLookVector(yawRadians, pitchRadians)
+  const dot = lookVector.x * (dx / distance) + lookVector.y * (eyeDy / distance) +
+    lookVector.z * (dz / distance)
   return dot > 1 - 0.025 / distance
 }
