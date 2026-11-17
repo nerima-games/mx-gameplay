@@ -46,6 +46,7 @@ import {
   position,
   resistsExplosion,
   type BlockPosition,
+  type BlockType,
   type InterpolationFraction as InterpolationFractionValue,
   type BlockPositionKey,
   type Dimension,
@@ -57,6 +58,7 @@ import {
   DamageAmount,
   DamageCause,
   EntityId,
+  EntitySerial,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
   ExperienceDelta,
@@ -87,6 +89,7 @@ import {
   planDroppedItemPickup,
   type DroppedItemSpawn,
   type DroppedItemOwnerSnapshot,
+  type DroppedItemMotionEvent,
 } from '../domain/entities/dropped-item.js'
 import {
   ExperienceOrbOwnerSnapshotSchema,
@@ -433,6 +436,7 @@ const undeadDaylightFacts = (
 
 const BlocksPerSecondSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecond'))
 const BlocksPerSecondSquaredSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecondSquared'))
+const PROJECTILE_MAX_AXIS_CELL_SPAN = 16
 const PROJECTILE_FIXED_STEP_SECONDS = 1 / 20
 const PROJECTILE_AGE_TOLERANCE_SECONDS = 1e-9
 const BLAZE_FIREBALL_PROFILE: ProjectileProfile = {
@@ -462,6 +466,11 @@ const projectileAabb = (
     maxZ: projectileAxis(feet.z + widthZ / 2),
   }
 }
+
+type ProjectileBlockSurface = Readonly<{
+  bounds: ReturnType<ProjectileWorld['blockBounds']>[number]
+  blockType: BlockType
+}>
 
 type ProjectileWorldAdapter = Readonly<{
   readonly world: ProjectileWorld
@@ -516,6 +525,7 @@ const projectileWorldFor = (
   dimension: Dimension,
   window: import('../domain/chunk-window.js').ChunkWindow,
   coords: ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]>,
+  onBlockSurfaces?: (surfaces: ReadonlyArray<ProjectileBlockSurface>) => void,
 ): ProjectileWorldAdapter => {
   const chunksX = coords.map(({ cx }) => Number(cx))
   const chunksZ = coords.map(({ cz }) => Number(cz))
@@ -554,9 +564,15 @@ const projectileWorldFor = (
     const cellPosition = { x: bx.success, y: by.success, z: bz.success }
     return Result.map(entityWorldCellAt(window, cellPosition), (cell) => ({ position: cellPosition, cell }))
   }
-  const collisionShapeAtCell = (cell: Exclude<EntityWorldCell, UnloadedEntityWorldCell>): ProjectileBlockShape => {
+  const collisionSurfaceAtCell = (cell: Exclude<EntityWorldCell, UnloadedEntityWorldCell>): Readonly<{
+    shape: NonNullable<ProjectileBlockShape>
+    blockType: BlockType
+  }> | null => {
     switch (cell._tag) {
-      case 'Loaded': return COLLISION_SHAPE_AABBS[cell.properties.collisionShape]
+      case 'Loaded': {
+        const shape = COLLISION_SHAPE_AABBS[cell.properties.collisionShape]
+        return shape === null ? null : { shape, blockType: cell.block.type }
+      }
       case 'AboveWorld':
         return null
       case 'BelowWorld':
@@ -588,9 +604,9 @@ const projectileWorldFor = (
         rayUnavailable ??= { _tag: 'ProjectilePathUnavailable', cell: result.success.position }
         return true
       }
-      const shape = collisionShapeAtCell(result.success.cell)
-      if (shape === null) return false
-      shapes.set(`${x},${y},${z}`, shape)
+      const surface = collisionSurfaceAtCell(result.success.cell)
+      if (surface === null) return false
+      shapes.set(`${x},${y},${z}`, surface.shape)
       return true
     }
     const ray = mode === 'voxel'
@@ -639,6 +655,7 @@ const projectileWorldFor = (
       }
     },
     blockBounds: (start, end) => {
+      onBlockSurfaces?.([])
       const minX = Math.floor(Math.min(start.x, end.x))
       const minY = Math.floor(Math.min(start.y, end.y))
       const minZ = Math.floor(Math.min(start.z, end.z))
@@ -646,8 +663,11 @@ const projectileWorldFor = (
       const maxY = Math.floor(Math.max(start.y, end.y))
       const maxZ = Math.floor(Math.max(start.z, end.z))
       if ([minX, minY, minZ, maxX, maxY, maxZ].some((value) => !Number.isSafeInteger(value))) return [bounds]
-      if (maxX - minX > 16 || maxY - minY > 16 || maxZ - minZ > 16) return [bounds]
+      if (maxX - minX > PROJECTILE_MAX_AXIS_CELL_SPAN ||
+        maxY - minY > PROJECTILE_MAX_AXIS_CELL_SPAN ||
+        maxZ - minZ > PROJECTILE_MAX_AXIS_CELL_SPAN) return [bounds]
       const boxes: Array<ReturnType<ProjectileWorld['blockBounds']>[number]> = []
+      const surfaces: Array<ProjectileBlockSurface> = []
       for (let x = minX; x <= maxX; x += 1) {
         for (let y = minY; y <= maxY; y += 1) {
           for (let z = minZ; z <= maxZ; z += 1) {
@@ -664,19 +684,23 @@ const projectileWorldFor = (
               }
               continue
             }
-            const shape = collisionShapeAtCell(cell)
-            if (shape === null) continue
-            boxes.push({
+            const surface = collisionSurfaceAtCell(cell)
+            if (surface === null) continue
+            const { shape } = surface
+            const boxBounds = {
               minX: projectileAxis(x + shape.minX),
               minY: projectileAxis(y + shape.minY),
               minZ: projectileAxis(z + shape.minZ),
               maxX: projectileAxis(x + shape.maxX),
               maxY: projectileAxis(y + shape.maxY),
               maxZ: projectileAxis(z + shape.maxZ),
-            })
+            }
+            boxes.push(boxBounds)
+            if (onBlockSurfaces !== undefined) surfaces.push({ bounds: boxBounds, blockType: surface.blockType })
           }
         }
       }
+      onBlockSurfaces?.(surfaces)
       return boxes
     },
   }
@@ -2960,6 +2984,184 @@ const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void>
     }
   })
 
+type DroppedItemMotionFailure = Extract<import('./registration-core.js').GameplayStageOperationFailure['error'], {
+  readonly _tag: 'DroppedItemMotionFailure'
+}>
+
+const THROWN_ITEM_PROFILE: ProjectileProfile = {
+  ...ARROW_PROFILE,
+  // Vanilla item gravity is 0.04 blocks/tick² at 20 Hz.
+  gravity: Schema.decodeUnknownSync(BlocksPerSecondSquaredSchema)(16),
+  airDrag: 1,
+  waterDrag: 1,
+}
+
+type ThrownItemStep = Readonly<{
+  record: DroppedItemOwnerSnapshot['items'][number] | undefined
+  event?: DroppedItemMotionEvent
+}>
+
+const stepThrownItem = (
+  context: GameplayStageContext,
+  drop: DroppedItemOwnerSnapshot['items'][number],
+  dt: DeltaTimeSecs,
+  dimension: Dimension,
+): Effect.Effect<ThrownItemStep, Schema.SchemaError | DroppedItemMotionFailure> => Effect.gen(function* () {
+  if (drop.feetPosition.y < -64) return {
+    record: undefined,
+    event: { _tag: 'DroppedItemDespawned', entityId: drop.id, dimension, reason: 'Void' },
+  }
+  const velocity = yield* Schema.decodeUnknownEffect(Schema.Struct({
+    x: BlocksPerSecondSchema, y: BlocksPerSecondSchema, z: BlocksPerSecondSchema,
+  }))(drop.velocity)
+  const dx = velocity.x * dt
+  const dy = (velocity.y - THROWN_ITEM_PROFILE.gravity * dt) * dt
+  const dz = velocity.z * dt
+  const segment = [
+    { start: drop.feetPosition.x, end: drop.feetPosition.x + dx },
+    { start: drop.feetPosition.y, end: drop.feetPosition.y + dy },
+    { start: drop.feetPosition.z, end: drop.feetPosition.z + dz },
+  ]
+  if (!segment.every(({ start, end }) =>
+    Number.isSafeInteger(Math.floor(start)) && Number.isSafeInteger(Math.floor(end)) &&
+    Math.abs(Math.floor(end) - Math.floor(start)) <= PROJECTILE_MAX_AXIS_CELL_SPAN,
+  )) return yield* Effect.fail({
+    _tag: 'DroppedItemMotionFailure', reason: 'SegmentBudgetExceeded',
+  } satisfies DroppedItemMotionFailure)
+  const coords = chunkCoordsAround(drop.feetPosition, Math.hypot(dx, dz) + 1)
+  const window = yield* openChunkWindow(context.store, coords)
+  let collisionSurfaces: ReadonlyArray<ProjectileBlockSurface> = []
+  const adapter = projectileWorldFor(
+    { entities: [], nextSerial: EntitySerial(0) }, drop.feetPosition, dimension, window, coords,
+    (surfaces) => { collisionSurfaces = surfaces },
+  )
+  const world: ProjectileWorld = {
+    ...adapter.world,
+    bounds: {
+      ...adapter.world.bounds,
+      minY: PositionAxis(Math.min(-65, Math.floor(drop.feetPosition.y + dy) - 1, Math.floor(drop.feetPosition.y) - 1)),
+      maxY: PositionAxis(Math.max(257, Math.ceil(drop.feetPosition.y + dy) + 1, Math.ceil(drop.feetPosition.y) + 1)),
+    },
+    entities: [],
+  }
+  const stepped = stepProjectile({
+    state: 'flying', position: drop.feetPosition, velocity, ageSeconds: FixedDurationSecs(0),
+  }, dt, world, THROWN_ITEM_PROFILE)
+  const failure = adapter.queryFailure()
+  if (failure !== undefined) {
+    yield* recordGameplayEntityWorldDataFault(context.state, 'DroppedItemMotion', failure, drop.id)
+    return { record: drop }
+  }
+  if (adapter.unloadedEntryFraction() !== undefined) return { record: drop }
+  if (stepped.projectile.state === 'despawned') return yield* Effect.fail({
+    _tag: 'DroppedItemMotionFailure', reason: stepped.projectile.reason,
+  } satisfies DroppedItemMotionFailure)
+  let at = stepped.projectile.position
+  let nextVelocity: Readonly<{ x: number; y: number; z: number }> = stepped.projectile.state === 'flying'
+    ? stepped.projectile.velocity
+    : { x: velocity.x, y: velocity.y - THROWN_ITEM_PROFILE.gravity * dt, z: velocity.z }
+  const fluidDrag = world.isInWater(drop.feetPosition) ? 0.8 : 0.98
+  let horizontalDrag = fluidDrag
+  if (stepped.projectile.state === 'stuck') {
+    const { hit } = stepped.projectile
+    const gravityVelocity = velocity.y - THROWN_ITEM_PROFILE.gravity * dt
+    const touching = collisionSurfaces.filter(({ bounds: box }) =>
+      hit.point.x >= box.minX - 1e-9 && hit.point.x <= box.maxX + 1e-9 &&
+      hit.point.y >= box.minY - 1e-9 && hit.point.y <= box.maxY + 1e-9 &&
+      hit.point.z >= box.minZ - 1e-9 && hit.point.z <= box.maxZ + 1e-9)
+    const face = touching.flatMap(({ bounds: box, blockType }) => [
+      { point: hit.point.x, bound: box.minX, toward: velocity.x > 0, normal: { x: -1, y: 0, z: 0 }, blockType },
+      { point: hit.point.x, bound: box.maxX, toward: velocity.x < 0, normal: { x: 1, y: 0, z: 0 }, blockType },
+      { point: hit.point.y, bound: box.minY, toward: gravityVelocity > 0, normal: { x: 0, y: -1, z: 0 }, blockType },
+      { point: hit.point.y, bound: box.maxY, toward: gravityVelocity < 0, normal: { x: 0, y: 1, z: 0 }, blockType },
+      { point: hit.point.z, bound: box.minZ, toward: velocity.z > 0, normal: { x: 0, y: 0, z: -1 }, blockType },
+      { point: hit.point.z, bound: box.maxZ, toward: velocity.z < 0, normal: { x: 0, y: 0, z: 1 }, blockType },
+    ]).find((candidate) => candidate.toward && Math.abs(candidate.point - candidate.bound) < 1e-9 &&
+      ((hit.normal.x === 0 && hit.normal.y === 0 && hit.normal.z === 0) ||
+        (candidate.normal.x === hit.normal.x && candidate.normal.y === hit.normal.y && candidate.normal.z === hit.normal.z)))
+    if (face === undefined) return yield* Effect.fail({
+      _tag: 'DroppedItemMotionFailure', reason: 'InitialContactFaceUnavailable',
+    } satisfies DroppedItemMotionFailure)
+    const normal = face.normal
+    nextVelocity = {
+      x: normal.x === 0 ? velocity.x : 0,
+      y: normal.y === 0 ? gravityVelocity : 0,
+      z: normal.z === 0 ? velocity.z : 0,
+    }
+    at = position(
+      PositionAxis(hit.point.x + normal.x * 0.001),
+      PositionAxis(hit.point.y + normal.y * 0.001),
+      PositionAxis(hit.point.z + normal.z * 0.001),
+    )
+    if (normal.y > 0) horizontalDrag *= face.blockType === 'ice' ? 0.98 : 0.6
+  }
+  if (at.y < -64) return {
+    record: undefined,
+    event: { _tag: 'DroppedItemDespawned', entityId: drop.id, dimension, reason: 'Void' },
+  }
+  const movementSquared = (at.x - drop.feetPosition.x) ** 2 +
+    (at.y - drop.feetPosition.y) ** 2 + (at.z - drop.feetPosition.z) ** 2
+  if (movementSquared <= 1e-7) at = drop.feetPosition
+  const dragTicks = dt * 20
+  const finalVelocity = {
+    x: nextVelocity.x * horizontalDrag ** dragTicks,
+    y: nextVelocity.y * fluidDrag ** dragTicks,
+    z: nextVelocity.z * horizontalDrag ** dragTicks,
+  }
+  const unchanged = at.x === drop.feetPosition.x && at.y === drop.feetPosition.y && at.z === drop.feetPosition.z &&
+    finalVelocity.x === velocity.x && finalVelocity.y === velocity.y && finalVelocity.z === velocity.z
+  return { record: unchanged ? drop : { ...drop, feetPosition: at, velocity: finalVelocity } }
+})
+
+const advanceThrownItems = (
+  context: GameplayStageContext,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> => Effect.gen(function* () {
+  const { state, commit } = context
+  if (dt === 0 || commit === undefined || commit.droppedItemsOwnerId === undefined) return
+  const owner = commit.droppedItemsOwnerId
+  let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+  const attempted = yield* Effect.result(Effect.gen(function* () {
+    const snapshot = yield* commit.coordinator.snapshot(owner, DroppedItemOwnerSnapshotSchema)
+    if (!snapshot.state.items.some(({ velocity }) => velocity !== undefined)) return
+    const player = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+    if (player.revision !== snapshot.revision) return yield* Effect.fail(new WorldRevisionConflict({
+      expected: snapshot.revision, actual: player.revision,
+    }))
+    const dimension = player.state.pose.feetPosition.dimension
+    const items: Array<DroppedItemOwnerSnapshot['items'][number]> = []
+    const events: Array<DroppedItemMotionEvent> = []
+    let changed = false
+    for (const drop of snapshot.state.items) {
+      if (drop.velocity === undefined || drop.dimension !== dimension) {
+        items.push(drop)
+        continue
+      }
+      const result = yield* Effect.result(stepThrownItem(context, drop, dt, dimension))
+      if (Result.isFailure(result)) {
+        items.push(drop)
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'DroppedItem', requestId: drop.id, error: result.failure,
+        })
+        continue
+      }
+      if (result.success.record !== undefined) items.push(result.success.record)
+      if (result.success.event !== undefined) events.push(result.success.event)
+      changed ||= result.success.record !== drop
+    }
+    if (!changed) return
+    operation = 'WorldCommit'
+    yield* commit.coordinator.commit({
+      expectedRevision: snapshot.revision, expectedDimensions: [],
+      changes: [{ ownerId: owner, state: { items } }],
+    })
+    yield* Ref.update(state.droppedItemMotionEvents, (pending) => [...pending, ...events])
+  }))
+  if (Result.isFailure(attempted)) yield* recordGameplayStageFailure(state, {
+    _tag: 'Failed', operation, subject: 'DroppedItem', requestId: String(owner), error: attempted.failure,
+  })
+})
+
 export const makeEntitiesStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
   return {
@@ -3011,8 +3213,11 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
+          const pickupFrame = request.currentFrame === undefined
+            ? yield* Ref.get(state.tickCount)
+            : request.currentFrame
           const plannedResult = yield* Effect.result(planDroppedItemPickup(
-            request,
+            { ...request, currentFrame: pickupFrame },
             storageSnapshot.state,
             droppedItemsSnapshot.state,
           ))
@@ -3205,6 +3410,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         yield* runMobSimulation(context, dt)
         yield* runPlayerDeathDrops(context)
         yield* spawnQueuedExperienceOrbs(context)
+        yield* advanceThrownItems(context, dt)
 
         // ---- falling blocks ------------------------------------------------
         //

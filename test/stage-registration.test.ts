@@ -1599,6 +1599,7 @@ describe('stage behaviour', () => {
         'bowShotResults',
         'consumedItems',
         'damageImmunity',
+        'droppedItemMotionEvents',
         'droppedItemPickupExecutions',
         'endPortalTravels',
         'enderDragonEncounter',
