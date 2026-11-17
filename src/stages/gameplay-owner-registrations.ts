@@ -138,11 +138,12 @@ const isEcosystemState = (value: unknown): boolean => {
 
 const isStrictDroppedItem = (value: unknown): boolean => {
   if (!isDroppedItemBehaviour(value) || !hasOnlyKeys(value, [
-    '_tag', 'item', 'count', 'durability', 'eligibleFromFrame', 'customName', 'enchantments',
+    '_tag', 'item', 'count', 'durability', 'eligibleFromFrame', 'customName', 'enchantments', 'itemComponents',
   ])) return false
   if (
     (Object.hasOwn(value, 'eligibleFromFrame') && value.eligibleFromFrame === undefined) ||
     (Object.hasOwn(value, 'customName') && value.customName === undefined) ||
+    (Object.hasOwn(value, 'itemComponents') && value.itemComponents === undefined) ||
     (Object.hasOwn(value, 'enchantments') && value.enchantments === undefined)
   ) return false
   return value.enchantments === undefined || value.enchantments.every((enchantment) =>

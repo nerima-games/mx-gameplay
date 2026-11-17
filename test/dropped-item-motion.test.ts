@@ -1,25 +1,25 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref, Result, Schema, Stream } from 'effect'
-import { DeltaTimeSecs, StackCount, blockIdOf, enchantmentsComponent, itemComponents, BlockId, WorldRevisionSchema, textComponent, type BlockPosition } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, StackCount, blockIdOf, enchantmentsComponent, itemComponents, BlockId, WorldRevisionSchema, textComponent, RepairCost, MaxStackSize, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
   EntityId,
-  HotbarService,
-  InventoryService,
-  LegacyItemStackSchema,
   PlayerStorageSnapshotSchema,
   TimeService,
   WorldCommitCoordinator,
   itemStack,
-  makeHotbarService,
   makeTimeService,
   type ItemStack,
+  type PlayerStorage,
+  storageFromInventory,
+  durability,
   type PlayerPose,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { ChunkStore, type Dimension } from '@nerima-games/mc-worldgen'
 import {
   drainDroppedItemPickupExecutions,
+  drainDroppedItemMotionEvents,
   makeGameplayFrameStateForOwner,
   requestDropSelectedItem,
   requestDroppedItemPickup,
@@ -31,11 +31,20 @@ import {
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
+  GameplayEntityRosterSchema,
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
   DroppedItemOwnerSnapshotSchema,
+  DroppedItemMotionEventSchema,
+  droppedItemSpawnMetadataFromStack,
+  appendDroppedItemSpawns,
+  spawnDroppedItem,
+  pickupDroppedItems,
+  droppedItemMetadataFromBehaviour,
+  type DroppedItemSpawn,
   type DroppedItemOwnerSnapshot,
 } from '../src/domain/entities/dropped-item.js'
+import { isDroppedItemBehaviour } from '../src/domain/entities/mob-frame.js'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
 import { world } from './support/chunk-store-double.js'
 import { makeEntityManagerDouble } from './support/entity-manager-double.js'
@@ -57,7 +66,6 @@ const thrownRecord = (
   dimension: Dimension = 'overworld',
 ): DroppedItemOwnerSnapshot['items'][number] => ({
   id: EntityId(id), feetPosition: at, dimension, velocity,
-  stack: Result.getOrThrow(itemStack('stone', 1)),
   behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null },
 })
 
@@ -68,6 +76,7 @@ const makeSlice = (options: Readonly<{
   blocks?: ReturnType<typeof world>
   loaded?: ReadonlyArray<string>
   slots?: ReturnType<typeof emptySlots>
+  storage?: PlayerStorage
   coordinator?: (coordinator: WorldCommitCoordinatorApi) => WorldCommitCoordinatorApi
 }> = {}) => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(
@@ -79,10 +88,10 @@ const makeSlice = (options: Readonly<{
   const inventory = yield* makeInventoryDouble(options.slots === undefined ? slots : options.slots)
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
   const time = yield* makeTimeService()
-  const hotbar = yield* makeHotbarService().pipe(Effect.provideService(InventoryService, inventory.api))
   const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
     playerPose: options.pose === undefined ? pose : options.pose,
     ...(options.drops === undefined ? {} : { droppedItems: options.drops }),
+    ...(options.storage === undefined ? {} : { playerStorage: options.storage }),
   })
   const coordinator = options.coordinator === undefined ? commit.coordinator : options.coordinator(commit.coordinator)
   const state = yield* makeGameplayFrameStateForOwner({
@@ -95,7 +104,6 @@ const makeSlice = (options: Readonly<{
     Effect.provideService(TimeService, time),
     Effect.provideService(WorldCommitCoordinator, coordinator),
     Effect.provideService(DomainEventBus, { publish: () => Effect.void, events: Stream.empty }),
-    Effect.provideService(HotbarService, hotbar),
   )
   const interactions = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
   const entities = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
@@ -105,8 +113,9 @@ const makeSlice = (options: Readonly<{
     state,
     store: store.api,
     storeCalls: store.calls,
+    runInteractions: () => runFrame(interactions),
     drop: () => Effect.andThen(
-      requestDropSelectedItem(state, 'throw', 'one'),
+      requestDropSelectedItem(state, 'throw', 'one', { mode: 'survival', slotIndex: 27 }),
       runFrame(interactions),
     ),
     step: (seconds = 0.05) => runFrame(entities, DeltaTimeSecs(seconds)),
@@ -116,40 +125,54 @@ const makeSlice = (options: Readonly<{
 })
 
 describe('persisted thrown-item owner validation', () => {
+  for (const invalidLimit of [0, -1, Number.NaN]) {
+    it(`returns a typed append failure for invalid component limit ${invalidLimit} before splitting`, () => {
+      const metadata = Result.getOrThrow(droppedItemSpawnMetadataFromStack(Result.getOrThrow(itemStack('stone', 1)), null))
+      const at = position(8, 65, 8)
+      const revision = Schema.decodeUnknownSync(WorldRevisionSchema)(0)
+      expect(Result.isSuccess(appendDroppedItemSpawns({ items: [] }, [{ item: 'stone', count: 1, at, ...metadata }], revision))).toBe(true)
+      const result: unknown = Reflect.apply(appendDroppedItemSpawns, undefined, [
+        { items: [] },
+        [{ item: 'stone', count: 1, at, ...metadata, itemComponents: { ...metadata.itemComponents, maxStackSize: invalidLimit } }],
+        revision,
+      ])
+      expect(Result.isResult(result)).toBe(true)
+      if (!Result.isResult(result) || Result.isSuccess(result)) throw new Error('invalid component limit was accepted')
+      expect(Schema.is(Schema.Struct({ _tag: Schema.Literal('SchemaError') }))(result.failure)).toBe(true)
+    })
+  }
+
+  const metadata = Result.getOrThrow(droppedItemSpawnMetadataFromStack(Result.getOrThrow(itemStack('stone', 1)), null))
   const record = {
     id: EntityId('persisted-throw'),
     feetPosition: position(8, 65, 8),
     dimension: 'overworld',
     velocity: { x: 1, y: 2, z: 3 },
-    stack: Schema.encodeSync(LegacyItemStackSchema)(Result.getOrThrow(itemStack('stone', 1))),
-    behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null },
+    behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null, ...metadata },
   }
   const { dimension: _dimension, ...withoutDimension } = record
   const cases: ReadonlyArray<Readonly<{ name: string; record: unknown }>> = [
     { name: 'velocity without dimension', record: withoutDimension },
     {
-      name: 'stack item differs from behaviour',
-      record: {
-        ...record,
-        stack: Schema.encodeSync(LegacyItemStackSchema)(Result.getOrThrow(itemStack('dirt', 1))),
-      },
+      name: 'duplicate customName in the component remainder',
+      record: { ...record, behaviour: { ...record.behaviour, itemComponents: { ...metadata.itemComponents, customName: 'duplicate' } } },
     },
     {
-      name: 'stack count differs from behaviour',
-      record: {
-        ...record,
-        stack: Schema.encodeSync(LegacyItemStackSchema)(Result.getOrThrow(itemStack('stone', 2))),
-      },
+      name: 'duplicate enchantments in the component remainder',
+      record: { ...record, behaviour: { ...record.behaviour, itemComponents: { ...metadata.itemComponents, enchantments: {} } } },
+    },
+    {
+      name: 'unknown component fields',
+      record: { ...record, behaviour: { ...record.behaviour, itemComponents: { ...metadata.itemComponents, unexpected: true } } },
     },
     { name: 'explicit undefined velocity', record: { ...record, velocity: undefined } },
     { name: 'explicit undefined dimension', record: { ...record, dimension: undefined } },
-    { name: 'explicit undefined stack', record: { ...record, stack: undefined } },
+    { name: 'a parallel root stack', record: { ...record, stack: Result.getOrThrow(itemStack('stone', 1)) } },
+    { name: 'a count above the global maximum', record: { ...record, behaviour: { ...record.behaviour, count: 100 } } },
   ]
   for (const scenario of cases) {
     it(`rejects ${scenario.name} without substituting defaults`, () => {
-      expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
-        items: [record],
-      }))).toBe(true)
+      expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({ items: [record] }))).toBe(true)
       const decoded = Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({ items: [scenario.record] })
       expect(Result.isFailure(decoded)).toBe(true)
       if (Result.isSuccess(decoded)) throw new Error('malformed persisted throw was accepted')
@@ -158,7 +181,257 @@ describe('persisted thrown-item owner validation', () => {
   }
 })
 
+describe('public roster dropped-item metadata', () => {
+  it.effect('preserves styled tool components and wear through direct spawn and legacy roster pickup', () =>
+    Effect.gen(function* () {
+      const customName = Result.getOrThrow(textComponent({ text: 'Roster keepsake', color: 'gold' }))
+      const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
+      const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { customName, enchantments, repairCost: RepairCost(9) }))
+      const held = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
+      const wear = Result.getOrThrow(durability(37, 1561))
+      const metadata = Result.getOrThrow(droppedItemSpawnMetadataFromStack(held, wear))
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const entity = yield* spawnDroppedItem(roster.api, {
+        item: held.item, count: held.count, at: position(8, 65, 8), durability: wear, ...metadata,
+      })
+      expect(isDroppedItemBehaviour(entity.behaviour)).toBe(true)
+      expect(droppedItemMetadataFromBehaviour(entity.behaviour)).toMatchObject({
+        customName, itemComponents: metadata.itemComponents,
+        enchantedItem: { enchantments: [{ id: 'mending', level: 1 }] },
+      })
+      yield* pickupDroppedItems(roster.api, inventory.api, position(8, 65, 8), 2, 40)
+      const after = yield* inventory.api.storageSnapshot
+      expect(after.inventory.slots[0]).toEqual(held)
+      expect(after.inventoryDurability[0]).toEqual(wear)
+      expect(yield* roster.api.entities).toEqual([])
+    }),
+  )
+
+  it.effect('preserves a legal ninety-nine component stack through direct spawn and legacy roster pickup', () =>
+    Effect.gen(function* () {
+      const customName = Result.getOrThrow(textComponent({ text: 'Roster stack', bold: true }))
+      const components = Result.getOrThrow(itemComponents('stone', { customName, maxStackSize: MaxStackSize(99) }))
+      const held = Result.getOrThrow(itemStack('stone', 99, { components }))
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      yield* spawnDroppedItem(roster.api, {
+        item: held.item, count: held.count, at: position(8, 65, 8),
+        ...Result.getOrThrow(droppedItemSpawnMetadataFromStack(held, null)),
+      })
+      yield* pickupDroppedItems(roster.api, inventory.api, position(8, 65, 8), 2, 40)
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toEqual(held)
+      expect(yield* roster.api.entities).toEqual([])
+    }),
+  )
+
+  for (const field of ['undefined', 'customName', 'enchantments']) {
+    it.effect(`rejects malformed direct-spawn remainder ${field} with a typed failure before spawning`, () =>
+      Effect.gen(function* () {
+        const held = Result.getOrThrow(itemStack('stone', 1))
+        const valid: DroppedItemSpawn = { item: 'stone', count: 1, at: position(8, 65, 8),
+          ...Result.getOrThrow(droppedItemSpawnMetadataFromStack(held, null)),
+        }
+        const control = yield* makeEntityManagerDouble<MobBehaviour>()
+        yield* spawnDroppedItem(control.api, valid)
+        expect(yield* control.api.entities).toHaveLength(1)
+        const invalid: DroppedItemSpawn = { item: 'stone', count: 1, at: position(8, 65, 8),
+          ...Result.getOrThrow(droppedItemSpawnMetadataFromStack(held, null)),
+        }
+        if (field === 'undefined') expect(Reflect.set(invalid, 'itemComponents', undefined)).toBe(true)
+        else {
+          if (invalid.itemComponents === undefined) throw new Error('component fixture is absent')
+          expect(Reflect.set(invalid.itemComponents, field, field === 'customName' ? 'duplicate' : {})).toBe(true)
+        }
+        const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+        const result = yield* Effect.result(spawnDroppedItem(roster.api, invalid))
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isSuccess(result)) throw new Error('invalid direct-spawn metadata was accepted')
+        expect(result.failure._tag).toBe(field === 'undefined' ? 'InvalidDroppedItemSpawnField' : 'SchemaError')
+        expect(yield* roster.api.entities).toEqual([])
+      }),
+    )
+  }
+
+  for (const field of ['customName', 'enchantments', 'maxStackSize']) {
+    it(`rejects malformed behaviour remainder ${field} at the mob and roster boundary`, () => {
+      const metadata = Result.getOrThrow(droppedItemSpawnMetadataFromStack(Result.getOrThrow(itemStack('stone', 1)), null))
+      const behaviour = { _tag: 'DroppedItem', item: 'stone', count: 1, durability: null, ...metadata }
+      expect(isDroppedItemBehaviour(behaviour)).toBe(true)
+      const invalid = { ...behaviour, itemComponents: { ...metadata.itemComponents } }
+      expect(Reflect.set(invalid.itemComponents, field, field === 'customName' ? 'duplicate' : field === 'enchantments' ? {} : 0)).toBe(true)
+      expect(isDroppedItemBehaviour(invalid)).toBe(false)
+    })
+  }
+
+  it.effect('rejects explicit undefined remainder in a persisted roster while accepting the corresponding entity', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const held = Result.getOrThrow(itemStack('stone', 1))
+      yield* spawnDroppedItem(roster.api, { item: 'stone', count: 1, at: position(8, 65, 8),
+        ...Result.getOrThrow(droppedItemSpawnMetadataFromStack(held, null)),
+      })
+      const runtime = yield* roster.api.snapshot
+      const snapshot = { ...runtime, entities: runtime.entities.map((entity) => ({ ...entity, dimension: 'overworld' })) }
+      yield* Schema.decodeUnknownEffect(GameplayEntityRosterSchema)(snapshot)
+      const first = snapshot.entities[0]
+      if (first === undefined) throw new Error('roster fixture is absent')
+      const invalid = { ...snapshot, entities: [{ ...first, behaviour: { ...first.behaviour, itemComponents: undefined } }] }
+      expect(Result.isFailure(Schema.decodeUnknownResult(GameplayEntityRosterSchema)(invalid))).toBe(true)
+    }),
+  )
+})
+
 describe('held-item throwing through entity frame processing', () => {
+  it.effect('retains an item with a typed lifetime failure for a bounded long frame', () =>
+    Effect.gen(function* () {
+      const drop = thrownRecord('bounded-lifetime', position(8, 65, 8), { x: 0, y: 976, z: 0 })
+      const slice = yield* makeSlice({ drops: { items: [drop] } })
+      yield* slice.step(61)
+      expect((yield* slice.snapshot()).state.items).toEqual([drop])
+      expect(yield* Ref.get(slice.state.operationFailures)).toContainEqual(expect.objectContaining({
+        requestId: drop.id, operation: 'CandidateBuild',
+        error: { _tag: 'DroppedItemMotionFailure', reason: 'lifetime' },
+      }))
+      expect(yield* drainDroppedItemMotionEvents(slice.state)).toEqual([])
+    }),
+  )
+
+  it.effect('retains the existing water drag while advancing a thrown stack', () =>
+    Effect.gen(function* () {
+      const drop = thrownRecord('water-drag', position(8.5, 65.5, 8.5), { x: 2, y: 2, z: 0 })
+      const slice = yield* makeSlice({
+        drops: { items: [drop] },
+        blocks: world([[blockPosition(8, 65, 8), Option.getOrThrow(blockIdOf('water'))]]),
+      })
+      yield* slice.step()
+      const after = (yield* slice.snapshot()).state.items[0]
+      expect(after?.feetPosition.x).toBeCloseTo(8.6)
+      expect(after?.velocity?.x).toBeCloseTo(1.6)
+      expect(after?.velocity?.y).toBeCloseTo(0.96)
+      expect(after?.behaviour.count).toBe(1)
+    }),
+  )
+
+  it.effect('continues healthy motion when one persisted item exceeds its segment budget', () =>
+    Effect.gen(function* () {
+      const invalid = thrownRecord('invalid-batch-item', position(8, 65, 8), { x: 1e6, y: 0, z: 0 })
+      const healthy = thrownRecord('valid-batch-item', position(8, 65, 8), { x: 2, y: 2, z: 0 })
+      const slice = yield* makeSlice({ drops: { items: [invalid, healthy] } })
+      yield* slice.step()
+      const after = (yield* slice.snapshot()).state.items
+      expect(after[0]).toEqual(invalid)
+      expect(after[1]?.feetPosition.x).toBeGreaterThan(healthy.feetPosition.x)
+      expect(yield* Ref.get(slice.state.operationFailures)).toContainEqual(expect.objectContaining({
+        requestId: invalid.id,
+        error: { _tag: 'DroppedItemMotionFailure', reason: 'SegmentBudgetExceeded' },
+      }))
+    }),
+  )
+
+  it.effect('falls below build height and despawns in the void with one committed typed event', () =>
+    Effect.gen(function* () {
+      const falling = thrownRecord('void-item', position(8, -63.9, 8), { x: 0, y: 0, z: 0 })
+      const healthy = thrownRecord('healthy-void-batch', position(8, 65, 8), { x: 2, y: 2, z: 0 })
+      const slice = yield* makeSlice({ drops: { items: [falling, healthy] } })
+      yield* slice.step()
+      const belowBuildHeight = (yield* slice.snapshot()).state.items[0]
+      expect(belowBuildHeight?.feetPosition.y).toBeLessThan(0)
+      expect(belowBuildHeight?.feetPosition.y).toBeGreaterThan(-64)
+      expect(yield* drainDroppedItemMotionEvents(slice.state)).toEqual([])
+      yield* slice.step()
+      expect((yield* slice.snapshot()).state.items.map(({ id }) => id)).toEqual([healthy.id])
+      const events = yield* drainDroppedItemMotionEvents(slice.state)
+      expect(events).toEqual([{
+        _tag: 'DroppedItemDespawned', entityId: falling.id, dimension: 'overworld', reason: 'Void',
+      }])
+      expect(events.map((event) => Result.isSuccess(Schema.decodeUnknownResult(DroppedItemMotionEventSchema)(event)))).toEqual([true])
+      yield* slice.step()
+      expect(yield* drainDroppedItemMotionEvents(slice.state)).toEqual([])
+      expect(yield* Ref.get(slice.state.operationFailures)).toEqual([])
+    }),
+  )
+
+  it.effect('retains a void item and publishes no despawn event when the owner commit fails', () =>
+    Effect.gen(function* () {
+      const falling = thrownRecord('void-commit-rejected', position(8, -65, 8), { x: 0, y: 0, z: 0 })
+      const slice = yield* makeSlice({
+        drops: { items: [falling] },
+        coordinator: (coordinator) => ({
+          ...coordinator,
+          commit: (request) => coordinator.commit({
+            ...request, expectedRevision: Schema.decodeUnknownSync(WorldRevisionSchema)(999),
+          }),
+        }),
+      })
+      yield* slice.step()
+      expect((yield* slice.snapshot()).state.items).toEqual([falling])
+      expect(yield* drainDroppedItemMotionEvents(slice.state)).toEqual([])
+      expect(yield* Ref.get(slice.state.operationFailures)).toContainEqual(expect.objectContaining({
+        subject: 'DroppedItem', operation: 'WorldCommit', error: expect.objectContaining({ _tag: 'WorldRevisionConflict' }),
+      }))
+    }),
+  )
+
+  it.effect('preserves styled names, enchantments, other components and wear through a dropped-owner JSON roundtrip and pickup', () =>
+    Effect.gen(function* () {
+      const customName = Result.getOrThrow(textComponent({ text: 'Keepsake', color: 'gold', italic: false }))
+      const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
+      const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { customName, enchantments, repairCost: RepairCost(7) }))
+      const held = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
+      const slots = [...emptySlots()]
+      slots[27] = held
+      const storage = storageFromInventory({ slots })
+      const wear = [...storage.inventoryDurability]
+      wear[27] = Result.getOrThrow(durability(37, 1561))
+      const slice = yield* makeSlice({ held, pose: { ...pose, yawRadians: 0.2, pitchRadians: 0.1 }, storage: { ...storage, inventoryDurability: wear } })
+      const before = (yield* slice.storage()).state.inventoryDurability[27]
+      yield* slice.drop()
+      const dropped = (yield* slice.snapshot()).state
+      expect(dropped.items[0]?.behaviour.customName).toEqual(customName)
+      expect(dropped.items[0]?.behaviour.enchantments).toEqual([{ id: 'mending', level: 1 }])
+      expect(dropped.items[0]?.behaviour.itemComponents?.repairCost).toBe(7)
+      const restored = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(
+        JSON.parse(JSON.stringify(Schema.encodeSync(DroppedItemOwnerSnapshotSchema)(dropped))),
+      )
+      expect(restored).toEqual(dropped)
+      const resumed = yield* makeSlice({ drops: restored, slots: emptySlots() })
+      const first = restored.items[0]
+      if (first === undefined) throw new Error('persisted metadata drop is missing')
+      yield* requestDroppedItemPickup(resumed.state, {
+        actor: EntityId('styled-picker'), tick: 1, currentFrame: 40, position: first.feetPosition, radius: 2,
+      })
+      yield* resumed.step(0)
+      const after = (yield* resumed.storage()).state
+      expect(after.inventory.slots[0]).toEqual(held)
+      expect(after.inventoryDurability[0]).toEqual(before)
+      expect((yield* resumed.snapshot()).state.items).toEqual([])
+    }),
+  )
+
+  it.effect('preserves a legal component stack of ninety-nine in one entity through drop and pickup', () =>
+    Effect.gen(function* () {
+      const components = Result.getOrThrow(itemComponents('stone', { maxStackSize: MaxStackSize(99) }))
+      const held = Result.getOrThrow(itemStack('stone', 99, { components }))
+      const slice = yield* makeSlice({ held })
+      yield* requestDropSelectedItem(slice.state, 'whole-99', 'stack', { mode: 'survival', slotIndex: 27 })
+      yield* slice.runInteractions()
+      const drops = (yield* slice.snapshot()).state.items
+      expect(drops).toHaveLength(1)
+      expect(drops[0]?.behaviour.count).toBe(99)
+      expect(drops[0]?.behaviour.itemComponents?.maxStackSize).toBe(99)
+      expect((yield* slice.storage()).state.inventory.slots[27]).toBeUndefined()
+      const first = drops[0]
+      if (first === undefined) throw new Error('ninety-nine item stack was not dropped')
+      yield* requestDroppedItemPickup(slice.state, {
+        actor: EntityId('large-stack-picker'), tick: 1, currentFrame: 40, position: first.feetPosition, radius: 2,
+      })
+      yield* slice.step(0)
+      expect((yield* slice.storage()).state.inventory.slots[0]).toEqual(held)
+      expect((yield* slice.snapshot()).state.items).toEqual([])
+    }),
+  )
+
   const overBudgetSegments = [
     { name: 'huge X velocity', at: position(8, 65, 8), velocity: { x: 1e6, y: 0, z: 0 } },
     { name: 'huge Y velocity', at: position(8, 65, 8), velocity: { x: 0, y: 1e6, z: 0 } },
@@ -195,7 +468,7 @@ describe('held-item throwing through entity frame processing', () => {
       yield* Ref.set(slice.state.passiveInitialSpawnPending, false)
       const before = yield* slice.storeCalls
       yield* slice.step()
-      expect((yield* slice.snapshot()).state.items[0]?.feetPosition.x).toBeCloseTo(23.68)
+      expect((yield* slice.snapshot()).state.items[0]?.feetPosition.x).toBeCloseTo(24)
       expect((yield* slice.storeCalls).peeks).toBeGreaterThan(before.peeks)
       expect(yield* Ref.get(slice.state.operationFailures)).toEqual([])
     }),
@@ -213,8 +486,9 @@ describe('held-item throwing through entity frame processing', () => {
         id: EntityId('partial-component-stack'),
         feetPosition: position(8, 65, 8),
         dimension: 'overworld',
-        stack: dropped,
-        behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(64), durability: null },
+        behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(64), durability: null,
+          ...Result.getOrThrow(droppedItemSpawnMetadataFromStack(dropped, null)),
+        },
       }] }
       const slice = yield* makeSlice({ slots, drops })
       yield* requestDroppedItemPickup(slice.state, {
@@ -226,7 +500,11 @@ describe('held-item throwing through entity frame processing', () => {
         .toEqual(Result.getOrThrow(itemStack('stone', 64, { components })))
       const remainder = (yield* slice.snapshot()).state.items[0]
       expect(remainder?.behaviour.count).toBe(63)
-      expect(remainder?.stack).toEqual(Result.getOrThrow(itemStack('stone', 63, { components })))
+      expect(remainder?.behaviour.customName).toEqual(customName)
+      expect(remainder?.behaviour.itemComponents).toEqual(Result.getOrThrow(droppedItemSpawnMetadataFromStack(dropped, null)).itemComponents)
+      expect(remainder).toBeDefined()
+      if (remainder === undefined) throw new Error('partial pickup lost its remainder')
+      expect(Object.hasOwn(remainder, 'stack')).toBe(false)
       expect(yield* drainDroppedItemPickupExecutions(slice.state)).toMatchObject([{
         outcome: { _tag: 'Completed', result: [{ accepted: 1 }] },
       }])
@@ -315,16 +593,18 @@ describe('held-item throwing through entity frame processing', () => {
     }),
   )
 
-  it.effect('reports a typed world-bounds motion failure without discarding the stored stack', () =>
+  it.effect('keeps an item above the build height moving without stalling healthy items', () =>
     Effect.gen(function* () {
-      const drop = thrownRecord('world-bounds-motion', position(8, 255.9, 8), { x: 0, y: 10, z: 0 })
-      const slice = yield* makeSlice({ drops: { items: [drop] } })
+      const high = thrownRecord('above-build-height', position(8, 255.9, 8), { x: 0, y: 10, z: 0 })
+      const healthy = thrownRecord('healthy-batch-item', position(8, 65, 8), { x: 2, y: 2, z: 0 })
+      const slice = yield* makeSlice({ drops: { items: [high, healthy] } })
       yield* slice.step()
-      expect((yield* slice.snapshot()).state.items).toEqual([drop])
-      expect(yield* Ref.get(slice.state.operationFailures)).toContainEqual(expect.objectContaining({
-        subject: 'DroppedItem', operation: 'CandidateBuild',
-        error: expect.objectContaining({ _tag: 'DroppedItemMotionFailure' }),
-      }))
+      const after = (yield* slice.snapshot()).state.items
+      expect(after[0]?.feetPosition.y).toBeGreaterThan(256)
+      expect(after[1]?.feetPosition.x).toBeGreaterThan(healthy.feetPosition.x)
+      expect(after.map((drop) => drop.behaviour.count)).toEqual([1, 1])
+      expect(yield* Ref.get(slice.state.operationFailures)).toEqual([])
+      expect(yield* drainDroppedItemMotionEvents(slice.state)).toEqual([])
     }),
   )
 
@@ -344,7 +624,7 @@ describe('held-item throwing through entity frame processing', () => {
     }),
   )
 
-  it.effect('bounces off an X-facing wall while retaining the stack and tangential velocity', () =>
+  it.effect('stops normal velocity at an X-facing wall while retaining the stack and tangential velocity', () =>
     Effect.gen(function* () {
       const drop = thrownRecord('x-wall-motion', position(8, 65.5, 8.5), { x: -6, y: 2, z: 1 })
       const slice = yield* makeSlice({
@@ -353,8 +633,8 @@ describe('held-item throwing through entity frame processing', () => {
       })
       yield* slice.step()
       const after = (yield* slice.snapshot()).state.items[0]
-      expect(after?.velocity?.x).toBeGreaterThan(0)
-      expect(after?.velocity?.z).toBe(1)
+      expect(after?.velocity?.x).toBe(0)
+      expect(after?.velocity?.z).toBe(0.98)
       expect(after?.feetPosition.x).toBeGreaterThan(8)
       expect(after?.behaviour.count).toBe(1)
     }),
@@ -387,7 +667,8 @@ describe('held-item throwing through entity frame processing', () => {
         expect(before.velocity?.z).toBeCloseTo(direction.z)
         expect(before.velocity?.y).toBeCloseTo(2 + Math.sin(direction.pitch) * 6)
         expect(before.dimension).toBe('overworld')
-        expect(before.stack).toEqual(Result.getOrThrow(itemStack('stone', 1)))
+        expect(Object.hasOwn(before, 'stack')).toBe(false)
+        expect(before.behaviour.itemComponents).toEqual(Result.getOrThrow(droppedItemSpawnMetadataFromStack(Result.getOrThrow(itemStack('stone', 1)), null)).itemComponents)
         yield* slice.step()
         const after = (yield* slice.snapshot()).state.items[0]
         expect(after).toBeDefined()
@@ -408,13 +689,19 @@ describe('held-item throwing through entity frame processing', () => {
       const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
       const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments }))
       const held = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
-      const slice = yield* makeSlice({ held })
+      const slots = [...emptySlots()]
+      slots[27] = held
+      const storage = storageFromInventory({ slots })
+      const wear = [...storage.inventoryDurability]
+      wear[27] = Result.getOrThrow(durability(37, 1561))
+      const slice = yield* makeSlice({ held, pose: { ...pose, yawRadians: 0.2, pitchRadians: 0.1 }, storage: { ...storage, inventoryDurability: wear } })
       const before = (yield* slice.storage()).state.inventoryDurability[27]
       yield* slice.drop()
       const drop = (yield* slice.snapshot()).state.items[0]
       expect(drop).toBeDefined()
       if (drop === undefined) throw new Error('component-bearing drop is missing')
-      expect(drop.stack).toEqual(held)
+      expect(Object.hasOwn(drop, 'stack')).toBe(false)
+      expect(drop.behaviour.enchantments).toEqual([{ id: 'mending', level: 1 }])
       expect(drop.behaviour.durability).toEqual(before)
       yield* requestDroppedItemPickup(slice.state, {
         actor: EntityId('metadata-picker'), tick: 1,
@@ -448,7 +735,7 @@ describe('held-item throwing through entity frame processing', () => {
       if (next === undefined || previous === undefined) throw new Error('persisted drop is missing')
       expect(next.id).toBe(previous.id)
       expect(next.feetPosition.z).toBeLessThan(previous.feetPosition.z)
-      expect(next.stack).toEqual(previous.stack)
+      expect(next.behaviour.itemComponents).toEqual(previous.behaviour.itemComponents)
       expect(next.behaviour).toEqual(previous.behaviour)
     }),
   )
@@ -497,7 +784,7 @@ describe('held-item throwing through entity frame processing', () => {
     }),
   )
 
-  it.effect('bounces away from a side wall and continues falling without losing its stack', () =>
+  it.effect('stops against a side wall and continues falling without losing its stack', () =>
     Effect.gen(function* () {
       const slice = yield* makeSlice({
         blocks: world([[blockPosition(8, 65, 7), Option.getOrThrow(blockIdOf('stone'))]]),
@@ -527,8 +814,7 @@ describe('held-item throwing through entity frame processing', () => {
           feetPosition: position(8.5, 64, 8.5),
           dimension: 'overworld',
           velocity: { x: 0, y: 0, z: 0 },
-          stack: Result.getOrThrow(itemStack('stone', 1)),
-          behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null },
+                  behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null },
         }],
       }
       const slice = yield* makeSlice({
@@ -540,7 +826,7 @@ describe('held-item throwing through entity frame processing', () => {
       expect(resting).toBeDefined()
       if (resting === undefined) throw new Error('initial floor contact lost its stack')
       expect(resting.feetPosition.y).toBeGreaterThanOrEqual(64)
-      expect(resting.velocity).toBeUndefined()
+      expect(resting.velocity).toEqual({ x: 0, y: 0, z: 0 })
       for (let frame = 0; frame < 10; frame += 1) yield* slice.step()
       expect((yield* slice.snapshot()).state.items[0]).toEqual(resting)
       expect(yield* Ref.get(slice.state.operationFailures)).toEqual([])
@@ -555,8 +841,7 @@ describe('held-item throwing through entity frame processing', () => {
           feetPosition: position(8 + 1e-10, 64.5, 8),
           dimension: 'overworld',
           velocity: { x: -6, y: 2, z: -20 },
-          stack: Result.getOrThrow(itemStack('stone', 1)),
-          behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null },
+                  behaviour: { _tag: 'DroppedItem', item: 'stone', count: StackCount(1), durability: null },
         }],
       }
       const slice = yield* makeSlice({
@@ -571,9 +856,76 @@ describe('held-item throwing through entity frame processing', () => {
       expect(bounced).toBeDefined()
       if (bounced === undefined) throw new Error('wall contact lost its stack')
       expect(bounced.velocity?.x).toBeLessThan(0)
-      expect(bounced.velocity?.z).toBeGreaterThan(0)
+      expect(bounced.velocity?.z).toBe(0)
       expect(bounced.feetPosition.z).toBeGreaterThan(8)
       expect(yield* Ref.get(slice.state.operationFailures)).toEqual([])
+    }),
+  )
+
+  it.effect('uses ordinary stone ground friction without reflecting vertical velocity', () =>
+    Effect.gen(function* () {
+      const drop = thrownRecord('ground-friction', position(8.5, 64, 8.5), { x: 4, y: 0, z: 0 })
+      const slice = yield* makeSlice({
+        drops: { items: [drop] },
+        blocks: world([[blockPosition(8, 63, 8), Option.getOrThrow(blockIdOf('stone'))]]),
+      })
+      yield* slice.step()
+      const after = (yield* slice.snapshot()).state.items[0]
+      expect(after?.velocity?.x).toBeCloseTo(2.352)
+      expect(after?.velocity?.y).toBe(0)
+      expect(after?.feetPosition.y).toBeGreaterThanOrEqual(64)
+    }),
+  )
+
+  it.effect('uses the contacted ice surface at a voxel seam instead of reading the adjacent stone cell', () =>
+    Effect.gen(function* () {
+      const drop = thrownRecord('surface-provenance', position(8.5, 64.1, 8.5), { x: 10, y: -1.2, z: 0 })
+      const slice = yield* makeSlice({
+        drops: { items: [drop] },
+        blocks: world([
+          [blockPosition(8, 63, 8), Option.getOrThrow(blockIdOf('ice'))],
+          [blockPosition(9, 63, 8), Option.getOrThrow(blockIdOf('stone'))],
+        ]),
+      })
+      yield* slice.step()
+      const after = (yield* slice.snapshot()).state.items[0]
+      expect(after?.feetPosition.x).toBeCloseTo(9)
+      expect(after?.velocity?.x).toBeCloseTo(9.604)
+      expect(after?.velocity?.y).toBe(0)
+    }),
+  )
+
+  it.effect('uses the supported ice slipperiness instead of ordinary ground friction', () =>
+    Effect.gen(function* () {
+      const drop = thrownRecord('ice-friction', position(8.5, 64, 8.5), { x: 4, y: 0, z: 0 })
+      const slice = yield* makeSlice({
+        drops: { items: [drop] },
+        blocks: world([[blockPosition(8, 63, 8), Option.getOrThrow(blockIdOf('ice'))]]),
+      })
+      yield* slice.step()
+      const after = (yield* slice.snapshot()).state.items[0]
+      expect(after?.velocity?.x).toBeCloseTo(3.8416)
+      expect(after?.velocity?.y).toBe(0)
+    }),
+  )
+
+  it.effect('resumes gravity when the block supporting a stationary thrown item is removed', () =>
+    Effect.gen(function* () {
+      const drop = thrownRecord('support-removal', position(8.5, 64, 8.5), { x: 0, y: 0, z: 0 })
+      const slice = yield* makeSlice({
+        drops: { items: [drop] },
+        blocks: world([[blockPosition(8, 63, 8), Option.getOrThrow(blockIdOf('stone'))]]),
+      })
+      yield* slice.step()
+      const resting = (yield* slice.snapshot()).state.items[0]
+      expect(resting?.velocity).toEqual({ x: 0, y: 0, z: 0 })
+      if (resting === undefined) throw new Error('stationary throw is missing')
+      yield* slice.store.setBlock(blockPosition(8, 63, 8), Option.getOrThrow(blockIdOf('air')))
+      yield* slice.step()
+      const falling = (yield* slice.snapshot()).state.items[0]
+      expect(falling?.feetPosition.y).toBeLessThan(resting.feetPosition.y)
+      expect(falling?.velocity?.y).toBeLessThan(0)
+      expect(falling?.behaviour.count).toBe(1)
     }),
   )
 

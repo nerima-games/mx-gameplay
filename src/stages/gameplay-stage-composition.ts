@@ -1,7 +1,6 @@
 import type { StageRegistration } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
-  HotbarService,
   WorldCommitCoordinator,
   makeBrewingService,
   makeEnchantmentTableService,
@@ -12,7 +11,7 @@ import {
   TNT_REPLICATED_OWNER_ID,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Schema } from 'effect'
 import { ChunkStore, TimeService, entityManagerTag } from './registration-core.js'
 import type { EntityManager, GameplayFrameState, MobBehaviour } from './registration-core.js'
 import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
@@ -103,7 +102,6 @@ const makeGameplayStageRegistrations = (
   const time = yield* TimeService
   const coordinator = yield* WorldCommitCoordinator
   const eventBus = yield* DomainEventBus
-  const hotbar = yield* Effect.serviceOption(HotbarService)
   const enchantmentTableService = yield* makeEnchantmentTableService().pipe(
     Effect.provideService(WorldCommitCoordinator, enchantmentTableCoordinator(coordinator)),
   )
@@ -115,7 +113,6 @@ const makeGameplayStageRegistrations = (
 
   const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, {}, {
     coordinator,
-    ...(Option.isSome(hotbar) ? { hotbar: hotbar.value } : {}),
     playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
     cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,

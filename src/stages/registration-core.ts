@@ -108,7 +108,7 @@ import {
   FoodNutrition,
   type ItemType,
   type StackCount,
-  type BlockType,
+  MAX_STACK_COUNT,
   type PlaceableItemType,
   type Position,
   type ProjectileId,
@@ -173,6 +173,7 @@ import {
   type VehicleOperationError,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
+import { GameplayPickBlockTargetSchema } from '../domain/interactions/pick-block-item.js'
 import {
   type GameplayStageBlockTypeDecodeFailure,
   type GameplayStageWorldFaultReason,
@@ -1327,6 +1328,7 @@ export type GameplayFrameState = {
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
   readonly pendingDroppedItemPickups: Ref.Ref<ReadonlyArray<DroppedItemPickupRequest>>
   readonly droppedItemPickupExecutions: Ref.Ref<ReadonlyArray<DroppedItemPickupExecution>>
+  readonly droppedItemMotionEvents: Ref.Ref<ReadonlyArray<import('../domain/entities/dropped-item.js').DroppedItemMotionEvent>>
   readonly pendingExperienceOrbAbsorptions: Ref.Ref<ReadonlyArray<ExperienceOrbAbsorptionContext>>
   readonly experienceOrbAbsorptionExecutions: Ref.Ref<ReadonlyArray<ExperienceOrbAbsorptionExecution>>
   readonly lastExperienceOrbPickupTick: Ref.Ref<SimulationTick | null>
@@ -1752,22 +1754,100 @@ export const CollectBrewingBottleRequestSchema: Schema.ConstraintDecoder<Collect
   bottleIndex: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2 })),
 }))
 
+type HotbarInventoryContext = InteractionInventoryContext & Readonly<{
+  slotIndex: 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35
+}>
+
+const HotbarInventoryContextSchema: Schema.ConstraintDecoder<HotbarInventoryContext> = strictCodec(Schema.Struct({
+  mode: Schema.Literals(['survival', 'creative']),
+  slotIndex: Schema.Literals([27, 28, 29, 30, 31, 32, 33, 34, 35]),
+}))
+
+export { GameplayPickBlockTargetSchema }
+export type { PickBlockTarget } from '../domain/interactions/pick-block-item.js'
+
 export type DropSelectedItemRequest = Readonly<{
   action: 'DropSelectedItem'
   requestId: ItemUseRequestId
   amount: 'one' | 'stack'
+  inventory: HotbarInventoryContext
 }>
 
 export type PickBlockRequest = Readonly<{
   action: 'PickBlock'
   requestId: ItemUseRequestId
-  block: BlockType
-  mode: BlockPlacementMode
+  target: import('../domain/interactions/pick-block-item.js').PickBlockTarget
+  inventory: HotbarInventoryContext
 }>
 
-export type HotbarItemUseResult =
-  | Readonly<{ requestId: ItemUseRequestId; action: 'DropSelectedItem'; success: boolean; outcome: 'Dropped' | 'EmptySlot'; count: 0 | StackCount }>
-  | Readonly<{ requestId: ItemUseRequestId; action: 'PickBlock'; success: boolean; outcome: 'Selected' | 'Swapped' | 'Created' | 'MissingItem' | 'NoItemForm'; slotIndex: 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 }>
+export type DropSelectedItemResult =
+  | Readonly<{
+      action: 'DropSelectedItem'
+      requestId: ItemUseRequestId
+      success: true
+      outcome: 'Dropped'
+      count: StackCount
+    }>
+  | Readonly<{
+      action: 'DropSelectedItem'
+      requestId: ItemUseRequestId
+      success: false
+      failure: 'EmptySlot'
+    }>
+
+export type PickBlockResult =
+  | Readonly<{
+      action: 'PickBlock'
+      requestId: ItemUseRequestId
+      success: true
+      outcome: 'Selected' | 'Swapped' | 'Created'
+      selectedSlot: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+    }>
+  | Readonly<{
+      action: 'PickBlock'
+      requestId: ItemUseRequestId
+      success: false
+      failure: 'MissingItem' | 'NoItemForm'
+    }>
+
+export type HotbarItemUseResult = DropSelectedItemResult | PickBlockResult
+
+export const GameplayDropSelectedItemResultSchema: Schema.ConstraintDecoder<DropSelectedItemResult> = strictCodec(Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal('DropSelectedItem'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: Schema.Literal('Dropped'),
+    count: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_STACK_COUNT })).pipe(Schema.brand('StackCount')),
+  }),
+  Schema.Struct({
+    action: Schema.Literal('DropSelectedItem'),
+    requestId: Schema.String,
+    success: Schema.Literal(false),
+    failure: Schema.Literal('EmptySlot'),
+  }),
+]))
+
+export const GameplayPickBlockResultSchema: Schema.ConstraintDecoder<PickBlockResult> = strictCodec(Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal('PickBlock'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: Schema.Literals(['Selected', 'Swapped', 'Created']),
+    selectedSlot: Schema.Literals([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+  }),
+  Schema.Struct({
+    action: Schema.Literal('PickBlock'),
+    requestId: Schema.String,
+    success: Schema.Literal(false),
+    failure: Schema.Literals(['MissingItem', 'NoItemForm']),
+  }),
+]))
+
+export const GameplayHotbarItemUseResultSchema: Schema.ConstraintDecoder<HotbarItemUseResult> = strictCodec(Schema.Union([
+  GameplayDropSelectedItemResultSchema,
+  GameplayPickBlockResultSchema,
+]))
 
 export type ItemUseRequest =
   | DropSelectedItemRequest
@@ -2655,6 +2735,7 @@ const makeGameplayFrameStateWithOptions = (
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
   const pendingDroppedItemPickups = yield* Ref.make<ReadonlyArray<DroppedItemPickupRequest>>([])
   const droppedItemPickupExecutions = yield* Ref.make<ReadonlyArray<DroppedItemPickupExecution>>([])
+  const droppedItemMotionEvents = yield* Ref.make<ReadonlyArray<import('../domain/entities/dropped-item.js').DroppedItemMotionEvent>>([])
   const pendingExperienceOrbAbsorptions = yield* Ref.make<ReadonlyArray<ExperienceOrbAbsorptionContext>>([])
   const experienceOrbAbsorptionExecutions = yield* Ref.make<ReadonlyArray<ExperienceOrbAbsorptionExecution>>([])
   const lastExperienceOrbPickupTick = yield* Ref.make<SimulationTick | null>(null)
@@ -2759,6 +2840,7 @@ const makeGameplayFrameStateWithOptions = (
     pendingPearlThrows,
     pendingDroppedItemPickups,
     droppedItemPickupExecutions,
+    droppedItemMotionEvents,
     pendingExperienceOrbAbsorptions,
     experienceOrbAbsorptionExecutions,
     lastExperienceOrbPickupTick,
@@ -3305,18 +3387,26 @@ export const requestDropSelectedItem = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
   amount: DropSelectedItemRequest['amount'],
-): Effect.Effect<void> => Ref.update<ReadonlyArray<ItemUseRequest>>(state.pendingItemUses, (pending) => [
-  ...pending, { action: 'DropSelectedItem', requestId, amount },
-])
+  inventory: InteractionInventoryContext,
+): Effect.Effect<void, Schema.SchemaError> => Effect.flatMap(
+  Schema.decodeUnknownEffect(HotbarInventoryContextSchema)(inventory),
+  (validated) => Ref.update<ReadonlyArray<ItemUseRequest>>(state.pendingItemUses, (pending) => [
+    ...pending, { action: 'DropSelectedItem', requestId, amount, inventory: validated },
+  ]),
+)
 
 export const requestPickBlock = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
-  block: BlockType,
-  mode: BlockPlacementMode,
-): Effect.Effect<void> => Ref.update<ReadonlyArray<ItemUseRequest>>(state.pendingItemUses, (pending) => [
-  ...pending, { action: 'PickBlock', requestId, block, mode },
-])
+  target: import('../domain/interactions/pick-block-item.js').PickBlockTarget,
+  inventory: InteractionInventoryContext,
+): Effect.Effect<void, Schema.SchemaError> => Effect.gen(function* () {
+  const validatedInventory = yield* Schema.decodeUnknownEffect(HotbarInventoryContextSchema)(inventory)
+  const validatedTarget = yield* Schema.decodeUnknownEffect(GameplayPickBlockTargetSchema)(target)
+  yield* Ref.update<ReadonlyArray<ItemUseRequest>>(state.pendingItemUses, (pending) => [
+    ...pending, { action: 'PickBlock', requestId, target: validatedTarget, inventory: validatedInventory },
+  ])
+})
 
 /** Enqueue one igniting-item use without exposing the internal position encoding. */
 export const requestItemUse = (
@@ -4718,6 +4808,11 @@ export const drainDroppedItemPickupExecutions = (
 ): Effect.Effect<ReadonlyArray<DroppedItemPickupExecution>> =>
   Ref.getAndSet(state.droppedItemPickupExecutions, [])
 
+export const drainDroppedItemMotionEvents = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<import('../domain/entities/dropped-item.js').DroppedItemMotionEvent>> =>
+  Ref.getAndSet(state.droppedItemMotionEvents, [])
+
 export const requestExperienceOrbAbsorption = (
   state: GameplayFrameState,
   request: ExperienceOrbAbsorptionContext,
@@ -5062,7 +5157,6 @@ export interface GameplayStageOptions {
   readonly droppedItemPickup?: boolean
 }
 export type GameplayStageCommitServices = Readonly<{
-  readonly hotbar?: Pick<import('@nerima-games/mc-sim').HotbarServiceApi, 'getSelectedSlot' | 'setSelectedSlot'>
   readonly coordinator: WorldCommitCoordinatorApi
   readonly playerOwnerId: ReplicatedOwnerId
   readonly playerStorageOwnerId: ReplicatedOwnerId

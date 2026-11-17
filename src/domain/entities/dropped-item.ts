@@ -13,6 +13,10 @@ import {
   itemStack,
   type ItemStackFailure,
   type ItemStack,
+  type ItemComponents,
+  type TextComponent,
+  isTextComponent,
+  itemStackFromUnknown,
   type ItemType,
   type Position,
   type WorldRevision,
@@ -40,11 +44,12 @@ import {
   type WorldCommitCoordinatorApi,
   type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
-import { Brand, Effect, Result, Schema, SchemaParser, Semaphore } from 'effect'
+import { Brand, Effect, Result, Schema, SchemaIssue, SchemaParser, SchemaTransformation, Semaphore, Struct } from 'effect'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { StackCount } from '@nerima-games/mc-kernel'
 import {
   decodeEnchantedItem,
+  enchantmentComponentOf,
   ENCHANTMENT_IDS,
   vanishingCurseRemovesOnDeath,
   type Enchantment,
@@ -60,13 +65,16 @@ import {
 
 export const DROPPED_ITEM_PICKUP_RADIUS = 1.5
 
+export type DroppedItemComponentRemainder = Omit<ItemComponents, 'customName' | 'enchantments'>
+
 export type DroppedItemSpawn = {
   readonly item: ItemType
   readonly count: number
   readonly at: Position
   readonly durability?: Durability | null
   readonly eligibleFromFrame?: number
-  readonly customName?: string
+  readonly customName?: TextComponent
+  readonly itemComponents?: DroppedItemComponentRemainder
   readonly enchantments?: ReadonlyArray<Enchantment>
 }
 
@@ -77,7 +85,7 @@ export type DroppedItemSpawnError = Extract<
   { readonly _tag: 'InvalidStack' | 'ItemStackFailure' }
 > | EntitySerialExhausted | Schema.SchemaError | Readonly<{
   _tag: 'InvalidDroppedItemSpawnField'
-  field: 'durability' | 'eligibleFromFrame' | 'customName' | 'enchantments'
+  field: 'durability' | 'eligibleFromFrame' | 'customName' | 'enchantments' | 'itemComponents'
 }>
 
 const copyDurability = (durability: Durability | null): Durability | null =>
@@ -91,45 +99,52 @@ export const spawnDroppedItem = (
   if (Result.isFailure(details)) return Effect.fail(details.failure)
   const count = Result.getOrUndefined(StackCount.result(drop.count))
   if (count === undefined) return Effect.fail({ _tag: 'InvalidStack' })
-  const stackItem = Result.getOrUndefined(itemStack(drop.item, count))
-  if (stackItem === undefined) return Effect.fail({ _tag: 'InvalidStack' })
-  const stack = { ...stackItem, durability: copyDurability(details.success.durability) }
-  const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
-  if (validation._tag !== 'Added') return Effect.fail(validation)
-
-  const behaviour = Schema.decodeUnknownResult(DroppedItemBehaviourSnapshotSchema)({
-    _tag: 'DroppedItem',
-    item: stack.item,
-    count: stack.count,
-    durability: stack.durability,
-    ...(details.success.eligibleFromFrame === undefined
-      ? {}
-      : { eligibleFromFrame: details.success.eligibleFromFrame }),
-    ...(details.success.customName === undefined ? {} : { customName: details.success.customName }),
-    ...(details.success.enchantments === undefined
-      ? {}
-      : { enchantments: details.success.enchantments }),
+  const limit = details.success.itemComponents === undefined ? maxStackCountForItem(drop.item) : details.success.itemComponents.maxStackSize
+  if (count > limit) return Effect.fail({ _tag: 'InvalidStack' })
+  const stackItem = droppedItemStackFromBehaviour({
+    _tag: 'DroppedItem', item: drop.item, count, ...details.success,
   })
-  if (Result.isFailure(behaviour)) return Effect.fail(behaviour.failure)
-  const resolvedBehaviour: DroppedItemBehaviour = {
-    _tag: 'DroppedItem',
-    item: behaviour.success.item,
-    count: behaviour.success.count,
-    durability: behaviour.success.durability,
-    ...(behaviour.success.eligibleFromFrame === undefined
-      ? {}
-      : { eligibleFromFrame: behaviour.success.eligibleFromFrame }),
-    ...(behaviour.success.customName === undefined ? {} : { customName: behaviour.success.customName }),
-    ...(behaviour.success.enchantments === undefined
-      ? {}
-      : { enchantments: behaviour.success.enchantments }),
-  }
+  return Effect.flatMap(Effect.fromResult(stackItem), (item): Effect.Effect<Entity<MobBehaviour>, DroppedItemSpawnError> => {
+    const stack = { ...item, durability: copyDurability(details.success.durability) }
+    const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
+    if (validation._tag !== 'Added') return Effect.fail(validation)
 
-  return roster.spawn({
-    kind: DROPPED_ITEM_KIND,
-    feetPosition: drop.at,
-    healthPoints: EntityHealthPoints(1),
-    behaviour: resolvedBehaviour,
+    const behaviour = Schema.decodeUnknownResult(DroppedItemBehaviourSnapshotSchema)({
+      _tag: 'DroppedItem',
+      item: stack.item,
+      count: stack.count,
+      durability: stack.durability,
+      ...(details.success.eligibleFromFrame === undefined
+        ? {}
+        : { eligibleFromFrame: details.success.eligibleFromFrame }),
+      ...(details.success.customName === undefined ? {} : { customName: details.success.customName }),
+      ...(details.success.itemComponents === undefined ? {} : { itemComponents: details.success.itemComponents }),
+      ...(details.success.enchantments === undefined
+        ? {}
+        : { enchantments: details.success.enchantments }),
+    })
+    if (Result.isFailure(behaviour)) return Effect.fail(behaviour.failure)
+    const resolvedBehaviour: DroppedItemBehaviour = {
+      _tag: 'DroppedItem',
+      item: behaviour.success.item,
+      count: behaviour.success.count,
+      durability: behaviour.success.durability,
+      ...(behaviour.success.eligibleFromFrame === undefined
+        ? {}
+        : { eligibleFromFrame: behaviour.success.eligibleFromFrame }),
+      ...(behaviour.success.customName === undefined ? {} : { customName: behaviour.success.customName }),
+      ...(behaviour.success.itemComponents === undefined ? {} : { itemComponents: behaviour.success.itemComponents }),
+      ...(behaviour.success.enchantments === undefined
+        ? {}
+        : { enchantments: behaviour.success.enchantments }),
+    }
+
+    return roster.spawn({
+      kind: DROPPED_ITEM_KIND,
+      feetPosition: drop.at,
+      healthPoints: EntityHealthPoints(1),
+      behaviour: resolvedBehaviour,
+    })
   })
 }
 
@@ -223,8 +238,9 @@ export function pickupDroppedItems(
 
         const count = Result.getOrUndefined(StackCount.result(entity.behaviour.count))
         if (count === undefined) continue
-        const stack = Result.getOrUndefined(itemStack(entity.behaviour.item, count))
-        if (stack === undefined) continue
+        const built = droppedItemStackFromBehaviour({ ...entity.behaviour, count })
+        if (Result.isFailure(built)) continue
+        const stack = built.success
         // The prefilter and constructors validate the same item/count/durability
         // shape as mc-sim storage. If that validation diverges, leave the entity
         // unchanged so an unexpected result cannot silently consume the dropped stack.
@@ -314,36 +330,140 @@ type DroppedItemSnapshotBehaviour = Readonly<{
   count: StackCount
   durability: Durability | null
   eligibleFromFrame?: number | undefined
-  customName?: string | undefined
+  customName?: TextComponent | undefined
+  itemComponents?: DroppedItemComponentRemainder | undefined
   enchantments?: ReadonlyArray<Enchantment> | undefined
 }>
 const droppedItemOptionalFieldsAreOmittedOrDefined = (
-  behaviour: DroppedItemSnapshotBehaviour,
+  behaviour: DroppedItemBehaviour,
 ): boolean =>
   (!Object.hasOwn(behaviour, 'eligibleFromFrame') || behaviour.eligibleFromFrame !== undefined) &&
   (!Object.hasOwn(behaviour, 'customName') || behaviour.customName !== undefined) &&
+  (!Object.hasOwn(behaviour, 'itemComponents') || behaviour.itemComponents !== undefined) &&
   (!Object.hasOwn(behaviour, 'enchantments') || behaviour.enchantments !== undefined)
 
-const DroppedItemBehaviourSnapshotSchema: Schema.Codec<DroppedItemSnapshotBehaviour, unknown> = strictCodec(
-  Schema.Struct({
-    _tag: Schema.Literal('DroppedItem'),
-    item: Schema.Literals(ITEM_TYPES),
-    count: DroppedItemStackCountSchema,
-    durability: strictCodec(Schema.NullOr(DurabilitySchema)),
-    eligibleFromFrame: Schema.optional(NonNegativeIntegerSchema),
-    customName: Schema.optional(Schema.String),
-    enchantments: Schema.optional(Schema.Array(DroppedItemEnchantmentSchema)),
-  }),
-).check(Schema.makeFilter((value) =>
-  isDroppedItemBehaviour(value) &&
-  droppedItemOptionalFieldsAreOmittedOrDefined(value) &&
-  value.count <= maxStackCountForItem(value.item),
-))
+const TextComponentSchema: Schema.Codec<TextComponent, unknown> = Schema.declare(isTextComponent)
+
+const DroppedItemBehaviourWireSchema = strictCodec(Schema.Struct({
+  _tag: Schema.Literal('DroppedItem'),
+  item: Schema.Literals(ITEM_TYPES),
+  count: DroppedItemStackCountSchema,
+  durability: strictCodec(Schema.NullOr(DurabilitySchema)),
+  eligibleFromFrame: Schema.optional(NonNegativeIntegerSchema),
+  customName: Schema.optional(TextComponentSchema),
+  enchantments: Schema.optional(Schema.Array(DroppedItemEnchantmentSchema)),
+  itemComponents: Schema.optionalKey(Schema.NullOr(
+    Schema.Record(Schema.String, Schema.Unknown).check(Schema.makeFilter((components) =>
+      !Object.hasOwn(components, 'customName') && !Object.hasOwn(components, 'enchantments'))),
+  )),
+}))
+
+const invalidDroppedItemComponents = (value: unknown): Schema.SchemaError =>
+  new Schema.SchemaError(new SchemaIssue.InvalidValue({ message: 'Invalid dropped-item components' }, value))
+
+const droppedItemStackFromBehaviour = (
+  behaviour: DroppedItemSnapshotBehaviour,
+): Result.Result<ItemStack, Schema.SchemaError> => Result.gen(function* () {
+  const enchantments = behaviour.enchantments === undefined
+    ? undefined
+    : yield* Result.mapError(enchantmentComponentOf({
+        item: behaviour.item, durability: behaviour.durability, enchantments: behaviour.enchantments,
+      }), invalidDroppedItemComponents)
+  const base = behaviour.itemComponents === undefined
+    ? (yield* Result.mapError(itemStack(behaviour.item, StackCount(1)), invalidDroppedItemComponents)).components
+    : behaviour.itemComponents
+  return yield* Result.mapError(itemStackFromUnknown(behaviour.item, behaviour.count, {
+    components: { ...base, customName: behaviour.customName, enchantments },
+  }), invalidDroppedItemComponents)
+})
+
+const DroppedItemBehaviourSnapshotSchema: Schema.Codec<DroppedItemSnapshotBehaviour, unknown> =
+  Schema.Unknown.pipe(Schema.decodeTo(
+    Schema.declare((value): value is DroppedItemSnapshotBehaviour => isDroppedItemBehaviour(value) &&
+      droppedItemOptionalFieldsAreOmittedOrDefined(value) &&
+      value.count <= (value.itemComponents === undefined ? maxStackCountForItem(value.item) : value.itemComponents.maxStackSize)),
+
+    SchemaTransformation.transformEffect<DroppedItemSnapshotBehaviour, unknown>({
+      decode: (value) => Effect.gen(function* () {
+        const wire = yield* Schema.decodeUnknownEffect(DroppedItemBehaviourWireSchema)(value)
+        const { itemComponents: remainder, ...fields } = wire
+        if (remainder === undefined) return fields
+        const enchantments = wire.enchantments === undefined ? undefined
+          : yield* Effect.fromResult(Result.mapError(enchantmentComponentOf({
+              item: wire.item, durability: wire.durability, enchantments: wire.enchantments,
+            }), invalidDroppedItemComponents))
+        const stack = remainder === null
+          ? yield* Effect.fromResult(droppedItemStackFromBehaviour(fields))
+          : yield* Schema.decodeUnknownEffect(LegacyItemStackSchema)({
+              item: wire.item, count: wire.count,
+              components: {
+                ...remainder,
+                customName: wire.customName === undefined ? null : wire.customName,
+                enchantments: enchantments === undefined ? null : enchantments,
+              },
+            })
+        const { customName: _name, enchantments: _enchantments, ...itemComponents } = stack.components
+        return { ...fields, itemComponents }
+      }).pipe(Effect.mapError(Struct.get('issue'))),
+      encode: (value: DroppedItemSnapshotBehaviour) => Effect.gen(function* () {
+        const { itemComponents, ...fields } = value
+        if (itemComponents === undefined) return fields
+        const stack = yield* Effect.fromResult(droppedItemStackFromBehaviour(value))
+        const encoded = yield* Schema.encodeUnknownEffect(LegacyItemStackSchema)(stack)
+        const wire = yield* Schema.decodeUnknownEffect(Schema.Struct({
+          components: Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown)),
+        }))(encoded)
+        if (wire.components === null) return { ...fields, itemComponents: null }
+        const { customName: _name, enchantments: _enchantments, ...remainder } = wire.components
+        return { ...fields, itemComponents: remainder }
+      }).pipe(Effect.mapError(Struct.get('issue'))),
+    }),
+  ))
+
+export const droppedItemSpawnMetadataFromStack = (
+  stack: ItemStack,
+  durability: Durability | null,
+): Result.Result<Pick<DroppedItemSpawn, 'customName' | 'enchantments' | 'itemComponents'>, Schema.SchemaError> =>
+  Result.gen(function* () {
+    const { customName, enchantments: componentEnchantments, ...itemComponents } = stack.components
+    const enchantments = componentEnchantments === undefined ? undefined
+      : yield* Schema.decodeUnknownResult(Schema.Array(DroppedItemEnchantmentSchema))(
+          Object.entries(componentEnchantments).map(([id, level]) => ({
+            id: id.replace(/^minecraft:/, ''), level,
+          })),
+        )
+    const behaviour = yield* Schema.decodeUnknownResult(DroppedItemBehaviourSnapshotSchema)({
+      _tag: 'DroppedItem', item: stack.item, count: stack.count, durability, itemComponents,
+      ...(customName === undefined ? {} : { customName }),
+      ...(enchantments === undefined ? {} : { enchantments }),
+    })
+    return {
+      ...(behaviour.customName === undefined ? {} : { customName: behaviour.customName }),
+      ...(behaviour.enchantments === undefined ? {} : { enchantments: behaviour.enchantments }),
+      itemComponents,
+    }
+  })
+
+export type DroppedItemMotionEvent = Readonly<{
+  _tag: 'DroppedItemDespawned'
+  entityId: Schema.Schema.Type<typeof EntityIdSchema>
+  dimension: Dimension
+  reason: 'Void'
+}>
+
+export const DroppedItemMotionEventSchema: Schema.Codec<DroppedItemMotionEvent, unknown> =
+  strictCodec(Schema.Struct({
+    _tag: Schema.Literal('DroppedItemDespawned'),
+    entityId: EntityIdSchema,
+    dimension: DimensionIdSchema,
+    reason: Schema.Literal('Void'),
+  }))
 
 type ResolvedDroppedItemSpawn = Readonly<{
   durability: Durability | null
   eligibleFromFrame?: number
-  customName?: string
+  customName?: TextComponent
+  itemComponents?: DroppedItemComponentRemainder
   enchantments?: ReadonlyArray<Enchantment>
 }>
 
@@ -360,6 +480,19 @@ const resolveDroppedItemSpawn = (
     return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'enchantments' })
   }
 
+  if (Object.hasOwn(drop, 'itemComponents') && drop.itemComponents === undefined) {
+    return Result.fail({ _tag: 'InvalidDroppedItemSpawnField', field: 'itemComponents' })
+  }
+  if (drop.itemComponents !== undefined) {
+    if (Object.hasOwn(drop.itemComponents, 'customName') || Object.hasOwn(drop.itemComponents, 'enchantments')) {
+      return Result.fail(invalidDroppedItemComponents(drop.itemComponents))
+    }
+    const validated = itemStackFromUnknown(drop.item, StackCount(1), {
+      components: { ...drop.itemComponents, customName: drop.customName, enchantments: undefined },
+    })
+    if (Result.isFailure(validated)) return Result.fail(invalidDroppedItemComponents(validated.failure))
+  }
+
   const durability = Object.hasOwn(drop, 'durability')
     ? drop.durability
     : durabilityForItem(drop.item)
@@ -374,7 +507,7 @@ const resolveDroppedItemSpawn = (
     if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
   }
   if (Object.hasOwn(drop, 'customName')) {
-    const decoded = Schema.decodeUnknownResult(Schema.String)(drop.customName)
+    const decoded = Schema.decodeUnknownResult(TextComponentSchema)(drop.customName)
     if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
   }
   if (Object.hasOwn(drop, 'enchantments')) {
@@ -390,6 +523,7 @@ const resolveDroppedItemSpawn = (
     ...(Object.hasOwn(drop, 'customName') && drop.customName !== undefined
       ? { customName: drop.customName }
       : {}),
+    ...(drop.itemComponents === undefined ? {} : { itemComponents: drop.itemComponents }),
     ...(Object.hasOwn(drop, 'enchantments') && drop.enchantments !== undefined
       ? { enchantments: drop.enchantments.map((enchantment) => ({ ...enchantment })) }
       : {}),
@@ -401,7 +535,6 @@ type DroppedItemRecord = Readonly<{
   feetPosition: Position
   velocity?: Readonly<{ x: number; y: number; z: number }>
   dimension?: Dimension
-  stack?: ItemStack
   behaviour: DroppedItemSnapshotBehaviour
 }>
 const DroppedItemRecordSchema: Schema.Codec<DroppedItemRecord, unknown> = strictCodec(
@@ -410,11 +543,10 @@ const DroppedItemRecordSchema: Schema.Codec<DroppedItemRecord, unknown> = strict
     feetPosition: DroppedItemPositionSchema,
     velocity: Schema.optionalKey(Schema.Struct({ x: Schema.Finite, y: Schema.Finite, z: Schema.Finite })),
     dimension: Schema.optionalKey(DimensionIdSchema),
-    stack: Schema.optionalKey(LegacyItemStackSchema),
     behaviour: DroppedItemBehaviourSnapshotSchema,
-  }).check(Schema.makeFilter(({ stack, behaviour, velocity, dimension }) =>
-    (velocity === undefined || dimension !== undefined) &&
-    (stack === undefined || (stack.item === behaviour.item && stack.count === behaviour.count)))),
+  }).check(Schema.makeFilter(({ velocity, dimension }) =>
+    velocity === undefined || dimension !== undefined)),
+
 )
 
 const DroppedItemOwnerSnapshotFields: {
@@ -517,8 +649,9 @@ const appendDroppedItemRecords = (
   for (const { details, ...drop } of drops) {
     let remaining: number = drop.count
     while (remaining > 0) {
-      const count = Math.min(maxStackCountForItem(drop.item), remaining)
-      // Kernel item stack limits are 1, 16, or 64, so this is always a valid StackCount.
+      const limit = details.itemComponents === undefined ? maxStackCountForItem(drop.item) : details.itemComponents.maxStackSize
+      const count = Math.min(limit, remaining)
+      // The resolved component limit has passed the kernel's global stack-count bound.
       const stackCount = StackCount(count)
       const id = EntityId(`mx-gameplay-drop:${String(expectedRevision)}:${String(serial)}`)
       serial += 1
@@ -536,6 +669,7 @@ const appendDroppedItemRecords = (
             ? {}
             : { eligibleFromFrame: details.eligibleFromFrame }),
           ...(details.customName === undefined ? {} : { customName: details.customName }),
+          ...(details.itemComponents === undefined ? {} : { itemComponents: details.itemComponents }),
           ...(details.enchantments === undefined
             ? {}
             : { enchantments: details.enchantments }),
@@ -660,8 +794,8 @@ export const DroppedItemPickupSchema: Schema.Codec<
     event.source._tag === 'DroppedItem' &&
     event.source.id === source &&
     event.item === itemIdOf(item) &&
-    event.count === accepted &&
-    accepted <= maxStackCountForItem(item),
+    event.count === accepted,
+
   ),
 )
 
@@ -758,9 +892,7 @@ export const planDroppedItemPickup = (
         continue
       }
 
-      const stack = droppedItem.stack === undefined
-        ? yield* Effect.fromResult(itemStack(droppedItem.behaviour.item, droppedItem.behaviour.count))
-        : droppedItem.stack
+      const stack = yield* Effect.fromResult(droppedItemStackFromBehaviour(droppedItem.behaviour))
       const outcome = addStorageStoredStack(storage, {
         ...stack,
         durability: copyDurability(droppedItem.behaviour.durability),
@@ -780,9 +912,6 @@ export const planDroppedItemPickup = (
       if (result.leftover !== null) {
         nextItems.push({
           ...droppedItem,
-          ...(droppedItem.stack === undefined ? {} : {
-            stack: { item: result.leftover.item, count: result.leftover.count, components: result.leftover.components },
-          }),
           behaviour: {
             ...droppedItem.behaviour,
             count: result.leftover.count,
@@ -900,7 +1029,8 @@ export const pickupDroppedItemsCommitted = (
   })
 
 export type DroppedItemMetadata = {
-  readonly customName?: string
+  readonly customName?: TextComponent
+  readonly itemComponents?: DroppedItemComponentRemainder
   readonly enchantedItem?: EnchantedItem
 }
 
@@ -923,6 +1053,7 @@ export const droppedItemMetadataFromBehaviour = (behaviour: unknown): DroppedIte
   })
   return {
     ...(behaviour.customName === undefined ? {} : { customName: behaviour.customName }),
+    ...(behaviour.itemComponents === undefined ? {} : { itemComponents: behaviour.itemComponents }),
     ...(enchantedItem.ok ? { enchantedItem: enchantedItem.value } : {}),
   }
 }

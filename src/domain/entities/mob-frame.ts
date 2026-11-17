@@ -212,6 +212,8 @@ import {
   SimulationTick,
   NonNegativeTickCount,
   isItemType,
+  isTextComponent,
+  itemStackFromUnknown,
   isEntityKind,
   type ItemType,
   type RandomSeed,
@@ -425,7 +427,8 @@ export type DroppedItemBehaviour = {
   readonly durability: Durability | null
   readonly eligibleFromFrame?: number
   /** An anvil-renamed stack keeps its name after it hits the ground; see `../enchantment.js`. */
-  readonly customName?: string
+  readonly customName?: import('@nerima-games/mc-kernel').TextComponent
+  readonly itemComponents?: Omit<import('@nerima-games/mc-kernel').ItemComponents, 'customName' | 'enchantments'>
   /** Empty and absent are the same fact (no enchantments); `../enchantment.js` owns the shape. */
   readonly enchantments?: ReadonlyArray<Enchantment>
 }
@@ -968,7 +971,13 @@ export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBeha
     ? value.count === 1 && isValidDurabilityForItem(value.item, value.durability)
     : value.durability === null
   if (!durabilityValid) return false
-  if (value.customName !== undefined && value.customName.trim().length === 0) return false
+  if (typeof value.customName === 'string' && value.customName.trim().length === 0) return false
+  if (value.itemComponents !== undefined && (
+    Object.hasOwn(value.itemComponents, 'customName') || Object.hasOwn(value.itemComponents, 'enchantments') ||
+    Result.isFailure(itemStackFromUnknown(value.item, value.count, {
+      components: { ...value.itemComponents, customName: value.customName, enchantments: undefined },
+    }))
+  )) return false
   if (value.enchantments === undefined) return true
   return decodeEnchantedItem({
     item: value.item,
@@ -985,31 +994,21 @@ const hasDroppedItemFields = (
   readonly count: number
   readonly durability?: unknown
   readonly eligibleFromFrame?: number
-  readonly customName?: string
+  readonly customName?: import('@nerima-games/mc-kernel').TextComponent
+  readonly itemComponents?: Omit<import('@nerima-games/mc-kernel').ItemComponents, 'customName' | 'enchantments'>
   readonly enchantments?: ReadonlyArray<Enchantment>
 } => {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as {
-    readonly _tag?: unknown
-    readonly item?: unknown
-    readonly count?: unknown
-    readonly durability?: unknown
-    readonly eligibleFromFrame?: unknown
-    readonly customName?: unknown
-    readonly enchantments?: unknown
-  }
-  return candidate._tag === 'DroppedItem' &&
-    typeof candidate.item === 'string' &&
-    isItemType(candidate.item) &&
-    typeof candidate.count === 'number' &&
-    Number.isInteger(candidate.count) &&
-    candidate.count > 0 &&
-    (candidate.eligibleFromFrame === undefined ||
-      (typeof candidate.eligibleFromFrame === 'number' &&
-        Number.isInteger(candidate.eligibleFromFrame) &&
-        candidate.eligibleFromFrame >= 0)) &&
-    (candidate.customName === undefined || typeof candidate.customName === 'string') &&
-    (candidate.enchantments === undefined || Array.isArray(candidate.enchantments))
+  return '_tag' in value && value._tag === 'DroppedItem' &&
+    'item' in value && typeof value.item === 'string' && isItemType(value.item) &&
+    'count' in value && typeof value.count === 'number' &&
+    Number.isInteger(value.count) && value.count > 0 &&
+    (!('eligibleFromFrame' in value) || value.eligibleFromFrame === undefined ||
+      (typeof value.eligibleFromFrame === 'number' && Number.isInteger(value.eligibleFromFrame) && value.eligibleFromFrame >= 0)) &&
+    (!('customName' in value) || value.customName === undefined || isTextComponent(value.customName)) &&
+    (!('itemComponents' in value) || value.itemComponents === undefined ||
+      (typeof value.itemComponents === 'object' && value.itemComponents !== null && !Array.isArray(value.itemComponents))) &&
+    (!('enchantments' in value) || value.enchantments === undefined || Array.isArray(value.enchantments))
 }
 
 const isLegacyDroppedItemBehaviour = (
